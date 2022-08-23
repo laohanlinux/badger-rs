@@ -9,7 +9,7 @@ use std::io::Cursor;
 /// |meta|user_meta|cas_counter|value|
 #[derive(Debug, Clone, Default)]
 pub struct ValueStruct<'a> {
-    value: &'a [u8],
+    pub(crate) value: &'a [u8],
     meta: u8,
     user_meta: u8,
     cas_counter: u64,
