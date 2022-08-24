@@ -1,17 +1,18 @@
 mod arena;
 mod parallel_buffer;
+mod parallel_slice;
 
 use crate::skl::arena::Arena;
 use crate::y::ValueStruct;
 use rand::prelude::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::mem::size_of;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 const MAX_HEIGHT: usize = 20;
 const HEIGHT_INCREASE: u32 = u32::MAX / 3;
-
-// pub const MAX_NODE_SIZE =
+const MAX_NODE_SIZE: usize = size_of::<Node>();
 
 #[derive(Debug)]
 #[repr(C)]
