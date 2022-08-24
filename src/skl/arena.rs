@@ -1,10 +1,11 @@
-use crate::skl::{Node, OwnedNode};
+use crate::skl::{Node, OwnedNode, MAX_HEIGHT};
 use crate::y::ValueStruct;
 use std::default;
 use std::ptr::addr_of;
 use std::sync::atomic::Ordering::{Acquire, Release};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::spawn;
 
 /// `Arena` should be lock-free.
 pub struct Arena {
@@ -32,6 +33,9 @@ impl Arena {
     // putNode allocates a node in the arena. The node is aligned on a pointer-sized
     // boundary. The arena offset of the node is returned.
     fn put_node(&mut self, height: usize) -> u32 {
+        // Compute the amount of the tower that will never be used, since the height
+        // is less than MAX_HEIGHT
+        // let unused_size = (MAX_HEIGHT - height) * OFFSET_SIZE;
         todo!()
     }
 
