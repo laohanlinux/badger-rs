@@ -100,9 +100,9 @@ impl<'a> Arena<'a> {
 
     // Returns byte slice at offset. The given size should be just the value
     // size and should NOT include the meta bytes.
-    fn get_val(&'a mut self, offset: u32, size: u16) -> &ValueStruct {
+    fn get_val(&self, offset: u32, size: u16) -> &ValueStruct {
         let offset = offset as usize;
-        let mut slice = self.slice.get_data_slice();
+        let slice = self.slice.get_data_slice();
         ValueStruct::from_slice(&slice[offset..(offset + size as usize)])
     }
 }
@@ -178,21 +178,33 @@ fn test_arena() {
     value.value_size = 100;
     let start = arena.put_value(&value);
 
-    let got_value = arena.get_val(start, value.byte_size() as u16);
-    assert_eq!(got_value.meta, value.meta);
-    assert_eq!(got_value.user_meta, value.user_meta);
-    assert_eq!(got_value.cas_counter, value.cas_counter);
-    assert_eq!(got_value.value_size, value.value_size);
+    {
+        let got_value = arena.get_val(start, value.byte_size() as u16);
+        assert_eq!(got_value.meta, value.meta);
+        assert_eq!(got_value.user_meta, value.user_meta);
+        assert_eq!(got_value.cas_counter, value.cas_counter);
+        assert_eq!(got_value.value_size, value.value_size);
 
-    let c = got_value.clone();
-    writeln!(std::io::stdout(), "---------------->>> {:?}", c.get_value())
+        let c = got_value.clone();
+        writeln!(
+            std::io::stdout(),
+            "---------------->>> {:?}",
+            got_value.get_value()
+        )
         .expect("TODO: panic message");
-    writeln!(std::io::stdout(), "---------------->>> {:?}", c.get_value())
-        .expect("TODO: panic message");
-    spawn(move || {
-        writeln!(std::io::stdout(), "---------------->>> {:?}", c.get_value())
-            .expect("TODO: panic message");
-    })
-    .join()
-    .unwrap();
+
+        spawn(move || {
+            writeln!(std::io::stdout(), "---------------->>> {:?}", c.get_value())
+                .expect("TODO: panic message");
+        })
+        .join()
+        .unwrap();
+    }
+
+    writeln!(
+        std::io::stdout(),
+        "---------------->>> {:?}",
+        arena.get_val(start, value.byte_size() as u16).get_value()
+    )
+    .expect("TODO: panic message");
 }
