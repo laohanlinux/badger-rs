@@ -58,8 +58,8 @@ impl Node {
     }
 
     fn set_value(&self, arena: &mut Arena, v: ValueStruct) {
-        let value_size = v.value.len() as u16;
-        let value_offset = arena.put_value(v);
+        let value_size = v.value_size;
+        let value_offset = arena.put_value(&v);
         let value = Self::encode_value(value_offset, value_size);
         self.value.store(value, Ordering::Relaxed);
     }
