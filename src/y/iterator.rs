@@ -9,10 +9,10 @@ use std::io::Cursor;
 /// |meta|user_meta|cas_counter|value|
 #[derive(Debug, Clone, Default)]
 pub struct ValueStruct<'a> {
-    pub(crate) value: &'a [u8],
     meta: u8,
     user_meta: u8,
     cas_counter: u64,
+    pub(crate) value: &'a [u8],
 }
 
 impl<'a> ValueStruct<'a> {
@@ -38,14 +38,11 @@ impl<'a> ValueStruct<'a> {
     pub fn encode(&mut self, buffer: &mut [u8]) {
         buffer[Self::VALUE_META_OFFSET] = self.meta;
         buffer[Self::VALUE_USER_META_OFFSET] = self.user_meta;
-        // FIXME:
-        let mut count_v = Vec::from_iter(
-            buffer[Self::VALUE_CAS_OFFSET..(Self::VALUE_CAS_OFFSET + CAS_SIZE)].iter(),
-        )
-        .iter()
-        .map(|u| **u)
-        .collect::<Vec<_>>();
-        self.cas_counter = Cursor::new(&mut count_v).read_u64::<BigEndian>().unwrap();
+        {
+            let mut cursor =
+                Cursor::new(&mut buffer[Self::VALUE_CAS_OFFSET..Self::VALUE_CAS_OFFSET + CAS_SIZE]);
+            cursor.write_u64::<BigEndian>(self.cas_counter).unwrap();
+        }
         buffer[Self::VALUE_VALUE_OFFSET..(Self::VALUE_VALUE_OFFSET + self.value.len())]
             .copy_from_slice(self.value);
     }
@@ -90,6 +87,5 @@ impl<'a> From<ValueStruct<'a>> for Vec<u8> {
 
 #[test]
 fn test_value_struct() {
-    // let mut v = ValueStruct::new(vec![0u8; 1023], 10, 18, 10);
-    // let vv: Vec<u8> = v.into();
+    assert_eq!(ValueStruct::VALUE_VALUE_OFFSET, 10);
 }

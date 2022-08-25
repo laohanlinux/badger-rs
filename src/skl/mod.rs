@@ -2,6 +2,7 @@ mod arena;
 mod parallel_buffer;
 mod parallel_slice;
 
+use crate::must_align;
 use crate::skl::arena::Arena;
 use crate::y::ValueStruct;
 use rand::prelude::*;
@@ -42,12 +43,17 @@ pub(crate) struct Node {
 }
 
 impl Node {
+    pub(crate) fn size() -> usize {
+        size_of::<Node>()
+    }
+
     fn get_value_offset(&self) -> (u32, u16) {
         let value = self.value.load(Ordering::Acquire);
         Self::decode_value(value)
     }
 
     fn get_key<'a>(&'a self, arena: &'a Arena) -> &[u8] {
+        must_align(self);
         arena.get_key(self.key_offset, self.key_size)
     }
 
@@ -78,16 +84,16 @@ impl Node {
 }
 
 // Maps keys to value(in memory)
-pub struct SkipList {
+pub struct SkipList<'a> {
     height: AtomicI32,
     head: RefCell<Node>,
     _ref: AtomicI32,
-    arena: Arena,
+    arena: Arena<'a>,
 }
 
-impl SkipList {
+impl<'a> SkipList<'a> {
     /// Increases the reference count
-    pub fn incr_ref(&self) {
+    pub fn incr_ref(&'a self) {
         self._ref.fetch_add(1, Ordering::AcqRel);
     }
 }
