@@ -81,22 +81,42 @@ impl Node {
         ((value_size as u64) << 32) | (value_offset) as u64
     }
 }
-//
-// // Maps keys to value(in memory)
-// pub struct SkipList {
-//     height: AtomicI32,
-//     head: RefCell<Node>,
-//     _ref: AtomicI32,
-//     arena: Arena<SmallAllocate>,
-// }
-// //
-// // impl SkipList {
-// //     /// Increases the reference count
-// //     pub fn incr_ref(&'a self) {
-// //         self._ref.fetch_add(1, Ordering::AcqRel);
-// //     }
-// // }
-// //
+
+// Maps keys to value(in memory)
+pub struct SkipList {
+    height: AtomicI32,
+    head: RefCell<Node>,
+    _ref: AtomicI32,
+    arena: Arena<SmallAllocate>,
+}
+
+impl SkipList {
+    /// Increases the reference count
+    pub fn incr_ref(&self) {
+        self._ref.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub fn decr_ref(&self) {
+        self._ref.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    fn valid(&self) -> bool {
+        todo!()
+    }
+
+    fn get_next(&self, nd: &Node, height: usize) -> Option<&Node> {
+        self.arena.get_node(nd.get_next_offset(height) as usize)
+    }
+
+    fn random_height() -> usize {
+        let mut h = 1;
+        while h < MAX_HEIGHT && random::<u32>() <= HEIGHT_INCREASE {
+            h += 1;
+        }
+        0
+    }
+}
+
 // // #[derive(Clone)]
 // // struct OwnedNode {
 // //     buf: Vec<u8>,
@@ -104,20 +124,14 @@ impl Node {
 // //
 // // impl OwnedNode {}
 // //
-// // fn random_height() -> usize {
-// //     let mut h = 1;
-// //     while h < MAX_HEIGHT && random::<u32>() <= HEIGHT_INCREASE {
-// //         h += 1;
-// //     }
-// //     0
-// // }
+
 // //
-// // #[test]
-// // fn value_decode() {
-// //     let value_offset = 8713;
-// //     let value_size = 184;
-// //     let value = Node::encode_value(value_offset, value_size);
-// //     let (got_value_offset, got_value_size) = Node::decode_value(value);
-// //     assert_eq!(value_offset, got_value_offset);
-// //     assert_eq!(value_size, got_value_size);
-// // }
+#[test]
+fn value_decode() {
+    // let value_offset = 8713;
+    // let value_size = 184;
+    // let value = Node::encode_value(value_offset, value_size);
+    // let (got_value_offset, got_value_size) = Node::decode_value(value);
+    // assert_eq!(value_offset, got_value_offset);
+    // assert_eq!(value_size, got_value_size);
+}
