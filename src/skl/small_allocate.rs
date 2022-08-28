@@ -4,6 +4,7 @@ use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 pub trait Allocate {
     fn borrow_vec(&self, start: usize, n: usize) -> Slice;
     fn borrow_slice(&self, start: usize, n: usize) -> &[u8];
+    fn borrow_mut_slice(&mut self, start: usize, n: usize) -> &mut [u8];
     fn fill_slice(&self, start: usize, n: usize, slice: &mut Slice);
 }
 
@@ -21,6 +22,7 @@ pub struct Slice {
 }
 
 unsafe impl Send for Slice {}
+
 unsafe impl Sync for Slice {}
 
 impl Slice {
@@ -65,6 +67,11 @@ impl Allocate for SmallAllocate {
     fn borrow_slice(&self, start: usize, n: usize) -> &[u8] {
         let ptr = self.get_data_ptr();
         unsafe { &*slice_from_raw_parts(ptr.add(start), n) }
+    }
+
+    fn borrow_mut_slice(&mut self, start: usize, n: usize) -> &mut [u8] {
+        let ptr = self.get_data_mut_ptr();
+        unsafe { &mut *slice_from_raw_parts_mut(ptr.add(start), n) }
     }
 
     fn fill_slice(&self, start: usize, n: usize, slice: &mut Slice) {
