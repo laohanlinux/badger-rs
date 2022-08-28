@@ -37,6 +37,17 @@ impl ValueStruct {
     fn size(&self) -> usize {
         Self::header_size() + self.value.size()
     }
+    pub(crate) fn to_vec(&self) -> Vec<u8> {
+        let mut buffer = vec![0u8; self.size()];
+        buffer[0] = self.meta;
+        buffer[1] = self.user_meta;
+        {
+            let mut cursor = Cursor::new(&mut buffer[2..ValueStruct::header_size()]);
+            cursor.write_u64::<BigEndian>(self.cas_counter);
+        }
+        buffer[ValueStruct::header_size()..].copy_from_slice(self.value.get_data());
+        buffer
+    }
 }
 
 impl From<Slice> for ValueStruct {
