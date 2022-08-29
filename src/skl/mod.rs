@@ -316,8 +316,8 @@ impl SkipList {
             loop {
                 if prev[i as usize].is_null() {
                     assert!(i > 1); // This cannot happen in base level.
-                    // We haven't computed prev, next for this level because height exceeds old list_height.
-                    // For these levels, we expect the lists to be sparse, so we can just search from head.
+                                    // We haven't computed prev, next for this level because height exceeds old list_height.
+                                    // For these levels, we expect the lists to be sparse, so we can just search from head.
                     let mut head = self.head.borrow_mut();
                     let head = &mut *head;
                     let (_pre, _next) = self.find_splice_for_level(key, head, i as isize);
@@ -343,7 +343,8 @@ impl SkipList {
                 // CAS failed. We need to recompute prev and next.
                 // It is unlikely to be helpful to try to use a different level as we redo the search,
                 // because it is unlikely that lots of nodes are inserted between prev[i] and next[i].
-                let (_pre, _next) = self.find_splice_for_level(key, prev[i].as_ref().unwrap(), i as isize);
+                let (_pre, _next) =
+                    self.find_splice_for_level(key, prev[i].as_ref().unwrap(), i as isize);
                 prev[i] = _pre as *const Node;
                 // FIXME: maybe nil pointer
                 next[i] = _next.unwrap() as *const Node;
@@ -356,6 +357,46 @@ impl SkipList {
         }
     }
 
+    pub fn empty(&self) -> bool {
+        unsafe { self.find_last().is_none() }
+    }
+
+    // Returns the last element. If head (empty list), we return nil, All the find functions
+    // will NEVER return the head nodes.
+    unsafe fn find_last(&self) -> Option<&Node> {
+        let mut n = self.head.as_ptr() as *const Node;
+        let mut level = self.get_height() - 1;
+        loop {
+            let next = self.get_next(&*n, level);
+            if next.is_some() {
+                n = unsafe { next.unwrap() as *const Node };
+                continue;
+            }
+            if level == 0 {
+                if ptr::eq(n, self.head.as_ptr()) {
+                    return None;
+                }
+                return Some(&*n);
+            }
+            level -= 1;
+        }
+    }
+
+    // gets the value associated with the key.
+    // FIXME: maybe return Option<&ValueStruct>
+    fn get(&self, key: &[u8]) -> Option<ValueStruct> {
+        let (node, found) = self.find_near(key, false, true);
+        if !found {
+            return None;
+        }
+        let (value_offset, value_size) = node.unwrap().get_value_offset();
+        Some(self.arena.get_val(value_offset, value_size))
+    }
+    // returns the size of the Skiplist in terms of how much memory is used within its internal arena.
+    fn mem_size(&self) -> u32 {
+        self.arena.size()
+    }
+
     fn random_height() -> usize {
         let mut h = 1;
         while h < MAX_HEIGHT && random::<u32>() <= HEIGHT_INCREASE {
@@ -365,21 +406,14 @@ impl SkipList {
     }
 }
 
-// // #[derive(Clone)]
-// // struct OwnedNode {
-// //     buf: Vec<u8>,
-// // }
-// //
-// // impl OwnedNode {}
-// //
+mod tests {
+    const ARENA_SIZE: usize = 1 << 20;
+    fn new_value(v: usize) -> String {
+        format!("{:05}", v)
+    }
 
-// //
-#[test]
-fn value_decode() {
-    // let value_offset = 8713;
-    // let value_size = 184;
-    // let value = Node::encode_value(value_offset, value_size);
-    // let (got_value_offset, got_value_size) = Node::decode_value(value);
-    // assert_eq!(value_offset, got_value_offset);
-    // assert_eq!(value_size, got_value_size);
+    #[test]
+    fn it() {
+        println!("{}", new_value(10));
+    }
 }
