@@ -3,6 +3,7 @@ mod arena;
 pub use arena::Arena;
 
 pub mod small_allocate;
+mod alloc;
 
 pub use small_allocate::{Allocate, Slice, SmallAllocate};
 
