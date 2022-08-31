@@ -1,8 +1,9 @@
-use crate::skl::small_allocate::{Allocate, Slice, SmallAllocate};
 // use crate::skl::{Node, OwnedNode, MAX_HEIGHT, MAX_NODE_SIZE};
-use crate::skl::Node;
+use crate::skl::{Node, SmartAllocate, alloc::Chunk};
 use crate::y::ValueStruct;
+use crate::skl::Allocate;
 use std::default;
+use std::fmt::format;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ptr::{addr_of, slice_from_raw_parts, slice_from_raw_parts_mut};
@@ -12,6 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
+use crate::skl::small_allocate::SmallAllocate;
 
 const OFFSET_SIZE: usize = size_of::<u32>();
 // FIXME: i don't know
@@ -24,26 +26,27 @@ pub struct Arena<T: Allocate> {
     slice: T,
 }
 
-unsafe impl Send for Arena<SmallAllocate> {}
+unsafe impl Send for Arena<SmartAllocate> {}
 
-unsafe impl Sync for Arena<SmallAllocate> {}
+unsafe impl Sync for Arena<SmartAllocate> {}
 
 
-impl Arena<SmallAllocate> {
-    pub(crate) unsafe fn new(n: usize) -> Arena<SmallAllocate> {
-        // let buffer = Box::new(vec![0u8; n]).as_ptr();
-        //
-        // let data = buffer as *const PhantomData<u8>;
-        // let allocate =  SmallAllocate::from_slice(Box::new(vec![0u8; n]));
-        // Arena {
-        //     n: AtomicU32::new(n as u32),
-        //     slice: *allocate,
-        // }
-        todo!()
+impl Arena<SmartAllocate> {
+    pub(crate) fn new(n: usize) -> Arena<SmartAllocate> {
+        let m = std::mem::ManuallyDrop::new(vec![0u8; n]);
+        let alloc = SmartAllocate::new(m);
+        Arena {
+            n: AtomicU32::new(0),
+            slice: alloc,
+        }
     }
 
     pub(crate) fn size(&self) -> u32 {
         self.n.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn cap(&self) -> usize {
+        self.slice.size()
     }
 
     fn reset(&self) {
@@ -57,27 +60,29 @@ impl Arena<SmallAllocate> {
             return None;
         }
         let node_sz = Node::size();
-        let ptr = self.slice.borrow_slice(offset, node_sz).as_ptr();
+        let block = self.slice.alloc(offset, node_sz);
+        assert!((offset + node_sz) <= block.size());
+        let ptr = block.get_data().as_ptr();
         unsafe { Some(&*(*ptr as *const Node)) }
     }
 
-    pub(crate) fn get_mut_node(&mut self, offset: usize) -> Option<&mut Node> {
+    pub(crate) fn get_mut_node(&self, offset: usize) -> Option<&mut Node> {
         if offset == 0 {
             return None;
         }
         let node_sz = Node::size();
-        let mut slice = self.slice.borrow_mut_slice(offset, node_sz);
-        let ptr = slice.as_mut_ptr();
+        let block = self.slice.alloc(offset, node_sz);
+        let ptr = block.get_data_mut().as_mut_ptr();
         unsafe { Some(&mut *(ptr as *mut Node)) }
     }
 
     // Returns start location
     pub(crate) fn put_key(&self, key: &[u8]) -> u32 {
         let start = self.n.fetch_add(key.len() as u32, Ordering::SeqCst) as usize;
-        let end = start + key.len();
-        let mut slice = self.slice.borrow_vec(start, end);
-        let mut data = slice.get_mut_data();
-        data.copy_from_slice(key);
+        assert!((start + key.len()) <= self.slice.size());
+        let block = self.slice.alloc(start, key.len());
+        let block = block.get_data_mut();
+        block.copy_from_slice(key);
         start as u32
     }
 
@@ -92,17 +97,16 @@ impl Arena<SmallAllocate> {
     }
 
     // Returns byte slice at offset.
-    pub(crate) fn get_key(&self, offset: u32, size: u16) -> Slice {
-        let slice = self.slice.borrow_vec(offset as usize, size as usize);
-        slice
+    pub(crate) fn get_key(&self, offset: u32, size: u16) -> impl Chunk {
+        let block = self.slice.alloc(offset as usize, size as usize);
+        block
     }
 
     // Returns byte slice at offset. The given size should be just the value
     // size and should NOT include the meta bytes.
     pub(crate) fn get_val(&self, offset: u32, size: u16) -> ValueStruct {
-        let slice = self.slice.borrow_vec(offset as usize, size as usize);
-        let value = ValueStruct::from(slice);
-        value
+        let block = self.slice.alloc(offset as usize, size as usize);
+        block.get_data().into()
     }
 
     // FIXME:
@@ -120,18 +124,23 @@ impl Arena<SmallAllocate> {
             return 0;
         }
         let node = node as *const u8;
-        unsafe { node.offset_from(self.slice.get_data_ptr()) as usize }
+        let block = self.slice.alloc(0, 0);
+        unsafe { node.offset_from(block.get_data().as_ptr()) as usize }
     }
 }
 
 #[test]
-fn t_arena() {
-    let mut binding = vec![0u8; 1024];
-    let mut _buffer = binding.as_mut();
-    let mut allocate = SmallAllocate::from_slice_mut2(&mut _buffer);
-    let buffer = allocate.borrow_mut_slice(0, 100);
-    buffer[0] = 90;
-    buffer[99] = 120;
-    let v = allocate.borrow_mut_slice(0, 1024);
-    println!("{:?}", v);
+fn t_arena_key() {
+    let arena = Arena::new(10);
+    let mut starts = vec![];
+    for i in (0..arena.cap()).step_by(2) {
+        let key = format!("{:02}", i);
+        starts.push(arena.put_key(key.as_bytes()));
+    }
+
+    for i in starts {
+        let key = arena.get_key(i, 2);
+        let key = key.get_data();
+        assert_eq!(key, format!("{:02}", i).as_bytes());
+    }
 }
