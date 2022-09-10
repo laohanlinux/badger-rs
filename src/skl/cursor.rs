@@ -4,6 +4,7 @@ use crate::BadgerErr;
 use serde_json::Value;
 use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::mem::take;
 use std::ops::Deref;
 
 /// An iterator over `SkipList` object. For new objects, you just
@@ -67,7 +68,7 @@ where
 
     /// Seeks position at the first entry in list.
     /// Final state of iterator is Valid() iff list is not empty.
-    pub fn seek_for_first(&'a self, target: &[u8]) -> Option<&Node> {
+    pub fn seek_for_first(&'a self) -> Option<&Node> {
         let head = self.list.head.borrow();
         let node = self.list.get_next(&head, 0);
         *self.item.borrow_mut() = node;
@@ -81,12 +82,62 @@ where
         *self.item.borrow_mut() = node;
         node
     }
+
+    pub fn close(&self) {
+        todo!()
+    }
 }
 
-// pub struct UniIterator<'a> {
-//     iter: &'a CursorItem<'a>,
-//     reversed: bool,
-// }
+pub struct CursorReverse<'a, ST: Deref<Target = SkipList>> {
+    iter: &'a Cursor<'a, ST>,
+    reversed: RefCell<bool>,
+}
+
+impl<'a, ST> CursorReverse<'a, ST>
+where
+    ST: Deref<Target = SkipList>,
+{
+    pub fn next(&self) -> Option<&Node> {
+        if !*self.reversed.borrow() {
+            self.iter.next()
+        } else {
+            self.iter.prev()
+        }
+    }
+
+    pub fn rewind(&self) -> Option<&Node> {
+        if !*self.reversed.borrow() {
+            self.iter.seek_for_first()
+        } else {
+            self.iter.seek_for_last()
+        }
+    }
+
+    pub fn seek(&self, key: &[u8]) -> Option<&Node> {
+        if !*self.reversed.borrow() {
+            self.iter.seek(key)
+        } else {
+            self.iter.seek_for_prev(key)
+        }
+    }
+
+    pub fn key(&self) -> impl Chunk {
+        self.iter.key()
+    }
+
+    pub fn value(&self) -> ValueStruct {
+        self.iter.value()
+    }
+
+    pub fn valid(&self) -> bool {
+        self.valid()
+    }
+
+    pub fn close(&self) {
+        todo!()
+    }
+}
+
 //
 // impl<'a> UniIterator<'a> {
 //     pub fn next(&self) {
