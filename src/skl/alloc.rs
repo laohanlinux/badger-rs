@@ -1,9 +1,9 @@
+use rand::random;
 use std::marker::PhantomData;
-use std::ptr::{NonNull, slice_from_raw_parts, slice_from_raw_parts_mut};
+use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
-use rand::random;
 
 pub trait Allocate: Send + Sync {
     type Block;
@@ -62,10 +62,7 @@ unsafe impl Sync for BlockBytes {}
 
 impl BlockBytes {
     pub(crate) fn new(start: NonNull<u8>, n: usize) -> Self {
-        BlockBytes {
-            start,
-            n,
-        }
+        BlockBytes { start, n }
     }
 }
 
@@ -100,8 +97,8 @@ fn t_block_bytes() {
 
 #[test]
 fn t_allocate() {
-    use std::thread::spawn;
     use std::sync::Arc;
+    use std::thread::spawn;
 
     let m = std::mem::ManuallyDrop::new(vec![0u8; 1024]);
     let alloc = Arc::new(SmartAllocate::new(m));
@@ -111,7 +108,9 @@ fn t_allocate() {
             let chunk = alloc.alloc(0, 10);
             let idx = random::<usize>() % 10;
             chunk.get_data_mut()[idx] = random::<u8>();
-        }).join().unwrap();
+        })
+        .join()
+        .unwrap();
     }
     sleep(Duration::from_millis(200));
     println!("{:?}", alloc.alloc(0, 10).get_data());
