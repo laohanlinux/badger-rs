@@ -32,6 +32,7 @@ unsafe impl Sync for Arena<SmartAllocate> {}
 
 impl Arena<SmartAllocate> {
     pub(crate) fn new(n: usize) -> Arena<SmartAllocate> {
+        assert!(n > 0);
         let m = std::mem::ManuallyDrop::new(vec![0u8; n]);
         let alloc = SmartAllocate::new(m);
         Arena {
@@ -48,8 +49,15 @@ impl Arena<SmartAllocate> {
         self.slice.size()
     }
 
-    fn reset(&self) {
-        self.n.store(0, Ordering::SeqCst)
+    // TODO: maybe use MaybeUint instead
+    pub(crate) fn reset(&self) {
+        println!("reset memory");
+        self.n.store(0, Ordering::SeqCst);
+        std::mem::drop(&self.slice.ptr);
+    }
+
+    pub(crate) fn valid(&self) -> bool {
+        !self.slice.ptr.is_empty()
     }
 
     // Returns a pointer to the node located at offset. If the offset is
