@@ -6,7 +6,7 @@ use byteorder::{ReadBytesExt, WriteBytesExt};
 use std::io::Cursor;
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::ptr::NonNull;
+use std::ptr::{NonNull, slice_from_raw_parts, slice_from_raw_parts_mut};
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
 
 /// ValueStruct represents the value info that can be associated with a key, but also the internal
@@ -38,37 +38,33 @@ impl ValueStruct {
         Self::header_size() + self.value.len()
     }
 
-    pub(crate) fn to_vec(&self) -> Vec<u8> {
-        let mut buffer = vec![0u8; self.size()];
-        buffer[0] = self.meta;
-        buffer[1] = self.user_meta;
-        {
-            let mut cursor = Cursor::new(&mut buffer[2..ValueStruct::header_size()]);
-            cursor.write_u64::<BigEndian>(self.cas_counter);
+    pub(crate) fn get_data(&self) -> &[u8] {
+        unsafe {
+            let ptr = self as *const ValueStruct as *const u8;
+            &*slice_from_raw_parts(ptr, self.size())
         }
-        buffer[ValueStruct::header_size()..].copy_from_slice(&self.value);
-        buffer
     }
-}
 
-impl From<&[u8]> for ValueStruct {
-    fn from(v: &[u8]) -> Self {
-        let cas_counter = Cursor::new(&v[2..10]).read_u64::<BigEndian>().unwrap();
-        let value_sz = Cursor::new(&v[10..14]).read_u32::<BigEndian>().unwrap();
-        ValueStruct {
-            meta: v[0],
-            user_meta: v[1],
-            cas_counter,
-            value: v[ValueStruct::header_size()..].to_vec(),
+    fn get_data_mut(&self) -> &mut [u8] {
+        unsafe {
+            let ptr = self as *const ValueStruct as *mut u8;
+            &mut *slice_from_raw_parts_mut(ptr, self.size())
         }
     }
 }
 
-impl Into<Vec<u8>> for ValueStruct {
-    fn into(self) -> Vec<u8> {
-        self.to_vec()
+impl From<&[u8]> for &ValueStruct {
+    fn from(buffer: &[u8]) -> Self {
+        unsafe {
+            &*(buffer.as_ptr() as *mut ValueStruct)
+        }
     }
 }
 
 #[test]
-fn it() {}
+fn it() {
+    let ref v = ValueStruct::new(vec![1, 2, 3, 4, 5], 1, 2, 10);
+    let buffer = v.get_data();
+    let got: &ValueStruct = buffer.into();
+    assert_eq!(v, got);
+}
