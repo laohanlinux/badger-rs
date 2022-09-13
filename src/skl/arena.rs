@@ -35,8 +35,10 @@ impl Arena<SmartAllocate> {
         assert!(n > 0);
         let m = std::mem::ManuallyDrop::new(vec![0u8; n]);
         let alloc = SmartAllocate::new(m);
+        // Don't store data at position 0 in order to reverse offset = 0 as a kind
+        // of nil pointer
         Arena {
-            n: AtomicU32::new(0),
+            n: AtomicU32::new(1),
             slice: alloc,
         }
     }
@@ -68,12 +70,11 @@ impl Arena<SmartAllocate> {
         }
         let node_sz = Node::size();
         let block = self.slice.alloc(offset, node_sz);
-        assert!((offset + node_sz) <= block.size());
         let ptr = block.get_data().as_ptr();
         unsafe { Some(&*(*ptr as *const Node)) }
     }
 
-    pub(crate) fn get_mut_node(&self, offset: usize) -> Option<&mut Node> {
+    pub(crate) fn get_node_mut(&self, offset: usize) -> Option<&mut Node> {
         if offset == 0 {
             return None;
         }
@@ -98,8 +99,9 @@ impl Arena<SmartAllocate> {
     // size of val. We could also store this size inside arena but the encoding and
     // decoding will incur some overhead.
     pub(crate) fn put_val(&self, v: &ValueStruct) -> (u32, u16) {
-        let buf: Vec<u8> = v.to_vec();
-        let offset = self.put_key(buf.as_slice());
+        let buf = v.get_data();
+        let offset = self.put_key(buf);
+        println!("valuesz: {}, offset: {}", buf.len(), offset);
         (offset, buf.len() as u16)
     }
 
@@ -111,9 +113,12 @@ impl Arena<SmartAllocate> {
 
     // Returns byte slice at offset. The given size should be just the value
     // size and should NOT include the meta bytes.
-    pub(crate) fn get_val(&self, offset: u32, size: u16) -> ValueStruct {
+    pub(crate) fn get_val(&self, offset: u32, size: u16) -> &ValueStruct {
         let block = self.slice.alloc(offset as usize, size as usize);
-        block.get_data().into()
+        let buffer = block.get_data();
+        unsafe {
+            &*(buffer.as_ptr() as *mut ValueStruct)
+        }
     }
 
     // Return byte slice at offset.
@@ -164,5 +169,24 @@ fn t_arena_value() {
     };
     let (start, n) = arena.put_val(&value);
     let load_value = arena.get_val(start, n);
-    assert_eq!(value, load_value);
+    assert_eq!(&value, load_value);
+}
+
+#[test]
+fn t_arena_node() {
+    let arena = Arena::new(1024);
+    let v = ValueStruct::new(vec![89, 102, 13], 1, 2, 100);
+    let node = Node::new(&arena, b"ABC", &v, 1);
+    println!("{:?}", arena.slice);
+
+    {
+        let got_key = arena.get_key(node.key_offset, node.key_size);
+        assert_eq!(got_key.get_data(), b"ABC");
+    }
+
+    {
+        let (value_offset, value_sz) = node.get_value_offset();
+        let got_value = arena.get_val(value_offset, value_sz);
+        assert_eq!(&v, got_value);
+    }
 }

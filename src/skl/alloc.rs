@@ -1,3 +1,4 @@
+use std::fmt::{Display, Formatter};
 use rand::random;
 use std::marker::PhantomData;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
