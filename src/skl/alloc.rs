@@ -1,7 +1,8 @@
 use std::fmt::{Display, Formatter};
 use rand::random;
 use std::marker::PhantomData;
-use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
+use std::ptr::{ NonNull};
+use std::slice::{from_raw_parts, from_raw_parts_mut};
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
@@ -40,9 +41,22 @@ impl Allocate for SmartAllocate {
 }
 
 impl SmartAllocate {
+
     pub(crate) fn new(m: std::mem::ManuallyDrop<Vec<u8>>) -> Self {
         println!("new a alloc memory, len: {}", m.len());
         SmartAllocate { ptr: m }
+    }
+
+    pub(crate)  fn alloc_buffer(&self, start: usize, n: usize) -> &[u8] {
+        let ptr = self.get_data_ptr();
+        let block_ptr = unsafe { ptr.add(start) as *mut u8 };
+        unsafe {from_raw_parts(block_ptr, n)}
+    }
+
+    pub(crate)  fn alloc_mut_buffer(&self, start: usize, n: usize) -> &mut [u8] {
+        let ptr = self.get_data_ptr();
+        let block_ptr = unsafe { ptr.add(start) as *mut u8 };
+        unsafe {from_raw_parts_mut(block_ptr, n)}
     }
 
     #[inline]
@@ -70,11 +84,11 @@ impl BlockBytes {
 
 impl Chunk for BlockBytes {
     fn get_data(&self) -> &[u8] {
-        unsafe { &*slice_from_raw_parts(self.start.as_ptr(), self.n) }
+        unsafe { &*::std::slice::from_raw_parts(self.start.as_ptr(), self.n) }
     }
 
     fn get_data_mut(&self) -> &mut [u8] {
-        unsafe { &mut *slice_from_raw_parts_mut(self.start.as_ptr(), self.n) }
+        unsafe { &mut *::std::slice::from_raw_parts_mut(self.start.as_ptr(), self.n) }
     }
 
     fn size(&self) -> usize {

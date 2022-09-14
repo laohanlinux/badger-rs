@@ -2,6 +2,7 @@
 #![feature(sync_unsafe_cell)]
 #![feature(associated_type_defaults)]
 #![feature(type_alias_impl_trait)]
+
 #[allow(invalid_type_param_default)]
 use std::mem::align_of;
 

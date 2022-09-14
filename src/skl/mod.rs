@@ -411,7 +411,7 @@ impl SkipList {
 
     // gets the value associated with the key.
     // FIXME: maybe return Option<&ValueStruct>
-    fn get(&self, key: &[u8]) -> Option<ValueStruct> {
+    fn get(&self, key: &[u8]) -> Option<&ValueStruct> {
         let (node, found) = self.find_near(key, false, true);
         if !found {
             return None;
@@ -502,12 +502,12 @@ mod tests {
         // let val3 = new_value(62).as_bytes().to_vec();
         // let val4 = new_value(72).as_bytes().to_vec();
         //
-        st.put(b"key1", ValueStruct::new(val1, 55, 0, 60000));
+        // st.put(b"key1", ValueStruct::new(val1, 55, 0, 60000));
         // // st.put(b"key2", ValueStruct::new(val2, 56, 0, 60001));
         // // st.put(b"key3", ValueStruct::new(val3, 57, 0, 60002));
         // // st.put(b"key4", ValueStruct::new(val4, 58, 0, 60003));
         // //
-        let got = st.get(b"key1").is_some();
+        // let got = st.get(b"key1").is_some();
         // // assert!(got);
     }
 }
