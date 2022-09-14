@@ -34,7 +34,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Return value.
-    pub fn value(&self) -> &ValueStruct {
+    pub fn value(&self) -> ValueStruct {
         let node = self.item.borrow().unwrap();
         let (value_offset, val_size) = node.get_value_offset();
         self.list.arena.get_val(value_offset, val_size)
@@ -126,7 +126,7 @@ impl<'a> CursorReverse<'a> {
         self.iter.key()
     }
 
-    pub fn value(&self) -> &ValueStruct {
+    pub fn value(&self) -> ValueStruct {
         self.iter.value()
     }
 

@@ -87,7 +87,7 @@ impl Arena<SmartAllocate> {
     // Returns start location
     pub(crate) fn put_key(&self, key: &[u8]) -> u32 {
         let start = self.n.fetch_add(key.len() as u32, Ordering::SeqCst) as usize;
-        assert!((start + key.len()) <= self.slice.size());
+        assert!((start + key.len()) <= self.slice.size(), "start:{}, key:{},  {} <= {}", start, key.len(), start + key.len(), self.slice.size());
         let block = self.slice.alloc(start, key.len());
         let block = block.get_data_mut();
         block.copy_from_slice(key);
@@ -99,9 +99,8 @@ impl Arena<SmartAllocate> {
     // size of val. We could also store this size inside arena but the encoding and
     // decoding will incur some overhead.
     pub(crate) fn put_val(&self, v: &ValueStruct) -> (u32, u16) {
-        let buf = v.get_data();
-        let offset = self.put_key(buf);
-        println!("valuesz: {}, offset: {}", buf.len(), offset);
+        let buf: Vec<u8> = v.into();
+        let offset = self.put_key(buf.as_slice());
         (offset, buf.len() as u16)
     }
 
@@ -113,12 +112,10 @@ impl Arena<SmartAllocate> {
 
     // Returns byte slice at offset. The given size should be just the value
     // size and should NOT include the meta bytes.
-    pub(crate) fn get_val(&self, offset: u32, size: u16) -> &ValueStruct {
+    pub(crate) fn get_val(&self, offset: u32, size: u16) -> ValueStruct {
         let block = self.slice.alloc(offset as usize, size as usize);
-        let buffer = block.get_data();
-        unsafe {
-            &*(buffer.as_ptr() as *mut ValueStruct)
-        }
+        let buffer = block.get_data_mut();
+        ValueStruct::from(buffer)
     }
 
     // Return byte slice at offset.
@@ -144,32 +141,34 @@ impl Arena<SmartAllocate> {
 
 #[test]
 fn t_arena_key() {
-    let arena = Arena::new(10);
-    let mut starts = vec![];
-    for i in (0..arena.cap()).step_by(2) {
-        let key = format!("{:02}", i);
-        starts.push(arena.put_key(key.as_bytes()));
+    let arena = Arena::new(11);
+    let input = vec![(1, 2), (3, 2), (5, 2), (7, 2), (9, 2)];
+    for  arg in input.iter() {
+        let key = format!("{:02}", arg.0);
+        let offset = arena.put_key(key.as_bytes());
+        assert_eq!(offset, arg.0);
     }
-
-    for i in starts {
-        let key = arena.get_key(i, 2);
+    for ref arg in input {
+        let key= arena.get_key(arg.0, arg.1);
         let key = key.get_data();
-        assert_eq!(key, format!("{:02}", i).as_bytes());
+        assert_eq!(key, format!("{:02}", arg.0).as_bytes());
     }
 }
 
 #[test]
 fn t_arena_value() {
     let arena = Arena::new(1024);
+    let v = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let value = ValueStruct {
         meta: 1,
         user_meta: 1,
         cas_counter: 2,
-        value: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        value_sz: v.len() as u32,
+        value: v,
     };
     let (start, n) = arena.put_val(&value);
     let load_value = arena.get_val(start, n);
-    assert_eq!(&value, load_value);
+    assert_eq!(value, load_value);
 }
 
 #[test]
@@ -187,6 +186,6 @@ fn t_arena_node() {
     {
         let (value_offset, value_sz) = node.get_value_offset();
         let got_value = arena.get_val(value_offset, value_sz);
-        assert_eq!(&v, got_value);
+        assert_eq!(v, got_value);
     }
 }
