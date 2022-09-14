@@ -4,7 +4,6 @@ use crate::skl::Allocate;
 use crate::skl::{alloc::Chunk, Node, SmartAllocate};
 use crate::y::ValueStruct;
 use std::default;
-use std::default::default;
 use std::fmt::format;
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -95,10 +94,11 @@ impl Arena<SmartAllocate> {
         start as u32
     }
 
-    // Put will *copy* val into arena. To make better use of this, reuse your input
+    // put_val will *copy* val into arena. To make better use of this, reuse your input
     // val buffer. Returns an offset into buf. User is responsible for remembering
     // size of val. We could also store this size inside arena but the encoding and
     // decoding will incur some overhead.
+    // TODO: ZERO COPY
     pub(crate) fn put_val(&self, v: &ValueStruct) -> (u32, u16) {
         let buf = v.as_slice();
         let offset = self.put_key(buf);

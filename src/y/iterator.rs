@@ -19,9 +19,7 @@ pub struct ValueStruct {
     pub(crate) meta: u8,
     pub(crate) user_meta: u8,
     pub(crate) cas_counter: u64,
-    pub(crate) value_sz: u32,
-    // PhantomData not occupy real memory
-    pub(crate) value: PhantomData<u8>,
+    pub(crate) value: Vec<u8>,
 }
 
 impl ValueStruct {
@@ -30,19 +28,19 @@ impl ValueStruct {
     }
 
     fn size(&self) -> usize {
-        Self::header_size() + self.value_sz as usize
+        Self::header_size()
     }
 
     #[inline]
     pub(crate) fn as_slice(&self) -> &[u8] {
         let ptr = self as *const Self as *const u8;
-        unsafe {from_raw_parts(ptr, self.size())}
+        unsafe { from_raw_parts(ptr, self.size()) }
     }
 
     #[inline]
     fn as_mut_slice(&mut self) -> &mut [u8] {
         let ptr = self as *mut Self as *mut u8;
-        unsafe {from_raw_parts_mut(ptr, self.size())}
+        unsafe { from_raw_parts_mut(ptr, self.size()) }
     }
 
     #[inline]
@@ -55,38 +53,22 @@ impl ValueStruct {
         unsafe { &mut *(buffer.as_mut_ptr() as *mut ValueStruct) }
     }
 
-    #[inline]
-    pub(crate) fn value(&self) -> &[u8] {
-        must_align(self);
-        unsafe {
-            let optr = self.as_ptr();
-            let ptr = optr.add(self.size());
-            from_raw_parts(ptr, self.value_sz as usize)
-        }
-    }
+    // #[inline]
+    // pub(crate) fn value(&self) -> &[u8] {
+    //     must_align(self);
+    //     unsafe {
+    //         let optr = self.as_ptr();
+    //         let ptr = optr.add(self.size());
+    //         from_raw_parts(ptr, self.value_sz as usize)
+    //     }
+    // }
 
     #[inline]
     const fn as_ptr(&self) -> *const u8 {
         self as *const Self as *const u8
     }
 }
-//
-// impl<T> From<T> for ValueStruct where T: AsRef<[u8]> {
-//     fn from(buffer: T) -> Self {
-//         let mut v = ValueStruct::default();
-//         v.read_data(buffer.as_ref());
-//         v
-//     }
-// }
-//
-// impl Into<Vec<u8>> for &ValueStruct {
-//     fn into(self) -> Vec<u8> {
-//         let mut buffer = vec![0; self.size()];
-//         self.write_data(&mut buffer);
-//         println!("{:?}", buffer);
-//         buffer
-//     }
-// }
+
 
 #[test]
 fn it() {
