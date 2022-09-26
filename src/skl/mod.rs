@@ -51,20 +51,21 @@ pub struct Node {
 }
 
 impl Node {
-    pub(crate) fn new<'a>(
-        arena: &'a Arena<SmartAllocate>,
-        key: &'a [u8],
-        v: &'a ValueStruct,
+    pub(crate) fn new(
+        arena: &Arena<SmartAllocate>,
+        key: &[u8],
+        v: &ValueStruct,
         height: isize,
-    ) -> &'a mut Node {
+    ) -> Node {
         // The base level is already allocated in the node struct.
         let offset = arena.put_node(height);
-        let mut node = arena.get_node_mut(offset as usize).unwrap();
+        let mut node = Node::default();
         // 1: storage key
         node.key_offset = arena.put_key(key);
         node.key_size = key.len() as u16;
         // 2: storage value
         node.set_value(arena, v);
+
         node.height = height as u16;
         node
     }
@@ -74,8 +75,7 @@ impl Node {
     }
 
     fn get_value_offset(&self) -> (u32, u16) {
-        let value = self.value.load(Ordering::Relaxed);
-        println!("load value {}", value);
+        let value = self.value.load(Ordering::Acquire);
         Self::decode_value(value)
     }
 
@@ -87,11 +87,11 @@ impl Node {
     fn set_value(&self, arena: &Arena<SmartAllocate>, v: &ValueStruct) {
         let (value_offset, value_size) = arena.put_val(v);
         let value = Self::encode_value(value_offset, value_size as u16);
-        self.value.store(value, Ordering::Relaxed);
+        self.value.store(value, Ordering::SeqCst);
     }
 
     fn get_next_offset(&self, h: usize) -> u32 {
-        self.tower[h].load(Ordering::Relaxed)
+        self.tower[h].load(Ordering::Acquire)
     }
 
     // FIXME Haha
@@ -113,7 +113,7 @@ impl Node {
 // Maps keys to value(in memory)
 pub struct SkipList {
     height: AtomicI32,
-    head: NonNull<Node>,
+    head: RefCell<Node>,
     _ref: AtomicI32,
     arena: Arena<SmartAllocate>,
 }
@@ -126,10 +126,10 @@ impl SkipList {
     pub fn new(arena: usize) -> Self {
         let arena = Arena::new(arena);
         let v = ValueStruct::default();
-        let node = Node::new(&arena, b"", &v, MAX_HEIGHT as isize);
+        let mut node = Node::new(&arena, b"", &v, MAX_HEIGHT as isize);
         SkipList {
             height: AtomicI32::from(1),
-            head: NonNull::new(node).unwrap(),
+            head: RefCell::new(node),
             arena,
             _ref: AtomicI32::from(1),
         }
@@ -180,9 +180,8 @@ impl SkipList {
     // node.key >= key (if allowEqual=true).
     // Returns the node found. The bool returned is true if the node has key equal to given key.
     fn find_near(&self, key: &[u8], less: bool, allow_equal: bool) -> (Option<&Node>, bool) {
-        let mut x = self.get_head();
-        let mut level = self.get_height() - 1;
-        println!("start to hight: {}", level);
+        let mut x = unsafe { &*(self.head.as_ptr() as *const Node) };
+        let mut level = self.get_height();
         loop {
             // Assume x.key < key
             let mut next = self.get_next(x, level);
@@ -299,10 +298,33 @@ impl SkipList {
         // increase the height. Let's defer these actions.
         // let mut def_node = &mut Node::default();
         let list_height = self.get_height();
-        let mut prev = [ptr::null::<Node>(); MAX_HEIGHT + 1].to_vec();
-        prev[list_height as usize] = unsafe { self.get_head() as *const Node };
-        let mut next = [ptr::null::<Node>(); MAX_HEIGHT + 1].to_vec();
-        next[list_height as usize] = std::ptr::null();
+        let vec_node = |n| -> Box<Vec<Node>> {
+            let mut v = Vec::with_capacity(n);
+            for i in 0..n {
+                v.push(Node::default());
+            }
+            Box::new(v)
+        };
+        let mut binding = vec_node((HEIGHT_INCREASE + 1) as usize);
+        let mut prev = binding
+            .as_mut_slice()
+            .iter()
+            .map(|node| node as *const Node)
+            .collect::<Vec<_>>();
+        {
+            let mut head = self.get_head();
+            prev[list_height as usize] = &*head;
+        }
+        let mut binding = vec_node((HEIGHT_INCREASE + 1) as usize);
+        let mut next = binding
+            .as_mut_slice()
+            .iter()
+            .map(|node| node as *const Node)
+            .collect::<Vec<_>>();
+        {
+            next[list_height as usize] = std::ptr::null();
+        }
+
         for i in (0..list_height as usize).rev() {
             // Use higher level to speed up for current level.
             let cur = unsafe { &*prev[i + 1] };
@@ -310,10 +332,6 @@ impl SkipList {
             if _next.is_some() && ptr::eq(_pre, _next.unwrap()) {
                 prev[i].as_ref().unwrap().set_value(&self.arena, &v);
                 return;
-            }
-            prev[i] = unsafe { _pre as *const Node };
-            if _next.is_some() {
-                next[i] = unsafe { _next.unwrap() as *const Node };
             }
         }
 
@@ -334,10 +352,8 @@ impl SkipList {
             } else {
                 list_height = self.get_height() as i32;
             }
-            println!("try again");
         }
 
-        println!("===> {}, {:?}", height, prev);
         // We always insert from the base level and up. After you add a node in base level, we cannot
         // create a node in the level above because it would have discovered the node in the base level.
         for i in 0..height {
@@ -361,7 +377,7 @@ impl SkipList {
                 if prev[i].as_ref().unwrap().cas_next_offset(
                     i,
                     next_offset as u32,
-                    self.arena.get_node_offset(unsafe { x as *const Node }) as u32,
+                    self.arena.get_node_offset(&x) as u32,
                 ) {
                     // Managed to insert x between prev[i] and next[i]. Go to the next level.
                     break;
@@ -411,12 +427,11 @@ impl SkipList {
 
     // gets the value associated with the key.
     // FIXME: maybe return Option<&ValueStruct>
-    fn get(&self, key: &[u8]) -> Option<&ValueStruct> {
+    fn get(&self, key: &[u8]) -> Option<ValueStruct> {
         let (node, found) = self.find_near(key, false, true);
         if !found {
             return None;
         }
-        println!("find a key: {:?}", key);
         let (value_offset, value_size) = node.unwrap().get_value_offset();
         Some(self.arena.get_val(value_offset, value_size))
     }
@@ -437,7 +452,7 @@ impl SkipList {
         while h < MAX_HEIGHT && random::<u32>() <= HEIGHT_INCREASE {
             h += 1;
         }
-        h
+        0
     }
 }
 
@@ -498,16 +513,13 @@ mod tests {
     fn t_basic() {
         let st = SkipList::new(ARENA_SIZE);
         let val1 = new_value(42).as_bytes().to_vec();
-        // let val2 = new_value(52).as_bytes().to_vec();
-        // let val3 = new_value(62).as_bytes().to_vec();
-        // let val4 = new_value(72).as_bytes().to_vec();
-        //
+        let val2 = new_value(52).as_bytes().to_vec();
+        let val3 = new_value(62).as_bytes().to_vec();
+        let val4 = new_value(72).as_bytes().to_vec();
+
         st.put(b"key1", ValueStruct::new(val1, 55, 0, 60000));
-        // // st.put(b"key2", ValueStruct::new(val2, 56, 0, 60001));
-        // // st.put(b"key3", ValueStruct::new(val3, 57, 0, 60002));
-        // // st.put(b"key4", ValueStruct::new(val4, 58, 0, 60003));
-        // //
-        let got = st.get(b"key1").is_some();
-        // // assert!(got);
+        st.put(b"key1", ValueStruct::new(val2, 56, 0, 60001));
+        st.put(b"key1", ValueStruct::new(val3, 57, 0, 60002));
+        st.put(b"key1", ValueStruct::new(val4, 58, 0, 60003));
     }
 }
