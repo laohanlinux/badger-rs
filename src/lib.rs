@@ -2,8 +2,7 @@
 #![feature(sync_unsafe_cell)]
 #![feature(associated_type_defaults)]
 #![feature(type_alias_impl_trait)]
-#![feature(strict_provenance_atomic_ptr)]
-
+#[allow(invalid_type_param_default)]
 use std::mem::align_of;
 
 extern crate core;
