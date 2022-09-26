@@ -90,10 +90,10 @@ impl Arena<SmartAllocate> {
     // val buffer. Returns an offset into buf. User is responsible for remembering
     // size of val. We could also store this size inside arena but the encoding and
     // decoding will incur some overhead.
-    pub(crate) fn put_val(&self, v: &ValueStruct) -> (u32, u16) {
+    pub(crate) fn put_val(&self, v: &ValueStruct) -> (u32, usize) {
         let buf: Vec<u8> = v.to_vec();
         let offset = self.put_key(buf.as_slice());
-        (offset, buf.len() as u16)
+        (offset, buf.len())
     }
 
     // Returns byte slice at offset.
@@ -109,7 +109,6 @@ impl Arena<SmartAllocate> {
         block.get_data().into()
     }
 
-    // Return byte slice at offset.
     // FIXME:
     pub(crate) fn put_node(&self, height: isize) -> u32 {
         let offset: usize = Node::size();
@@ -144,18 +143,4 @@ fn t_arena_key() {
         let key = key.get_data();
         assert_eq!(key, format!("{:02}", i).as_bytes());
     }
-}
-
-#[test]
-fn t_arena_value() {
-    let arena = Arena::new(1024);
-    let value = ValueStruct {
-        meta: 1,
-        user_meta: 1,
-        cas_counter: 2,
-        value: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-    };
-    let (start, n) = arena.put_val(&value);
-    let load_value = arena.get_val(start, n);
-    assert_eq!(value, load_value);
 }

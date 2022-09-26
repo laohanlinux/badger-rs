@@ -61,7 +61,7 @@ unsafe impl Send for BlockBytes {}
 unsafe impl Sync for BlockBytes {}
 
 impl BlockBytes {
-    pub(crate) fn new(start: NonNull<u8>, n: usize) -> Self {
+    fn new(start: NonNull<u8>, n: usize) -> Self {
         BlockBytes {
             start,
             n,
