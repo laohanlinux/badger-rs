@@ -104,12 +104,13 @@ impl SmallAllocate {
     }
 
     #[inline]
-    pub(crate) fn from_slice_mut2(buffer: &mut [u8]) -> &'static mut Self {
+    pub(crate) fn from_slice_mut2( buffer: &mut [u8]) -> &'static mut Self {
         unsafe { &mut *(buffer.as_mut_ptr() as *mut SmallAllocate) }
     }
 }
 
 #[test]
 fn t_small_allocate() {
-    let mut allocate = SmallAllocate::from_slice(Box::new(vec![0u8; 1024]));
+    let mut allocate  = SmallAllocate::from_slice(Box::new(vec![0u8; 1024]));
+
 }

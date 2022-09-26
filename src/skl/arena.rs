@@ -1,8 +1,7 @@
 // use crate::skl::{Node, OwnedNode, MAX_HEIGHT, MAX_NODE_SIZE};
-use crate::skl::small_allocate::SmallAllocate;
-use crate::skl::Allocate;
-use crate::skl::{alloc::Chunk, Node, SmartAllocate};
+use crate::skl::{Node, SmartAllocate, alloc::Chunk};
 use crate::y::ValueStruct;
+use crate::skl::Allocate;
 use std::default;
 use std::fmt::format;
 use std::marker::PhantomData;
@@ -14,6 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
+use crate::skl::small_allocate::SmallAllocate;
 
 const OFFSET_SIZE: usize = size_of::<u32>();
 // FIXME: i don't know
@@ -29,6 +29,7 @@ pub struct Arena<T: Allocate> {
 unsafe impl Send for Arena<SmartAllocate> {}
 
 unsafe impl Sync for Arena<SmartAllocate> {}
+
 
 impl Arena<SmartAllocate> {
     pub(crate) fn new(n: usize) -> Arena<SmartAllocate> {

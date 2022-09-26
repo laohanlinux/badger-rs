@@ -68,7 +68,6 @@ impl Node {
         node.height = height as u16;
         node
     }
-
     pub(crate) const fn size() -> usize {
         size_of::<Node>()
     }
