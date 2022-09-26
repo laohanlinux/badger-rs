@@ -15,7 +15,7 @@ use std::cell::{Ref, RefCell};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::Deref;
-use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
+use std::ptr::{NonNull, slice_from_raw_parts, slice_from_raw_parts_mut};
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::{cmp, ptr};
 
@@ -89,17 +89,20 @@ impl Node {
 
     fn get_value_offset(&self) -> (u32, u16) {
         let value = self.value.load(Ordering::Acquire);
+        println!("load value {}", value);
         Self::decode_value(value)
     }
 
     fn key(&self, arena: &Arena<SmartAllocate>) -> impl Chunk {
-        // must_align(self);
+        must_align(self);
         arena.get_key(self.key_offset, self.key_size)
     }
 
     fn set_value(&self, arena: &Arena<SmartAllocate>, v: &ValueStruct) {
         let (value_offset, value_size) = arena.put_val(v);
         let value = Self::encode_value(value_offset, value_size as u16);
+        let value_ = self.value.load(Ordering::Acquire);
+        println!("====> {}", value_);
         self.value.store(value, Ordering::Release);
     }
 
@@ -109,13 +112,15 @@ impl Node {
 
     // FIXME Haha
     fn cas_next_offset(&self, h: usize, old: u32, val: u32) -> bool {
-        let ok = self.tower[h].compare_exchange(old, val, Ordering::Acquire, Ordering::Acquire);
+        let ok = self.tower[h].compare_exchange(old, val, Ordering::Acquire, Ordering::SeqCst);
         return ok.is_ok();
     }
 
     fn get_slice(&self) -> &[u8] {
         let ptr = self.get_ptr();
-        unsafe { &*slice_from_raw_parts(ptr, Node::size()) }
+        unsafe {
+            &*slice_from_raw_parts(ptr, Node::size())
+        }
     }
 
     fn get_mut_slice(&self) -> &mut [u8] {
@@ -136,14 +141,12 @@ impl Node {
         unsafe { &mut *(buffer.as_mut_ptr() as *mut Node) }
     }
 
-    #[inline]
     fn decode_value(value: u64) -> (u32, u16) {
         let value_offset = value as u32;
         let value_size = (value >> 32) as u16;
         (value_offset, value_size)
     }
 
-    #[inline]
     fn encode_value(value_offset: u32, value_size: u16) -> u64 {
         ((value_size as u64) << 32) | (value_offset) as u64
     }
@@ -376,14 +379,15 @@ impl SkipList {
             println!("try again");
         }
 
+        println!("===> {}, {:?}", height, prev);
         // We always insert from the base level and up. After you add a node in base level, we cannot
         // create a node in the level above because it would have discovered the node in the base level.
         for i in 0..height {
             loop {
                 if prev[i as usize].is_null() {
                     assert!(i > 1); // This cannot happen in base level.
-                                    // We haven't computed prev, next for this level because height exceeds old list_height.
-                                    // For these levels, we expect the lists to be sparse, so we can just search from head.
+                    // We haven't computed prev, next for this level because height exceeds old list_height.
+                    // For these levels, we expect the lists to be sparse, so we can just search from head.
                     let mut head = self.get_head_mut();
                     let (_pre, _next) = self.find_splice_for_level(key, head, i as isize);
                     prev[i] = _pre as *const Node;
@@ -532,18 +536,24 @@ mod tests {
         assert!(!cursor.valid());
     }
 
+
+    #[test]
+    fn t_() {
+        let st = SkipList::new(1000 * 1024);
+    }
+
     #[test]
     fn t_basic() {
         let st = SkipList::new(ARENA_SIZE);
         let val1 = new_value(42).as_bytes().to_vec();
-        let val2 = new_value(52).as_bytes().to_vec();
-        let val3 = new_value(62).as_bytes().to_vec();
-        let val4 = new_value(72).as_bytes().to_vec();
+        // let val2 = new_value(52).as_bytes().to_vec();
+        // let val3 = new_value(62).as_bytes().to_vec();
+        // let val4 = new_value(72).as_bytes().to_vec();
         //
         st.put(b"key1", ValueStruct::new(val1, 55, 0, 60000));
-        st.put(b"key2", ValueStruct::new(val2, 56, 0, 60001));
-        st.put(b"key3", ValueStruct::new(val3, 57, 0, 60002));
-        st.put(b"key4", ValueStruct::new(val4, 58, 0, 60003));
+        // // st.put(b"key2", ValueStruct::new(val2, 56, 0, 60001));
+        // // st.put(b"key3", ValueStruct::new(val3, 57, 0, 60002));
+        // // st.put(b"key4", ValueStruct::new(val4, 58, 0, 60003));
         // //
         // let got = st.get(b"key1").is_some();
         // // assert!(got);
