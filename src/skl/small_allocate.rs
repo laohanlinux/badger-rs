@@ -11,7 +11,7 @@ pub trait Allocate {
 #[derive(Debug)]
 #[repr(C)]
 pub struct SmallAllocate {
-    pub(crate) ptr: PhantomData<u8>,
+    ptr: PhantomData<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -94,23 +94,15 @@ impl SmallAllocate {
     }
 
     #[inline]
-    pub(crate) fn from_slice(buffer: Box<Vec<u8>>) -> &'static Self {
+    pub(crate) fn from_slice(buffer: &[u8]) -> &Self {
         unsafe { &*(buffer.as_ptr() as *const SmallAllocate) }
     }
 
     #[inline]
-    pub(crate) fn from_slice_mut(mut buffer: Box<Vec<u8>>) -> &'static mut Self {
-        unsafe { &mut *(buffer.as_mut_ptr() as *mut SmallAllocate) }
-    }
-
-    #[inline]
-    pub(crate) fn from_slice_mut2( buffer: &mut [u8]) -> &'static mut Self {
+    pub(crate) fn from_slice_mut(mut buffer: &mut [u8]) -> &mut Self {
         unsafe { &mut *(buffer.as_mut_ptr() as *mut SmallAllocate) }
     }
 }
 
 #[test]
-fn t_small_allocate() {
-    let mut allocate  = SmallAllocate::from_slice(Box::new(vec![0u8; 1024]));
-
-}
+fn it() {}

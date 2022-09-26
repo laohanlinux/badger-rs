@@ -14,7 +14,6 @@ use std::mem::size_of;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::{cmp, ptr};
-use std::marker::PhantomData;
 
 const MAX_HEIGHT: usize = 20;
 const HEIGHT_INCREASE: u32 = u32::MAX / 3;
@@ -115,18 +114,6 @@ pub struct SkipList {
 }
 
 impl SkipList {
-    pub fn new(arena: usize) -> Self {
-        let arena = unsafe {Arena::new(arena)};
-        let v = ValueStruct::default();
-        let node = Node::new(&arena, b"", &v, MAX_HEIGHT as isize);
-        SkipList {
-            height: AtomicI32::from(1),
-            head: RefCell::new(node),
-            arena,
-            _ref: AtomicI32::from(1),
-        }
-    }
-
     /// Increases the reference count
     pub fn incr_ref(&self) {
         self._ref.fetch_add(1, Ordering::AcqRel);
@@ -329,8 +316,8 @@ impl SkipList {
             loop {
                 if prev[i as usize].is_null() {
                     assert!(i > 1); // This cannot happen in base level.
-                    // We haven't computed prev, next for this level because height exceeds old list_height.
-                    // For these levels, we expect the lists to be sparse, so we can just search from head.
+                                    // We haven't computed prev, next for this level because height exceeds old list_height.
+                                    // For these levels, we expect the lists to be sparse, so we can just search from head.
                     let mut head = self.head.borrow_mut();
                     let head = &mut *head;
                     let (_pre, _next) = self.find_splice_for_level(key, head, i as isize);
@@ -420,27 +407,13 @@ impl SkipList {
 }
 
 mod tests {
-    use crate::skl::SkipList;
-
     const ARENA_SIZE: usize = 1 << 20;
-
     fn new_value(v: usize) -> String {
         format!("{:05}", v)
     }
 
-    fn length(s: &SkipList) -> usize {
-        let mut x = s.get_next(&s.head.borrow(), 0);
-        let mut count = 0;
-        while x.is_some() {
-            count += 1;
-            x = s.get_next(x.unwrap(), 0);
-        }
-        count
-    }
-
     #[test]
-    fn t_empty() {
-        let key = b"aaa";
-        let mut st = SkipList::new(1024);
+    fn it() {
+        println!("{}", new_value(10));
     }
 }

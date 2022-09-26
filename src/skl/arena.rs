@@ -28,20 +28,7 @@ unsafe impl Send for Arena<SmallAllocate> {}
 
 unsafe impl Sync for Arena<SmallAllocate> {}
 
-
 impl Arena<SmallAllocate> {
-    pub(crate) unsafe fn new(n: usize) -> Arena<SmallAllocate> {
-        // let buffer = Box::new(vec![0u8; n]).as_ptr();
-        //
-        // let data = buffer as *const PhantomData<u8>;
-        // let allocate =  SmallAllocate::from_slice(Box::new(vec![0u8; n]));
-        // Arena {
-        //     n: AtomicU32::new(n as u32),
-        //     slice: *allocate,
-        // }
-        todo!()
-    }
-
     pub(crate) fn size(&self) -> u32 {
         self.n.load(Ordering::Acquire)
     }
@@ -122,16 +109,4 @@ impl Arena<SmallAllocate> {
         let node = node as *const u8;
         unsafe { node.offset_from(self.slice.get_data_ptr()) as usize }
     }
-}
-
-#[test]
-fn t_arena() {
-    let mut binding = vec![0u8; 1024];
-    let mut _buffer = binding.as_mut();
-    let mut allocate = SmallAllocate::from_slice_mut2(&mut _buffer);
-    let buffer = allocate.borrow_mut_slice(0, 100);
-    buffer[0] = 90;
-    buffer[99] = 120;
-    let v = allocate.borrow_mut_slice(0, 1024);
-    println!("{:?}", v);
 }
