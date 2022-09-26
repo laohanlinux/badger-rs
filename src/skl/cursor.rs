@@ -9,21 +9,17 @@ use std::ops::Deref;
 
 /// An iterator over `SkipList` object. For new objects, you just
 /// need to initialize Iterator.List.
-pub struct Cursor<'a> {
-    pub(crate) list: &'a SkipList,
+pub struct Cursor<'a, ST: Deref<Target = SkipList>> {
+    pub(crate) list: ST,
     item: RefCell<Option<&'a Node>>,
 }
 
-impl<'a> Cursor<'a> {
-    pub fn new(list: &'a SkipList) -> Cursor<'a> {
-        Cursor {
-            list,
-            item: RefCell::new(None),
-        }
-    }
-
+impl<'a, ST> Cursor<'a, ST>
+where
+    ST: Deref<Target = SkipList>,
+{
     /// Returns true if the iterator is positioned at a valid node.
-    pub fn valid(&self) -> bool {
+    pub fn is_valid(&self) -> bool {
         self.item.borrow().is_some()
     }
 
@@ -42,7 +38,7 @@ impl<'a> Cursor<'a> {
 
     /// Advances to the next position.
     pub fn next(&'a self) -> Option<&Node> {
-        assert!(self.valid());
+        assert!(self.is_valid());
         let next = self.list.get_next(self.item.borrow().unwrap(), 0);
         *self.item.borrow_mut() = next;
         next
@@ -50,7 +46,7 @@ impl<'a> Cursor<'a> {
 
     // Advances to the previous position.
     pub fn prev(&'a self) -> Option<&Node> {
-        assert!(self.valid());
+        assert!(self.is_valid());
         let (node, _) = self.list.find_near(self.key().get_data(), true, false);
         *self.item.borrow_mut() = node;
         node
@@ -73,7 +69,7 @@ impl<'a> Cursor<'a> {
     /// Seeks position at the first entry in list.
     /// Final state of iterator is Valid() iff list is not empty.
     pub fn seek_for_first(&'a self) -> Option<&Node> {
-        let head = self.list.get_head();
+        let head = self.list.head.borrow();
         let node = self.list.get_next(&head, 0);
         *self.item.borrow_mut() = node;
         node
@@ -88,16 +84,19 @@ impl<'a> Cursor<'a> {
     }
 
     pub fn close(&self) {
-        self.list.decr_ref();
+        todo!()
     }
 }
 
-pub struct CursorReverse<'a> {
-    iter: &'a Cursor<'a>,
+pub struct CursorReverse<'a, ST: Deref<Target = SkipList>> {
+    iter: &'a Cursor<'a, ST>,
     reversed: RefCell<bool>,
 }
 
-impl<'a> CursorReverse<'a> {
+impl<'a, ST> CursorReverse<'a, ST>
+where
+    ST: Deref<Target = SkipList>,
+{
     pub fn next(&self) -> Option<&Node> {
         if !*self.reversed.borrow() {
             self.iter.next()

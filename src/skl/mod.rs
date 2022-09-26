@@ -8,13 +8,12 @@ pub use alloc::{Allocate, BlockBytes, Chunk, SmartAllocate};
 pub use arena::Arena;
 pub use cursor::Cursor;
 
+use crate::must_align;
 use crate::y::ValueStruct;
-use crate::{must_align, BadgerErr};
 use rand::prelude::*;
 use std::cell::{Ref, RefCell};
 use std::marker::PhantomData;
 use std::mem::size_of;
-use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::{cmp, ptr};
@@ -118,15 +117,11 @@ pub struct SkipList {
     arena: Arena<SmartAllocate>,
 }
 
-unsafe impl Send for SkipList {}
-
-unsafe impl Sync for SkipList {}
-
 impl SkipList {
     pub fn new(arena: usize) -> Self {
         let arena = Arena::new(arena);
         let v = ValueStruct::default();
-        let mut node = Node::new(&arena, b"", &v, MAX_HEIGHT as isize);
+        let node = Node::new(&arena, b"", &v, MAX_HEIGHT as isize);
         SkipList {
             height: AtomicI32::from(1),
             head: RefCell::new(node),
@@ -142,30 +137,11 @@ impl SkipList {
 
     // Sub crease the reference count
     pub fn decr_ref(&self) {
-        let old = self._ref.fetch_sub(1, Ordering::AcqRel);
-        if old > 1 {
-            return;
-        }
-        self.arena.reset();
-    }
-
-    fn close(&self) -> Result<(), BadgerErr> {
-        self.decr_ref();
-        Ok(())
+        self._ref.fetch_sub(1, Ordering::AcqRel);
     }
 
     fn valid(&self) -> bool {
-        self.arena.valid()
-    }
-
-    fn get_head(&self) -> &Node {
-        let node = unsafe { self.head.as_ptr() as *const Node };
-        unsafe { &*node }
-    }
-
-    fn get_head_mut(&self) -> &mut Node {
-        let node = unsafe { self.head.as_ptr() as *mut Node };
-        unsafe { &mut *node }
+        todo!()
     }
 
     fn get_next(&self, nd: &Node, height: isize) -> Option<&Node> {
@@ -289,11 +265,7 @@ impl SkipList {
 
     /// Inserts the key-value pair.
     /// FIXME: it bad, should be not use unsafe, but ....
-    pub fn put(&self, key: &[u8], v: ValueStruct) {
-        unsafe { self._put(key, v) }
-    }
-
-    unsafe fn _put(&self, key: &[u8], v: ValueStruct) {
+    unsafe fn put(&self, key: &[u8], v: ValueStruct) {
         // Since we allow overwrite, we may not need to create a new node. We might not even need to
         // increase the height. Let's defer these actions.
         // let mut def_node = &mut Node::default();
@@ -312,9 +284,10 @@ impl SkipList {
             .map(|node| node as *const Node)
             .collect::<Vec<_>>();
         {
-            let mut head = self.get_head();
+            let mut head = self.head.borrow();
             prev[list_height as usize] = &*head;
         }
+
         let mut binding = vec_node((HEIGHT_INCREASE + 1) as usize);
         let mut next = binding
             .as_mut_slice()
@@ -327,7 +300,7 @@ impl SkipList {
 
         for i in (0..list_height as usize).rev() {
             // Use higher level to speed up for current level.
-            let cur = unsafe { &*prev[i + 1] };
+            let cur = &*prev[i + 1];
             let (_pre, _next) = self.find_splice_for_level(key, cur, i as isize);
             if _next.is_some() && ptr::eq(_pre, _next.unwrap()) {
                 prev[i].as_ref().unwrap().set_value(&self.arena, &v);
@@ -362,7 +335,8 @@ impl SkipList {
                     assert!(i > 1); // This cannot happen in base level.
                                     // We haven't computed prev, next for this level because height exceeds old list_height.
                                     // For these levels, we expect the lists to be sparse, so we can just search from head.
-                    let mut head = self.get_head_mut();
+                    let mut head = self.head.borrow_mut();
+                    let head = &mut *head;
                     let (_pre, _next) = self.find_splice_for_level(key, head, i as isize);
                     prev[i] = _pre as *const Node;
                     next[i] = _next.unwrap() as *const Node;
@@ -437,10 +411,13 @@ impl SkipList {
     }
 
     /// Returns a SkipList cursor. You have to close() the cursor.
-    pub fn new_cursor(&self) -> Cursor<'_> {
-        self.incr_ref();
-        Cursor::new(self)
-    }
+    // pub fn new_cursor(&self) -> Cursor<'_, Self> {
+    //     self.incr_ref();
+    //     Cursor {
+    //         list: self,
+    //         item: RefCell::new(None),
+    //     }
+    // }
 
     /// returns the size of the Skiplist in terms of how much memory is used within its internal arena.
     pub fn mem_size(&self) -> u32 {
@@ -458,7 +435,6 @@ impl SkipList {
 
 mod tests {
     use crate::skl::SkipList;
-    use crate::y::ValueStruct;
 
     const ARENA_SIZE: usize = 1 << 20;
 
@@ -467,7 +443,7 @@ mod tests {
     }
 
     fn length(s: &SkipList) -> usize {
-        let mut x = s.get_next(s.get_head(), 0);
+        let mut x = s.get_next(&s.head.borrow(), 0);
         let mut count = 0;
         while x.is_some() {
             count += 1;
@@ -490,36 +466,5 @@ mod tests {
                 assert_eq!(node.1, false);
             }
         }
-
-        let cursor = st.new_cursor();
-        assert!(!cursor.valid());
-
-        cursor.seek_for_first();
-        assert!(!cursor.valid());
-
-        cursor.seek_for_last();
-        assert!(!cursor.valid());
-
-        assert!(cursor.seek(key).is_none());
-
-        st.decr_ref();
-        assert!(st.valid());
-
-        cursor.close();
-        assert!(!cursor.valid());
-    }
-
-    #[test]
-    fn t_basic() {
-        let st = SkipList::new(ARENA_SIZE);
-        let val1 = new_value(42).as_bytes().to_vec();
-        let val2 = new_value(52).as_bytes().to_vec();
-        let val3 = new_value(62).as_bytes().to_vec();
-        let val4 = new_value(72).as_bytes().to_vec();
-
-        st.put(b"key1", ValueStruct::new(val1, 55, 0, 60000));
-        st.put(b"key1", ValueStruct::new(val2, 56, 0, 60001));
-        st.put(b"key1", ValueStruct::new(val3, 57, 0, 60002));
-        st.put(b"key1", ValueStruct::new(val4, 58, 0, 60003));
     }
 }

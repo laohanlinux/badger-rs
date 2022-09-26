@@ -22,14 +22,6 @@ pub struct ValueStruct {
 }
 
 impl ValueStruct {
-    pub(crate) fn new(value: Vec<u8>, meta: u8, user_meta: u8, cas_counter: u64) -> ValueStruct {
-        ValueStruct {
-            meta,
-            user_meta,
-            cas_counter,
-            value,
-        }
-    }
     const fn header_size() -> usize {
         10
     }
