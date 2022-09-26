@@ -1,13 +1,14 @@
-use std::fmt::{Display, Formatter};
+use crate::skl::Node;
 use rand::random;
+use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
-use std::mem::{ManuallyDrop, size_of};
+use std::mem::{size_of, ManuallyDrop};
+use std::ptr;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
-use crate::skl::Node;
 
 pub trait Allocate: Send + Sync {
     type Block;
@@ -114,8 +115,8 @@ fn t_allocate() {
             let idx = random::<usize>() % 10;
             chunk.get_data_mut()[idx] = random::<u8>();
         })
-            .join()
-            .unwrap();
+        .join()
+        .unwrap();
     }
     sleep(Duration::from_millis(200));
     println!("{:?}", alloc.alloc(0, 10).get_data());
@@ -128,67 +129,41 @@ fn t_allocate_node() {
         let block = alloc.alloc(0, 1);
         block.get_data_mut()[0] = 10;
     }
-    println!("{:?}", alloc);
-    let block = alloc.alloc(Node::size(), Node::size());
+    let block = alloc.alloc(1, Node::size());
     let node = Node::from_slice_mut(block.get_data_mut());
     node.value.fetch_add(1, Ordering::Relaxed);
-    //
-    // let node = Node::from_slice_mut(block.get_data_mut());
-    // assert_eq!(node.value.load(Ordering::Relaxed), 1);
 }
 
 #[test]
-fn t_allocate_struct() {
-    struct Node {
-        key_sz: usize,
-        key_offset: usize,
-        value: AtomicPtr<u64>,
+fn t_allocate_multiple_structs() {
+    let alloc = SmartAllocate::new(ManuallyDrop::new(vec![0u8; 1 << 10]));
+    {
+        let block = alloc.alloc(0, 10);
+        let key = block.get_data_mut();
+        key.fill(1);
     }
 
-    impl Node {
-        fn size() -> usize {
-            size_of::<Node>()
-        }
-
-        fn get_slice(&self) -> &[u8] {
-            let ptr = self.get_ptr();
-            unsafe {
-                &*slice_from_raw_parts(ptr, Node::size())
-            }
-        }
-
-        fn get_mut_slice(&self) -> &mut [u8] {
-            let ptr = self.get_mut_ptr();
-            unsafe { &mut *slice_from_raw_parts_mut(ptr, Node::size()) }
-        }
-
-        fn get_ptr(&self) -> *const u8 {
-            self as *const Node as *const u8
-        }
-
-        fn get_mut_ptr(&self) -> *mut u8 {
-            self as *const Node as *mut u8
-        }
-
-        #[inline]
-        pub(crate) fn from_slice_mut(mut buffer: &mut [u8]) -> &mut Self {
-            unsafe { &mut *(buffer.as_mut_ptr() as *mut Node) }
-        }
+    let mut ptr1;
+    {
+        let block = alloc.alloc(10, Node::size());
+        let node = Node::from_slice_mut(block.get_data_mut());
+        node.value.fetch_add(1, Ordering::Relaxed);
+        ptr1 = node as *const Node;
     }
 
-    let alloc = SmartAllocate::new(ManuallyDrop::new(vec![0; 1 << 20]));
-    for i in 0..10 {
-        let block = alloc.alloc(i * Node::size() + 1, Node::size());
-        let mut node = Node::from_slice_mut(block.get_data_mut());
-        node.key_sz = i;
-        node.key_offset = i * 2;
-        node.value.fetch_byte_add(1, Ordering::SeqCst);
+    {
+        let block = alloc.alloc(0, 10);
+        let key = block.get_data_mut();
+        assert_eq!(key, vec![1u8; 10].as_slice());
     }
-    for i in 0..10 {
-        let block = alloc.alloc(i * Node::size() + 1, Node::size());
-        let mut node = Node::from_slice_mut(block.get_data_mut());
-        assert_eq!(node.key_sz, i);
-        assert_eq!(node.key_offset, i * 2);
-        // assert_eq!(node.value.load(Ordering::Relaxed), 1);
+
+    let mut ptr2;
+    {
+        let block = alloc.alloc(10, Node::size());
+        let node = Node::from_slice_mut(block.get_data_mut());
+        assert_eq!(1, node.value.load(Ordering::Relaxed));
+        ptr2 = node as *const Node;
     }
+
+    assert!(ptr::eq(ptr1, ptr2));
 }
