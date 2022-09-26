@@ -5,13 +5,12 @@ use std::thread::sleep;
 use std::time::Duration;
 use rand::random;
 
-pub trait Allocate: Send + Sync {
+trait Allocate: Send + Sync {
     type Block;
     fn alloc(&self, start: usize, n: usize) -> Self::Block;
-    fn size(&self) -> usize;
 }
 
-pub trait Chunk: Send + Sync {
+trait Chunk: Send + Sync {
     fn get_data(&self) -> &[u8];
     fn get_data_mut(&self) -> &mut [u8];
     fn size(&self) -> usize;
@@ -32,14 +31,10 @@ impl Allocate for SmartAllocate {
         let block = BlockBytes::new(NonNull::new(block_ptr).unwrap(), n);
         block
     }
-
-    fn size(&self) -> usize {
-        self.ptr.len()
-    }
 }
 
 impl SmartAllocate {
-    pub(crate) fn new(m: std::mem::ManuallyDrop<Vec<u8>>) -> Self {
+    fn new(m: std::mem::ManuallyDrop<Vec<u8>>) -> Self {
         SmartAllocate { ptr: m }
     }
 
@@ -50,7 +45,6 @@ impl SmartAllocate {
 }
 
 #[derive(Clone, Debug)]
-#[repr(C)]
 pub struct BlockBytes {
     start: NonNull<u8>,
     n: usize,
