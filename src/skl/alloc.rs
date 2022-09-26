@@ -41,7 +41,6 @@ impl Allocate for SmartAllocate {
 
 impl SmartAllocate {
     pub(crate) fn new(m: std::mem::ManuallyDrop<Vec<u8>>) -> Self {
-        println!("new a alloc memory, len: {}", m.len());
         SmartAllocate { ptr: m }
     }
 
