@@ -1,95 +1,103 @@
-use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE};
-use byteorder::{BigEndian, LittleEndian};
+use crate::skl::BlockBytes;
+use crate::skl::Chunk;
+use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE, VALUE_SIZE};
+use byteorder::BigEndian;
 use byteorder::{ReadBytesExt, WriteBytesExt};
-use serde_json::{to_value, Value};
-use std::io::Cursor;
+use std::io::{Cursor, Read, Write};
+use std::marker::PhantomData;
+use std::mem::size_of;
+use std::ptr::{NonNull, slice_from_raw_parts, slice_from_raw_parts_mut};
+use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
 
 /// ValueStruct represents the value info that can be associated with a key, but also the internal
 /// Meta field.
-/// |meta|user_meta|cas_counter|value|
-#[derive(Debug, Clone, Default)]
-pub struct ValueStruct<'a> {
-    value: &'a [u8],
-    meta: u8,
-    user_meta: u8,
-    cas_counter: u64,
+/// |meta|user_meta|cas_counter|value_size|value|
+#[derive(Debug, Default, PartialEq)]
+#[repr(C)]
+pub struct ValueStruct {
+    pub(crate) meta: u8,
+    pub(crate) user_meta: u8,
+    pub(crate) cas_counter: u64,
+    pub(crate) value_sz: u32,
+    pub(crate) value: Vec<u8>,
 }
 
-impl<'a> ValueStruct<'a> {
-    const VALUE_META_OFFSET: usize = 0;
-    const VALUE_USER_META_OFFSET: usize = Self::VALUE_META_OFFSET + META_SIZE;
-    const VALUE_CAS_OFFSET: usize = Self::VALUE_USER_META_OFFSET + USER_META_SIZE;
-    const VALUE_VALUE_OFFSET: usize = Self::VALUE_CAS_OFFSET + CAS_SIZE;
-
-    pub fn new(value: &'a [u8], meta: u8, user_meta: u8, cas_counter: u64) -> Self {
-        Self {
-            value,
+impl ValueStruct {
+    pub(crate) fn new(value: Vec<u8>, meta: u8, user_meta: u8, cas_counter: u64) -> ValueStruct {
+        ValueStruct {
             meta,
             user_meta,
             cas_counter,
+            value_sz: value.len() as u32,
+            value,
         }
     }
-
-    /// `encode_size` is the size of the ValueStruct when encoded
-    pub fn encode_size(&self) -> usize {
-        self.value.len() + Self::VALUE_VALUE_OFFSET
+    const fn header_size() -> usize {
+        14
     }
 
-    pub fn encode(&mut self, buffer: &mut [u8]) {
-        buffer[Self::VALUE_META_OFFSET] = self.meta;
-        buffer[Self::VALUE_USER_META_OFFSET] = self.user_meta;
-        // FIXME:
-        let mut count_v = Vec::from_iter(
-            buffer[Self::VALUE_CAS_OFFSET..(Self::VALUE_CAS_OFFSET + CAS_SIZE)].iter(),
-        )
-        .iter()
-        .map(|u| **u)
-        .collect::<Vec<_>>();
-        self.cas_counter = Cursor::new(&mut count_v).read_u64::<BigEndian>().unwrap();
-        buffer[Self::VALUE_VALUE_OFFSET..(Self::VALUE_VALUE_OFFSET + self.value.len())]
-            .copy_from_slice(self.value);
+    fn size(&self) -> usize {
+        Self::header_size() + self.value.len()
     }
-    // value_struct_serialized_size converts a value size to the full serialized size of value + metadata.
-    pub fn value_struct_serialized_size(size: u16) -> usize {
-        size as usize + Self::VALUE_VALUE_OFFSET
+
+    pub(crate) fn write_data(&self, mut buffer: &mut [u8]) {
+        use std::io::Write;
+        let mut cursor = Cursor::new(buffer);
+        cursor.write_u8(self.meta).unwrap();
+        cursor.write_u8(self.user_meta).unwrap();
+        cursor.write_u64::<BigEndian>(self.cas_counter).unwrap();
+        cursor.write_u32::<BigEndian>(self.value_sz).unwrap();
+        cursor.write_all(&self.value).unwrap();
     }
+
+    pub(crate) fn read_data(&mut self, buffer: &[u8]) {
+        use std::io::Read;
+        println!("{:?}", buffer);
+        let mut cursor = Cursor::new(buffer);
+        self.meta = cursor.read_u8().unwrap();
+        self.user_meta = cursor.read_u8().unwrap();
+        self.cas_counter = cursor.read_u64::<BigEndian>().unwrap();
+        self.value_sz = cursor.read_u32::<BigEndian>().unwrap();
+        self.value = vec![0; self.value_sz as usize];
+        cursor.read_exact(&mut self.value).unwrap();
+    }
+
+    // pub(crate) fn get_data(&self) -> &[u8] {
+    //     unsafe {
+    //         let ptr = self as *const ValueStruct as *const u8;
+    //         &*slice_from_raw_parts(ptr, self.size())
+    //     }
+    // }
+    //
+    // fn get_data_mut(&self) -> &mut [u8] {
+    //     unsafe {
+    //         let ptr = self as *const ValueStruct as *mut u8;
+    //         &mut *slice_from_raw_parts_mut(ptr, self.size())
+    //     }
+    // }
 }
 
-/// decode_entries_slice uses the length of the slice to infer the length of the Value field.
-impl<'a> From<&'a [u8]> for ValueStruct<'a> {
-    fn from(mut buffer: &'a [u8]) -> Self {
+impl <T> From<T> for ValueStruct where T: AsRef<[u8]> {
+    fn from(buffer: T) -> Self {
         let mut v = ValueStruct::default();
-        v.meta = *buffer.get(Self::VALUE_VALUE_OFFSET).unwrap();
-        v.user_meta = *buffer.get(Self::VALUE_META_OFFSET).unwrap();
-        // FIXME:
-        let mut count_v = Vec::from_iter(
-            buffer[Self::VALUE_CAS_OFFSET..(Self::VALUE_CAS_OFFSET + CAS_SIZE)].iter(),
-        )
-        .iter()
-        .map(|u| **u)
-        .collect::<Vec<_>>();
-        v.cas_counter = Cursor::new(&mut count_v).read_u64::<BigEndian>().unwrap();
-        v.value = &buffer[Self::VALUE_VALUE_OFFSET..];
+        v.read_data(buffer.as_ref());
         v
     }
 }
 
-impl<'a> From<ValueStruct<'a>> for Vec<u8> {
-    fn from(v: ValueStruct) -> Self {
-        let mut buffer = vec![0u8; v.encode_size()];
-        buffer[ValueStruct::VALUE_META_OFFSET] = v.meta;
-        buffer[ValueStruct::VALUE_USER_META_OFFSET] = v.user_meta;
-        Cursor::new(
-            &mut buffer[ValueStruct::VALUE_CAS_OFFSET..(ValueStruct::VALUE_CAS_OFFSET + CAS_SIZE)],
-        )
-        .write_u64::<BigEndian>(v.cas_counter)
-        .unwrap();
+impl Into<Vec<u8>> for &ValueStruct {
+    fn into(self) -> Vec<u8> {
+        let mut buffer = vec![0; self.size()];
+        self.write_data(&mut buffer);
+        println!("{:?}", buffer);
         buffer
     }
 }
 
 #[test]
-fn test_value_struct() {
-    // let mut v = ValueStruct::new(vec![0u8; 1023], 10, 18, 10);
-    // let vv: Vec<u8> = v.into();
+fn it() {
+    let ref v = ValueStruct::new(vec![1, 2, 3, 4, 5], 1, 2, 10);
+    let buffer: Vec<u8> = v.into();
+    let got: ValueStruct = buffer.as_slice().into();
+    assert_eq!(*v, got);
 }

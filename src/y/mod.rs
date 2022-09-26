@@ -8,6 +8,7 @@ use thiserror::Error;
 pub const META_SIZE: usize = 1;
 pub const USER_META_SIZE: usize = 1;
 pub const CAS_SIZE: usize = 8;
+pub const VALUE_SIZE: usize = 4;
 
 // Indicates an end of file when trying to read from a memory mapped file
 // and encountering the end of slice.
