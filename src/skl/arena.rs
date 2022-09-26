@@ -29,7 +29,7 @@ unsafe impl Send for Arena<SmallAllocate> {}
 unsafe impl Sync for Arena<SmallAllocate> {}
 
 impl Arena<SmallAllocate> {
-    pub(crate) fn size(&self) -> u32 {
+    fn size(&self) -> u32 {
         self.n.load(Ordering::Acquire)
     }
 
