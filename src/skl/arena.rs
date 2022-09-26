@@ -72,13 +72,12 @@ impl<'a> Arena<'a> {
     // val buffer. Returns an offset into buf. User is responsible for remembering
     // size of val. We could also store this size inside arena but the encoding and
     // decoding will incur some overhead.
-    pub(crate) fn put_value(&mut self, value: &ValueStruct) -> u32 {
-        let value_slice = value.as_slice();
-        let encode_size = value_slice.len();
+    pub(crate) fn put_value(&mut self, mut value: ValueStruct) -> u32 {
+        let encode_size = value.encode_size();
         let start = self.n.fetch_add(encode_size as u32, Ordering::SeqCst) as usize;
         let end = start + encode_size;
         let mut slice = self.slice.get_data_slice_mut();
-        slice[start..end].copy_from_slice(value_slice);
+        value.encode(&mut slice[start..end]);
         start as u32
     }
 
@@ -91,19 +90,22 @@ impl<'a> Arena<'a> {
         start as u32
     }
 
-    // Returns byte slice at offset.
+    // returns byte slice at offset.
     pub(crate) fn get_key(&self, offset: u32, size: u16) -> &[u8] {
         let slice = self.slice.get_data_slice();
         let offset = offset as usize;
         return &slice[offset..(offset + size as usize)];
     }
 
-    // Returns byte slice at offset. The given size should be just the value
+    // getVal returns byte slice at offset. The given size should be just the value
     // size and should NOT include the meta bytes.
-    fn get_val(&'a mut self, offset: u32, size: u16) -> &ValueStruct {
+    fn get_val(&mut self, offset: u32, size: u16) -> ValueStruct {
         let offset = offset as usize;
-        let mut slice = self.slice.get_data_slice();
-        ValueStruct::from_slice(&slice[offset..(offset + size as usize)])
+        let mut slice = self.slice.get_data_slice_mut();
+        let mut yal = ValueStruct::from(
+            &slice[offset..(offset + ValueStruct::value_struct_serialized_size(size))],
+        );
+        yal
     }
 }
 
@@ -161,8 +163,10 @@ impl ArenaSlice {
 }
 
 #[test]
+fn test_value() {}
+
+#[test]
 fn test_arena() {
-    use std::io::Write;
     let mut buffer = vec![0u8; 1024];
     let mut arena = Arena::new(&mut buffer);
     let key = &vec![12u8; 10];
@@ -170,29 +174,10 @@ fn test_arena() {
     let got_key = arena.get_key(start, 10);
     assert_eq!(got_key, key);
 
-    let mut buffer = vec![12u8; 1024];
-    let mut value = ValueStruct::from_slice_mut(&mut buffer);
-    value.meta = 20;
-    value.user_meta = 3;
-    value.cas_counter = 290;
-    value.value_size = 100;
-    let start = arena.put_value(&value);
-
-    let got_value = arena.get_val(start, value.byte_size() as u16);
-    assert_eq!(got_value.meta, value.meta);
-    assert_eq!(got_value.user_meta, value.user_meta);
-    assert_eq!(got_value.cas_counter, value.cas_counter);
-    assert_eq!(got_value.value_size, value.value_size);
-
-    let c = got_value.clone();
-    writeln!(std::io::stdout(), "---------------->>> {:?}", c.get_value())
-        .expect("TODO: panic message");
-    writeln!(std::io::stdout(), "---------------->>> {:?}", c.get_value())
-        .expect("TODO: panic message");
-    spawn(move || {
-        writeln!(std::io::stdout(), "---------------->>> {:?}", c.get_value())
-            .expect("TODO: panic message");
-    })
-    .join()
-    .unwrap();
+    let v = b"hello";
+    let value = ValueStruct::new(v, 10, 10, 10);
+    let end = value.encode_size() as u16;
+    let start = arena.put_value(value);
+    let got_value = arena.get_val(start, end);
+    println!("value: {:?}", got_value);
 }
