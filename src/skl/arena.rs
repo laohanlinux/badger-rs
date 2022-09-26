@@ -25,7 +25,6 @@ pub struct Arena<T: Allocate> {
 }
 
 unsafe impl Send for Arena<SmallAllocate> {}
-
 unsafe impl Sync for Arena<SmallAllocate> {}
 
 impl Arena<SmallAllocate> {
@@ -48,16 +47,6 @@ impl Arena<SmallAllocate> {
         unsafe { Some(&*(*ptr as *const Node)) }
     }
 
-    pub(crate) fn get_mut_node(&mut self, offset: usize) -> Option<&mut Node> {
-        if offset == 0 {
-            return None;
-        }
-        let node_sz = Node::size();
-        let mut slice = self.slice.borrow_mut_slice(offset, node_sz);
-        let ptr = slice.as_mut_ptr();
-        unsafe { Some(&mut *(ptr as *mut Node)) }
-    }
-
     // Returns start location
     pub(crate) fn put_key(&self, key: &[u8]) -> u32 {
         let start = self.n.fetch_add(key.len() as u32, Ordering::SeqCst) as usize;
@@ -72,8 +61,8 @@ impl Arena<SmallAllocate> {
     // val buffer. Returns an offset into buf. User is responsible for remembering
     // size of val. We could also store this size inside arena but the encoding and
     // decoding will incur some overhead.
-    pub(crate) fn put_val(&self, v: &ValueStruct) -> (u32, usize) {
-        let buf: Vec<u8> = v.to_vec();
+    pub(crate) fn put_val(&self, v: ValueStruct) -> (u32, usize) {
+        let buf: Vec<u8> = v.into();
         let offset = self.put_key(buf.as_slice());
         (offset, buf.len())
     }
@@ -90,14 +79,6 @@ impl Arena<SmallAllocate> {
         let slice = self.slice.borrow_vec(offset as usize, size as usize);
         let value = ValueStruct::from(slice);
         value
-    }
-
-    // FIXME:
-    pub(crate) fn put_node(&self, height: isize) -> u32 {
-        let offset: usize = Node::size();
-        // *Note*: the memory set 0 value.
-        let key = vec![0u8; offset];
-        self.put_key(&key)
     }
 
     // Returns the offset of `node` in the arena. If the `node` pointer is
