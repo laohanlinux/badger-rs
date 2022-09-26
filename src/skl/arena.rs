@@ -16,20 +16,18 @@ const PTR_ALIGN: usize = 7;
 
 /// `Arena` should be lock-free.
 #[derive(Debug)]
-pub struct Arena<'a> {
+pub struct Arena {
     n: AtomicU32,
-    slice: &'a mut ArenaSlice,
+    ptr: PhantomData<u8>,
 }
 
-impl<'a> Arena<'a> {
-    fn new(buffer: &mut [u8]) -> Arena {
-        let len = buffer.len();
-        let mut arena = Arena {
-            n: AtomicU32::new(1),
-            slice: ArenaSlice::from_slice_mut(buffer),
-        };
-        arena.slice.len = (len - size_of::<u32>()) as u32;
-        arena
+impl Arena {
+    fn new(n: u32) -> Arena {
+        let buf = vec![0u8; n as usize];
+        Arena {
+            n: AtomicU32::new(n),
+            ptr: Default::default(),
+        }
     }
 
     fn size(&self) -> u32 {
@@ -54,12 +52,11 @@ impl<'a> Arena<'a> {
     // Returns a pointer to the node located at offset. If the offset is
     // zero, then the null node pointer is returned.
     fn get_node(&self, offset: usize) -> Option<&Node> {
-        if offset == 0 {
-            return None;
-        }
-        let node_sz = Node::size();
-        let ptr = &self.slice.get_data_slice()[offset..offset + node_sz].as_ptr();
-        unsafe { Some(&*(*ptr as *const Node)) }
+        // if offset == 0 {
+        //     return None;
+        // }
+        // let ptr = self.get_data_ptr();
+        None
     }
 
     // getNodeOffset returns the offset of node in the arena. If the node pointer is
@@ -74,25 +71,25 @@ impl<'a> Arena<'a> {
     // decoding will incur some overhead.
     pub(crate) fn put_value(&mut self, mut value: ValueStruct) -> u32 {
         let encode_size = value.encode_size();
-        let start = self.n.fetch_add(encode_size as u32, Ordering::SeqCst) as usize;
-        let end = start + encode_size;
-        let mut slice = self.slice.get_data_slice_mut();
-        value.encode(&mut slice[start..end]);
-        start as u32
+        let n = self.n.fetch_add(encode_size as u32, Ordering::SeqCst);
+        let m = n - encode_size as u32;
+        let mut slice = self.get_data_slice_mut();
+        value.encode(&mut slice[m as usize..]);
+        m
     }
 
     // Returns start location
     fn put_key(&mut self, key: &[u8]) -> u32 {
-        let start = self.n.fetch_add(key.len() as u32, Ordering::SeqCst) as usize;
-        let end = start + key.len();
-        let mut slice = self.slice.get_data_slice_mut();
-        slice[start..end].copy_from_slice(key);
-        start as u32
+        let n = self.n.fetch_add(key.len() as u32, Ordering::SeqCst);
+        let m = n as usize - key.len();
+        let mut slice = self.get_data_slice_mut();
+        slice[m..n as usize].copy_from_slice(key);
+        m as u32
     }
 
     // returns byte slice at offset.
     pub(crate) fn get_key(&self, offset: u32, size: u16) -> &[u8] {
-        let slice = self.slice.get_data_slice();
+        let slice = self.get_data_slice();
         let offset = offset as usize;
         return &slice[offset..(offset + size as usize)];
     }
@@ -101,7 +98,7 @@ impl<'a> Arena<'a> {
     // size and should NOT include the meta bytes.
     fn get_val(&mut self, offset: u32, size: u16) -> ValueStruct {
         let offset = offset as usize;
-        let mut slice = self.slice.get_data_slice_mut();
+        let mut slice = self.get_data_slice_mut();
         let mut yal = ValueStruct::from(
             &slice[offset..(offset + ValueStruct::value_struct_serialized_size(size))],
         );
@@ -109,14 +106,7 @@ impl<'a> Arena<'a> {
     }
 }
 
-#[derive(Debug)]
-#[repr(C)]
-pub(crate) struct ArenaSlice {
-    len: u32,
-    ptr: PhantomData<u8>,
-}
-
-impl ArenaSlice {
+impl Arena {
     #[inline]
     pub(crate) fn get_data_mut_ptr(&mut self) -> *mut u8 {
         &mut self.ptr as *mut PhantomData<u8> as *mut u8
@@ -147,37 +137,20 @@ impl ArenaSlice {
     }
 
     #[inline]
-    pub(crate) fn from_slice(buffer: &[u8]) -> &Self {
-        unsafe { &*(buffer.as_ptr() as *const ArenaSlice) }
+    pub(crate) fn from_slice(buffer: &[u8]) -> &Arena {
+        unsafe { &*(buffer.as_ptr() as *const Arena) }
     }
 
     #[inline]
     pub(crate) fn from_slice_mut(mut buffer: &mut [u8]) -> &mut Self {
-        unsafe { &mut *(buffer.as_mut_ptr() as *mut ArenaSlice) }
+        unsafe { &mut *(buffer.as_mut_ptr() as *mut Arena) }
     }
 
     #[inline]
     pub(crate) fn byte_size(&self) -> usize {
-        self.len as usize
+        self.n.load(Ordering::Acquire) as usize
     }
 }
 
 #[test]
-fn test_value() {}
-
-#[test]
-fn test_arena() {
-    let mut buffer = vec![0u8; 1024];
-    let mut arena = Arena::new(&mut buffer);
-    let key = &vec![12u8; 10];
-    let start = arena.put_key(key);
-    let got_key = arena.get_key(start, 10);
-    assert_eq!(got_key, key);
-
-    let v = b"hello";
-    let value = ValueStruct::new(v, 10, 10, 10);
-    let end = value.encode_size() as u16;
-    let start = arena.put_value(value);
-    let got_value = arena.get_val(start, end);
-    println!("value: {:?}", got_value);
-}
+fn test_arena() {}
