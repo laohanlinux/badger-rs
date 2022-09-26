@@ -84,7 +84,7 @@ impl OwnedVec {
 fn it() {
     let mut buffer = SafeVec::new(1);
     buffer.v[0] = 20;
-    for i in 0..10 {
+    for i in 0..1 {
         let mut c1 = unsafe { buffer.get_vec(0, 1) };
         spawn(move || {
             assert_eq!(c1[0], 20);
