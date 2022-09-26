@@ -409,18 +409,8 @@ impl SkipList {
         let (value_offset, value_size) = node.unwrap().get_value_offset();
         Some(self.arena.get_val(value_offset, value_size))
     }
-
-    /// Returns a SkipList cursor. You have to close() the cursor.
-    // pub fn new_cursor(&self) -> Cursor<'_, Self> {
-    //     self.incr_ref();
-    //     Cursor {
-    //         list: self,
-    //         item: RefCell::new(None),
-    //     }
-    // }
-
-    /// returns the size of the Skiplist in terms of how much memory is used within its internal arena.
-    pub fn mem_size(&self) -> u32 {
+    // returns the size of the Skiplist in terms of how much memory is used within its internal arena.
+    fn mem_size(&self) -> u32 {
         self.arena.size()
     }
 
