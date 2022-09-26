@@ -24,15 +24,12 @@ pub struct Arena<T: Allocate> {
     slice: T,
 }
 
-unsafe impl Send for Arena<SmallAllocate> {}
-unsafe impl Sync for Arena<SmallAllocate> {}
-
 impl Arena<SmallAllocate> {
     fn size(&self) -> u32 {
         self.n.load(Ordering::Acquire)
     }
 
-    fn reset(&self) {
+    fn reset(&mut self) {
         self.n.store(0, Ordering::SeqCst)
     }
 
