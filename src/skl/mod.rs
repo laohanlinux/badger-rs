@@ -1,14 +1,15 @@
 mod arena;
-pub use arena::Arena;
-pub mod small_allocate;
-pub use small_allocate::{Allocate, Slice, SmallAllocate};
+mod parallel_buffer;
+mod parallel_slice;
 
 use crate::must_align;
+use crate::skl::arena::Arena;
 use crate::y::ValueStruct;
 use rand::prelude::*;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 const MAX_HEIGHT: usize = 20;
 const HEIGHT_INCREASE: u32 = u32::MAX / 3;
@@ -38,7 +39,7 @@ pub(crate) struct Node {
     // is deliberately truncated to not include unneeded tower elements.
     //
     // All accesses to elements should use CAS operations, with no need to lock.
-    tower: [AtomicU32; MAX_HEIGHT],
+    tower: [u8; MAX_HEIGHT],
 }
 
 impl Node {
@@ -51,24 +52,24 @@ impl Node {
         Self::decode_value(value)
     }
 
-    fn get_key(&self, arena: &Arena<SmallAllocate>) -> Slice {
+    fn get_key<'a>(&'a self, arena: &'a Arena) -> &[u8] {
         must_align(self);
         arena.get_key(self.key_offset, self.key_size)
     }
 
-    fn set_value(&self, arena: &Arena<SmallAllocate>, v: ValueStruct) {
-        let (value_offset, value_size) = arena.put_val(v);
-        let value = Self::encode_value(value_offset, value_size as u16);
-        self.value.store(value, Ordering::SeqCst);
+    fn set_value(&self, arena: &mut Arena, v: ValueStruct) {
+        let value_size = v.value_size;
+        let value_offset = arena.put_value(&v);
+        let value = Self::encode_value(value_offset, value_size);
+        self.value.store(value, Ordering::Relaxed);
     }
 
     fn get_next_offset(&self, h: usize) -> u32 {
-        self.tower[h].load(Ordering::Acquire)
+        todo!()
     }
 
-    // FIXME Haha
-    fn cas_next_offset(&self, h: usize, old: u32, val: u32) -> bool {
-        old == self.tower[h].compare_and_swap(old, val, Ordering::SeqCst)
+    fn cas_next_offset(&self, h: usize, old: u32, new: u32) -> bool {
+        todo!()
     }
 
     fn decode_value(value: u64) -> (u32, u16) {
@@ -81,43 +82,43 @@ impl Node {
         ((value_size as u64) << 32) | (value_offset) as u64
     }
 }
-//
-// // Maps keys to value(in memory)
-// pub struct SkipList {
-//     height: AtomicI32,
-//     head: RefCell<Node>,
-//     _ref: AtomicI32,
-//     arena: Arena<SmallAllocate>,
-// }
-// //
-// // impl SkipList {
-// //     /// Increases the reference count
-// //     pub fn incr_ref(&'a self) {
-// //         self._ref.fetch_add(1, Ordering::AcqRel);
-// //     }
-// // }
-// //
-// // #[derive(Clone)]
-// // struct OwnedNode {
-// //     buf: Vec<u8>,
-// // }
-// //
-// // impl OwnedNode {}
-// //
-// // fn random_height() -> usize {
-// //     let mut h = 1;
-// //     while h < MAX_HEIGHT && random::<u32>() <= HEIGHT_INCREASE {
-// //         h += 1;
-// //     }
-// //     0
-// // }
-// //
-// // #[test]
-// // fn value_decode() {
-// //     let value_offset = 8713;
-// //     let value_size = 184;
-// //     let value = Node::encode_value(value_offset, value_size);
-// //     let (got_value_offset, got_value_size) = Node::decode_value(value);
-// //     assert_eq!(value_offset, got_value_offset);
-// //     assert_eq!(value_size, got_value_size);
-// // }
+
+// Maps keys to value(in memory)
+pub struct SkipList<'a> {
+    height: AtomicI32,
+    head: RefCell<Node>,
+    _ref: AtomicI32,
+    arena: Arena<'a>,
+}
+
+impl<'a> SkipList<'a> {
+    /// Increases the reference count
+    pub fn incr_ref(&'a self) {
+        self._ref.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Clone)]
+struct OwnedNode {
+    buf: Vec<u8>,
+}
+
+impl OwnedNode {}
+
+fn random_height() -> usize {
+    let mut h = 1;
+    while h < MAX_HEIGHT && random::<u32>() <= HEIGHT_INCREASE {
+        h += 1;
+    }
+    0
+}
+
+#[test]
+fn value_decode() {
+    let value_offset = 8713;
+    let value_size = 184;
+    let value = Node::encode_value(value_offset, value_size);
+    let (got_value_offset, got_value_size) = Node::decode_value(value);
+    assert_eq!(value_offset, got_value_offset);
+    assert_eq!(value_size, got_value_size);
+}

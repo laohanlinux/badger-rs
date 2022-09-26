@@ -1,6 +1,6 @@
 #![feature(pointer_byte_offsets)]
 #![feature(sync_unsafe_cell)]
-#[allow(invalid_type_param_default)]
+
 use std::mem::align_of;
 
 extern crate core;
