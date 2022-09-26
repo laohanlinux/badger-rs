@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicU8;
+
 /// Specifies how data in LSM table files and value log files should
 /// be loaded.
 pub enum FileLoadingMode {
@@ -8,3 +10,12 @@ pub enum FileLoadingMode {
     /// Indicates that the file must be memory-mapped
     MemoryMap,
 }
+
+//
+// #[test]
+// fn it_atomic() {
+//     let x = AtomicU8::new(0);
+//     let y = AtomicU8::new(0);
+//
+//     let
+// }
