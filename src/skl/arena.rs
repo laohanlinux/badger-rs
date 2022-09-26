@@ -54,11 +54,11 @@ impl Arena {
     // val buffer. Returns an offset into buf. User is responsible for remembering
     // size of val. We could also store this size inside arena but the encoding and
     // decoding will incur some overhead.
-    pub(crate) fn put_value(&mut self, mut value: ValueStruct) -> u32 {
-        let encode_size = value.encode_size();
+    fn put_value(&mut self, mut value: ValueStruct) -> usize {
+        let mut encode_size = value.encode_size();
         let n = self.n.fetch_add(encode_size as u32, Ordering::SeqCst);
-        let m = n - encode_size as u32;
-        value.encode(&mut self.buf[m as usize..]);
+        let m = n as usize - encode_size;
+        value.encode(&mut self.buf[m..]);
         m
     }
 
@@ -78,8 +78,7 @@ impl Arena {
     }
 
     // returns byte slice at offset.
-    pub(crate) fn get_key(&self, offset: u32, size: u16) -> &[u8] {
-        let offset = offset as usize;
+    fn get_key(&self, offset: usize, size: u16) -> &[u8] {
         return &self.buf[offset..(offset + size as usize)];
     }
 
