@@ -1,11 +1,12 @@
 use crate::skl::Node;
 use rand::random;
-use std::fmt::{Display, Formatter};
+use serde::de::IntoDeserializer;
+use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
-use std::mem::{size_of, ManuallyDrop};
+use std::mem::{align_of, size_of, ManuallyDrop};
 use std::ptr;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
-use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
@@ -83,6 +84,120 @@ impl Chunk for BlockBytes {
 
     fn size(&self) -> usize {
         self.n
+    }
+}
+
+// The alloc is only supported on layout, and it only append
+#[derive(Debug)]
+pub struct OnlyLayoutAllocate<T> {
+    cursor: AtomicUsize,
+    len: AtomicUsize,
+    pub(crate) ptr: ManuallyDrop<Vec<u8>>,
+    _data: PhantomData<T>,
+}
+
+unsafe impl<T> Send for OnlyLayoutAllocate<T> {}
+
+unsafe impl<T> Sync for OnlyLayoutAllocate<T> {}
+
+impl<T> OnlyLayoutAllocate<T> {
+    fn size() -> usize {
+        println!("size:{}", size_of::<T>());
+        size_of::<T>()
+    }
+
+    pub fn new(n: usize) -> Self {
+        OnlyLayoutAllocate {
+            cursor: AtomicUsize::new(0),
+            len: AtomicUsize::new(n),
+            ptr: ManuallyDrop::new(vec![0u8; n]),
+            _data: Default::default(),
+        }
+    }
+
+    /// *alloc* a new &T.
+    /// **Note** if more than len, it will be panic.
+    pub fn alloc(&self, start: usize) -> &T {
+        let end = self.cursor.fetch_add(Self::size(), Ordering::Acquire);
+        assert!(end < self.len.load(Ordering::Relaxed));
+        let ptr = self.borrow_slice(start, Self::size());
+        let (pre, mid, suf) = unsafe { ptr.align_to() };
+        assert!(pre.is_empty());
+        &mid[0]
+    }
+
+    /// *alloc* a new &mut T
+    /// **Note** if more than len, it will be panic.
+    pub fn mut_alloc(&mut self, start: usize) -> &mut T {
+        let end = self.cursor.fetch_add(Self::size(), Ordering::Acquire);
+        assert!(end < self.len.load(Ordering::Relaxed));
+        let mut ptr = self.borrow_mut_slice(start, Self::size());
+        let (pre, mid, suf) = unsafe { ptr.align_to_mut() };
+        assert!(pre.is_empty());
+        &mut mid[0]
+    }
+
+    #[inline]
+    pub fn get(&self, start: usize) -> &T {
+        let ptr = self.borrow_slice(start, Self::size());
+        let (pre, mid, suf) = unsafe { ptr.align_to() };
+        assert!(pre.is_empty());
+        &mid[0]
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self, start: usize) -> &mut T {
+        let mut ptr = self.borrow_mut_slice(start, Self::size());
+        let (pre, mid, suf) = unsafe { ptr.align_to_mut() };
+        assert!(pre.is_empty());
+        &mut mid[0]
+    }
+
+    #[inline]
+    fn borrow_mut_slice(&mut self, start: usize, n: usize) -> &mut [u8] {
+        let ptr = self.get_data_mut_ptr();
+        unsafe { &mut *slice_from_raw_parts_mut(ptr.add(start), n) }
+    }
+
+    #[inline]
+    fn borrow_slice(&self, start: usize, n: usize) -> &[u8] {
+        let ptr = self.get_data_ptr();
+        unsafe { &*slice_from_raw_parts(ptr.add(start), n) }
+    }
+
+    #[inline]
+    pub(crate) fn get_data_mut_ptr(&mut self) -> *mut u8 {
+        self.ptr.as_mut_ptr()
+    }
+
+    #[inline]
+    pub(crate) fn get_data_ptr(&self) -> *const u8 {
+        self.ptr.as_ptr()
+    }
+}
+
+impl<T> Drop for OnlyLayoutAllocate<T> {
+    fn drop(&mut self) {
+        self.cursor.store(0, Ordering::Relaxed);
+        self.cursor.store(0, Ordering::Relaxed);
+        // TODO: free memory
+        unsafe {
+            // ManuallyDrop::into_inner(self.ptr);
+        }
+    }
+}
+
+#[test]
+fn t_onlylayoutalloc() {
+    let mut alloc: OnlyLayoutAllocate<Node> = OnlyLayoutAllocate::new(1 << 10);
+    for i in 0..10 {
+        let key = alloc.mut_alloc(i * Node::size());
+        key.value.fetch_add(1, Ordering::Relaxed);
+    }
+
+    for i in 0..10 {
+        let key = alloc.get(i * Node::size());
+        assert_eq!(key.value.load(Ordering::Relaxed), 1);
     }
 }
 

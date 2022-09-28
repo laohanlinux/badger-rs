@@ -2,6 +2,7 @@ mod alloc;
 mod arena;
 mod cursor;
 
+mod arena_proxy;
 pub mod small_allocate;
 
 pub use alloc::{Allocate, BlockBytes, Chunk, SmartAllocate};
