@@ -75,11 +75,11 @@ impl Node {
         size_of::<Node>()
     }
 
-    // pub(crate) fn set_value(&mut self, arena: &Arena, v: &ValueStruct) {
-    //     let (value_offset, value_size) = arena.put_val(v);
-    //     let value = Self::encode_value(value_offset, value_size as u16);
-    //     self.value.store(value, Ordering::Relaxed);
-    // }
+    pub(crate) fn set_value(&self, arena: &mut Arena, v: &ValueStruct) {
+        let (value_offset, value_size) = arena.put_val(v);
+        let value = Self::encode_value(value_offset, value_size as u16);
+        self.value.store(value, Ordering::Relaxed);
+    }
 
     pub(crate) fn get_value_offset(&self) -> (u32, u16) {
         let value = self.value.load(Ordering::Acquire);

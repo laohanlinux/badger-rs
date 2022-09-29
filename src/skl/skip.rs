@@ -45,7 +45,7 @@ impl SkipList {
         self.arena.reset();
     }
 
-    fn close(&mut self) -> Result<(), BadgerErr> {
+    fn close(&self) -> Result<(), BadgerErr> {
         self.decr_ref();
         Ok(())
     }
@@ -209,8 +209,8 @@ impl SkipList {
             let cur = unsafe { &*prev[i + 1] };
             let (_pre, _next) = self.find_splice_for_level(key, cur, i as isize);
             if _next.is_some() && ptr::eq(_pre, _next.unwrap()) {
-                // TODO
-                // prev[i].as_ref().unwrap().set_value(&self.arena, &v);
+                let mut arena = self.arena.copy().as_mut();
+                prev[i].as_ref().unwrap().set_value(&mut arena, &v);
                 return;
             }
             prev[i] = unsafe { _pre as *const Node };
@@ -279,8 +279,7 @@ impl SkipList {
                 next[i] = _next.unwrap() as *const Node;
                 if ptr::eq(prev[i], next[i]) {
                     assert_eq!(i, 0, "Equality can happen only on base level: {}", i);
-                    // TODO
-                    // prev[i].as_ref().unwrap().set_value(&self.arena, &v);
+                    prev[i].as_ref().unwrap().set_value(&mut self.arena, &v);
                     return;
                 }
             }
