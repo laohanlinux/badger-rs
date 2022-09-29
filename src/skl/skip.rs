@@ -343,5 +343,27 @@ impl SkipList {
     }
 }
 
-#[test]
-fn t() {}
+mod tests {
+    use crate::skl::skip::SkipList;
+    use crate::skl::MAX_HEIGHT;
+    use std::sync::atomic::Ordering;
+
+    const ARENA_SIZE: usize = 1 << 20;
+    #[test]
+    fn t_skip_list_size() {
+        let mut st = SkipList::new(ARENA_SIZE);
+        assert_eq!(st.height.load(Ordering::Relaxed), 1);
+        assert_eq!(st._ref.load(Ordering::Relaxed), 1);
+        let head = unsafe { st.head.as_ref() };
+        assert_eq!(head.height as usize, MAX_HEIGHT);
+        assert_eq!(head.key_offset as usize, 1);
+    }
+
+    #[test]
+    fn t_empty_list() {
+        let mut st = SkipList::new(ARENA_SIZE);
+        let key = b"aaa";
+        let got = st.get(key);
+        assert!(got.is_none());
+    }
+}
