@@ -1,4 +1,4 @@
-use crate::skl::{Chunk, Node, SkipList};
+use crate::skl::{node::Node, skip::SkipList, Chunk};
 use crate::y::ValueStruct;
 use crate::BadgerErr;
 use serde_json::Value;
@@ -28,7 +28,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Returns the key at the current position.
-    pub fn key(&self) -> impl Chunk {
+    pub fn key(&self) -> &[u8] {
         let node = self.item.borrow().unwrap();
         self.list.arena.get_key(node.key_offset, node.key_size)
     }
@@ -51,7 +51,7 @@ impl<'a> Cursor<'a> {
     // Advances to the previous position.
     pub fn prev(&'a self) -> Option<&Node> {
         assert!(self.valid());
-        let (node, _) = self.list.find_near(self.key().get_data(), true, false);
+        let (node, _) = self.list.find_near(self.key(), true, false);
         *self.item.borrow_mut() = node;
         node
     }
@@ -87,7 +87,7 @@ impl<'a> Cursor<'a> {
         node
     }
 
-    pub fn close(&self) {
+    pub fn close(&'a mut self) {
         self.list.decr_ref();
     }
 }
@@ -122,7 +122,7 @@ impl<'a> CursorReverse<'a> {
         }
     }
 
-    pub fn key(&self) -> impl Chunk {
+    pub fn key(&self) -> &[u8] {
         self.iter.key()
     }
 

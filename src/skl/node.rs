@@ -1,7 +1,7 @@
+use crate::skl::arena::Arena;
+use crate::y::ValueStruct;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use crate::skl::arena2::Arena;
-use crate::y::ValueStruct;
 
 const MAX_HEIGHT: usize = 20;
 const HEIGHT_INCREASE: u32 = u32::MAX / 3;
@@ -14,7 +14,7 @@ pub struct Node {
     // immutable. No need to lock to access key.
     pub(crate) key_offset: u32,
     // immutable. No need to lock to access key.
-    key_size: u16,
+    pub(crate) key_size: u16,
 
     // Height of the tower.
     pub(crate) height: u16,
@@ -63,7 +63,10 @@ impl Node {
         node.key_offset = key_offset;
         node.key_size = key.len() as u16;
         // 2: storage value
-        node.value.store(Self::encode_value(value_offset, value_size), Ordering::Relaxed);
+        node.value.store(
+            Self::encode_value(value_offset, value_size),
+            Ordering::Relaxed,
+        );
         node.height = height as u16;
         node
     }
@@ -78,7 +81,7 @@ impl Node {
     //     self.value.store(value, Ordering::Relaxed);
     // }
 
-    fn get_value_offset(&self) -> (u32, u16) {
+    pub(crate) fn get_value_offset(&self) -> (u32, u16) {
         let value = self.value.load(Ordering::Acquire);
         Self::decode_value(value)
     }

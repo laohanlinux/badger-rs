@@ -1,18 +1,18 @@
-use std::{cmp, ptr, ptr::NonNull, sync::atomic::AtomicI32};
-use std::sync::atomic::Ordering;
-use rand::random;
+use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
 use crate::BadgerErr;
-use crate::skl::{HEIGHT_INCREASE, MAX_HEIGHT};
+use rand::random;
+use std::sync::atomic::Ordering;
+use std::{cmp, ptr, ptr::NonNull, sync::atomic::AtomicI32};
 
 use crate::y::ValueStruct;
 
-use super::{arena2::Arena, node::Node};
+use super::{arena::Arena, node::Node};
 
 pub struct SkipList {
     height: AtomicI32,
     head: NonNull<Node>,
     _ref: AtomicI32,
-    arena: Arena,
+    pub(crate) arena: Arena,
 }
 
 unsafe impl Send for SkipList {}
@@ -37,7 +37,7 @@ impl SkipList {
         self._ref.fetch_add(1, Ordering::Relaxed);
     }
     // Sub crease the reference count
-    pub fn decr_ref(&mut self) {
+    pub fn decr_ref(&self) {
         let old = self._ref.fetch_sub(1, Ordering::SeqCst);
         if old > 1 {
             return;
@@ -54,7 +54,7 @@ impl SkipList {
         self.arena.valid()
     }
 
-    fn get_head(&self) -> &Node {
+    pub(crate) fn get_head(&self) -> &Node {
         let node = unsafe { self.head.as_ptr() as *const Node };
         unsafe { &*node }
     }
@@ -64,7 +64,7 @@ impl SkipList {
         unsafe { &mut *node }
     }
 
-    fn get_next(&self, nd: &Node, height: isize) -> Option<&Node> {
+    pub(crate) fn get_next(&self, nd: &Node, height: isize) -> Option<&Node> {
         self.arena
             .get_node(nd.get_next_offset(height as usize) as usize)
     }
@@ -79,7 +79,12 @@ impl SkipList {
     // If less=false, it finds leftmost node such that node.key > key (if allowEqual=false) or
     // node.key >= key (if allowEqual=true).
     // Returns the node found. The bool returned is true if the node has key equal to given key.
-    fn find_near(&self, key: &[u8], less: bool, allow_equal: bool) -> (Option<&Node>, bool) {
+    pub(crate) fn find_near(
+        &self,
+        key: &[u8],
+        less: bool,
+        allow_equal: bool,
+    ) -> (Option<&Node>, bool) {
         let mut x = self.get_head();
         let mut level = self.get_height() - 1;
         println!("start to hight: {}", level);
@@ -216,7 +221,8 @@ impl SkipList {
 
         // We do need to create a new node.
         let height = Self::random_height();
-        let x = Node::new(&mut self.arena, key, &v, height as isize);
+        let mut arena = self.arena.copy();
+        let x = Node::new(arena.as_mut(), key, &v, height as isize);
 
         // Try to increase a new node.
         let mut list_height = self.get_height() as i32;
@@ -240,8 +246,8 @@ impl SkipList {
             loop {
                 if prev[i as usize].is_null() {
                     assert!(i > 1); // This cannot happen in base level.
-                    // We haven't computed prev, next for this level because height exceeds old list_height.
-                    // For these levels, we expect the lists to be sparse, so we can just search from head.
+                                    // We haven't computed prev, next for this level because height exceeds old list_height.
+                                    // For these levels, we expect the lists to be sparse, so we can just search from head.
                     let mut head = self.get_head_mut();
                     let (_pre, _next) = self.find_splice_for_level(key, head, i as isize);
                     prev[i] = _pre as *const Node;
@@ -281,7 +287,50 @@ impl SkipList {
         }
     }
 
-    /// returns the size of the Skiplist in terms of how much memory is used within its internal arena.
+    pub fn empty(&self) -> bool {
+        unsafe { self.find_last().is_none() }
+    }
+
+    // Returns the last element. If head (empty list), we return nil, All the find functions
+    // will NEVER return the head nodes.
+    pub unsafe fn find_last(&self) -> Option<&Node> {
+        let mut n = self.head.as_ptr() as *const Node;
+        let mut level = self.get_height() - 1;
+        loop {
+            let next = self.get_next(&*n, level);
+            if next.is_some() {
+                n = unsafe { next.unwrap() as *const Node };
+                continue;
+            }
+            if level == 0 {
+                if ptr::eq(n, self.head.as_ptr()) {
+                    return None;
+                }
+                return Some(&*n);
+            }
+            level -= 1;
+        }
+    }
+
+    // gets the value associated with the key.
+    // FIXME: maybe return Option<&ValueStruct>
+    fn get(&self, key: &[u8]) -> Option<ValueStruct> {
+        let (node, found) = self.find_near(key, false, true);
+        if !found {
+            return None;
+        }
+        println!("find a key: {:?}", key);
+        let (value_offset, value_size) = node.unwrap().get_value_offset();
+        Some(self.arena.get_val(value_offset, value_size))
+    }
+
+    /// Returns a SkipList cursor. You have to close() the cursor.
+    pub fn new_cursor(&self) -> Cursor<'_> {
+        self.incr_ref();
+        Cursor::new(self)
+    }
+
+    /// returns the size of the SkipList in terms of how much memory is used within its internal arena.
     pub fn mem_size(&self) -> u32 {
         self.arena.size()
     }
@@ -294,7 +343,6 @@ impl SkipList {
         h
     }
 }
-
 
 #[test]
 fn t() {}

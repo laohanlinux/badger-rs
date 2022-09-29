@@ -1,4 +1,4 @@
-use crate::skl::Node;
+use crate::skl::node::Node;
 use rand::random;
 use serde::de::IntoDeserializer;
 use std::fmt::{Debug, Display, Formatter};
@@ -250,7 +250,7 @@ impl SliceAllocate {
         self.borrow_mut_slice(offset, size)
     }
 
-    pub fn append(&self, bytes: &[u8]) -> usize {
+    pub fn append(&mut self, bytes: &[u8]) -> usize {
         let offset = self.cursor.fetch_add(bytes.len(), Ordering::Relaxed);
         assert!(self.cursor.load(Ordering::Relaxed) < self.len.load(Ordering::Relaxed));
         let mut buffer = self.borrow_mut_slice(offset, bytes.len());
