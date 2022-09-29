@@ -102,13 +102,12 @@ unsafe impl<T> Sync for OnlyLayoutAllocate<T> {}
 
 impl<T> OnlyLayoutAllocate<T> {
     fn size() -> usize {
-        println!("size:{}", size_of::<T>());
         size_of::<T>()
     }
 
     pub fn new(n: usize) -> Self {
         OnlyLayoutAllocate {
-            cursor: AtomicUsize::new(0),
+            cursor: AtomicUsize::new(Self::size()),
             len: AtomicUsize::new(n),
             ptr: ManuallyDrop::new(vec![0u8; n]),
             _data: Default::default(),
@@ -129,12 +128,30 @@ impl<T> OnlyLayoutAllocate<T> {
     /// *alloc* a new &mut T
     /// **Note** if more than len, it will be panic.
     pub fn mut_alloc(&mut self, start: usize) -> &mut T {
-        let end = self.cursor.fetch_add(Self::size(), Ordering::Acquire);
+        let end = self.cursor.fetch_add(Self::size(), Ordering::Relaxed);
         assert!(end < self.len.load(Ordering::Relaxed));
         let mut ptr = self.borrow_mut_slice(start, Self::size());
         let (pre, mid, suf) = unsafe { ptr.align_to_mut() };
         assert!(pre.is_empty());
         &mut mid[0]
+    }
+
+    pub fn alloc_offset(&self) -> (&T, usize) {
+        let offset = self.cursor.fetch_add(Self::size(), Ordering::Relaxed);
+        assert!(offset + Self::size() < self.len.load(Ordering::Relaxed));
+        let mut ptr = self.borrow_slice(offset, Self::size());
+        let (pre, mid, suf) = unsafe { ptr.align_to() };
+        assert!(pre.is_empty());
+        (&mid[0], offset)
+    }
+
+    pub fn alloc_mut_offset(&mut self) -> (&mut T, usize) {
+        let offset = self.cursor.fetch_add(Self::size(), Ordering::Relaxed);
+        assert!(offset + Self::size() < self.len.load(Ordering::Relaxed));
+        let mut ptr = self.borrow_mut_slice(offset, Self::size());
+        let (pre, mid, suf) = unsafe { ptr.align_to_mut() };
+        assert!(pre.is_empty());
+        (&mut mid[0], offset)
     }
 
     #[inline]
@@ -187,6 +204,101 @@ impl<T> Drop for OnlyLayoutAllocate<T> {
     }
 }
 
+// The alloc is only supported on layout, and it only append
+#[derive(Debug)]
+pub struct SliceAllocate {
+    cursor: AtomicUsize,
+    len: AtomicUsize,
+    pub(crate) ptr: ManuallyDrop<Vec<u8>>,
+}
+
+unsafe impl Send for SliceAllocate {}
+
+unsafe impl Sync for SliceAllocate {}
+
+impl SliceAllocate {
+    fn size(&self) -> usize {
+        self.len.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn new(n: usize) -> Self {
+        SliceAllocate {
+            cursor: AtomicUsize::new(1),
+            len: AtomicUsize::new(n),
+            ptr: ManuallyDrop::new(vec![0u8; n]),
+        }
+    }
+
+    pub(crate) fn get(&self, start: usize, size: usize) -> &[u8] {
+        self.borrow_slice(start, size)
+    }
+
+    // fn get_mut(&mut self, start: usize, size: usize) -> &mut [u8] {
+    //     self.borrow_mut_slice(start, size)
+    // }
+
+    // Return the start locate offset
+    pub(crate) fn alloc(&self, size: usize) -> &[u8] {
+        let offset = self.cursor.fetch_add(size, Ordering::Relaxed);
+        assert!(self.cursor.load(Ordering::Relaxed) < self.len.load(Ordering::Relaxed));
+        self.borrow_slice(offset, size)
+    }
+
+    fn alloc_mut(&mut self, size: usize) -> &mut [u8] {
+        let offset = self.cursor.fetch_add(size, Ordering::Relaxed);
+        assert!(self.cursor.load(Ordering::Relaxed) < self.len.load(Ordering::Relaxed));
+        self.borrow_mut_slice(offset, size)
+    }
+
+    pub fn append(&self, bytes: &[u8]) -> usize {
+        let offset = self.cursor.fetch_add(bytes.len(), Ordering::Relaxed);
+        assert!(self.cursor.load(Ordering::Relaxed) < self.len.load(Ordering::Relaxed));
+        let mut buffer = self.borrow_mut_slice(offset, bytes.len());
+        buffer.copy_from_slice(bytes);
+        offset
+    }
+
+    pub fn fill(&mut self, start: usize, bytes: &[u8]) -> usize {
+        let mut buffer = self.borrow_mut_slice(start, bytes.len());
+        buffer.copy_from_slice(bytes);
+        start + buffer.len()
+    }
+
+    #[inline]
+    fn borrow_mut_slice(&mut self, start: usize, n: usize) -> &mut [u8] {
+        let ptr = self.get_data_mut_ptr();
+        unsafe { &mut *slice_from_raw_parts_mut(ptr.add(start), n) }
+    }
+
+    #[inline]
+    fn borrow_slice(&self, start: usize, n: usize) -> &[u8] {
+        let ptr = self.get_data_ptr();
+        unsafe { &*slice_from_raw_parts(ptr.add(start), n) }
+    }
+
+    #[inline]
+    pub(crate) fn get_data_mut_ptr(&mut self) -> *mut u8 {
+        self.ptr.as_mut_ptr()
+    }
+
+    #[inline]
+    pub(crate) fn get_data_ptr(&self) -> *const u8 {
+        self.ptr.as_ptr()
+    }
+}
+
+// impl Allocate for SliceAllocate {
+//     type Block = ();
+//
+//     fn alloc(&self, start: usize, n: usize) -> Self::Block {
+//         todo!()
+//     }
+//
+//     fn size(&self) -> usize {
+//         todo!()
+//     }
+// }
+
 #[test]
 fn t_onlylayoutalloc() {
     let mut alloc: OnlyLayoutAllocate<Node> = OnlyLayoutAllocate::new(1 << 10);
@@ -202,6 +314,16 @@ fn t_onlylayoutalloc() {
 }
 
 #[test]
+fn t_onlylayoutalloc_slice() {
+    let mut alloc: SliceAllocate = SliceAllocate::new(1 << 10);
+    for i in 0..10 {
+        let key = alloc.alloc_mut(i * 10);
+        key.fill(20);
+    }
+    println!("{:?}", alloc.ptr);
+}
+
+#[test]
 fn t_block_bytes() {
     let mut buffer = vec![0u8; 1024];
     let block = BlockBytes::new(NonNull::new(buffer.as_mut_ptr()).unwrap(), 10);
@@ -214,71 +336,4 @@ fn t_block_bytes() {
     for datum in 0..block.size() {
         assert_eq!(buffer[datum], datum as u8);
     }
-}
-
-#[test]
-fn t_allocate() {
-    use std::sync::Arc;
-    use std::thread::spawn;
-
-    let m = std::mem::ManuallyDrop::new(vec![0u8; 1024]);
-    let alloc = Arc::new(SmartAllocate::new(m));
-    for i in 0..100 {
-        let alloc = Arc::clone(&alloc);
-        spawn(move || {
-            let chunk = alloc.alloc(0, 10);
-            let idx = random::<usize>() % 10;
-            chunk.get_data_mut()[idx] = random::<u8>();
-        })
-        .join()
-        .unwrap();
-    }
-    sleep(Duration::from_millis(200));
-    println!("{:?}", alloc.alloc(0, 10).get_data());
-}
-
-#[test]
-fn t_allocate_node() {
-    let alloc = SmartAllocate::new(ManuallyDrop::new(vec![0; 1 << 10]));
-    {
-        let block = alloc.alloc(0, 1);
-        block.get_data_mut()[0] = 10;
-    }
-    let block = alloc.alloc(1, Node::size());
-    let node = Node::from_slice_mut(block.get_data_mut());
-    node.value.fetch_add(1, Ordering::Relaxed);
-}
-
-#[test]
-fn t_allocate_multiple_structs() {
-    let alloc = SmartAllocate::new(ManuallyDrop::new(vec![0u8; 1 << 10]));
-    {
-        let block = alloc.alloc(0, 10);
-        let key = block.get_data_mut();
-        key.fill(1);
-    }
-
-    let mut ptr1;
-    {
-        let block = alloc.alloc(10, Node::size());
-        let node = Node::from_slice_mut(block.get_data_mut());
-        node.value.fetch_add(1, Ordering::Relaxed);
-        ptr1 = node as *const Node;
-    }
-
-    {
-        let block = alloc.alloc(0, 10);
-        let key = block.get_data_mut();
-        assert_eq!(key, vec![1u8; 10].as_slice());
-    }
-
-    let mut ptr2;
-    {
-        let block = alloc.alloc(10, Node::size());
-        let node = Node::from_slice_mut(block.get_data_mut());
-        assert_eq!(1, node.value.load(Ordering::Relaxed));
-        ptr2 = node as *const Node;
-    }
-
-    assert!(ptr::eq(ptr1, ptr2));
 }

@@ -3,6 +3,7 @@
 #![feature(associated_type_defaults)]
 #![feature(type_alias_impl_trait)]
 #![feature(strict_provenance_atomic_ptr)]
+#![feature(atomic_from_mut)]
 
 use std::mem::align_of;
 
