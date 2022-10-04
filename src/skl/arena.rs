@@ -41,7 +41,7 @@ impl Arena {
         // of nil pointer
         Self {
             slice: slice_alloc,
-            node_alloc: node_alloc,
+            node_alloc,
         }
     }
 
@@ -55,11 +55,9 @@ impl Arena {
     }
 
     // TODO: maybe use MaybeUint instead
-    pub(crate) fn reset(&self) {
-        // println!("reset memory");
-        // self.n.store(0, Ordering::Relaxed);
-        // std::mem::drop(&self.slice.ptr);
-        todo!()
+    pub(crate) fn reset(&mut self) {
+        self.slice.reset();
+        self.node_alloc.reset();
     }
 
     pub(crate) fn valid(&self) -> bool {

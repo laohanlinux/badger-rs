@@ -30,14 +30,14 @@ impl<'a> Cursor<'a> {
     /// Returns the key at the current position.
     pub fn key(&self) -> &[u8] {
         let node = self.item.borrow().unwrap();
-        self.list.arena.get_key(node.key_offset, node.key_size)
+        self.list.arena_ref().get_key(node.key_offset, node.key_size)
     }
 
     /// Return value.
     pub fn value(&self) -> ValueStruct {
         let node = self.item.borrow().unwrap();
         let (value_offset, val_size) = node.get_value_offset();
-        self.list.arena.get_val(value_offset, val_size)
+        self.list.arena_ref().get_val(value_offset, val_size)
     }
 
     /// Advances to the next position.
@@ -72,7 +72,7 @@ impl<'a> Cursor<'a> {
 
     /// Seeks position at the first entry in list.
     /// Final state of iterator is Valid() iff list is not empty.
-    pub fn seek_for_first(&'a self) -> Option<&Node> {
+    pub fn seek_for_first(&'a self) -> Option<&'a Node> {
         let head = self.list.get_head();
         let node = self.list.get_next(&head, 0);
         *self.item.borrow_mut() = node;
@@ -87,59 +87,67 @@ impl<'a> Cursor<'a> {
         node
     }
 
-    pub fn close(&'a mut self) {
+    // Must be call for every `Cursor`
+    pub fn close(&self) {
         self.list.decr_ref();
     }
 }
 
-pub struct CursorReverse<'a> {
-    iter: &'a Cursor<'a>,
-    reversed: RefCell<bool>,
-}
-
-impl<'a> CursorReverse<'a> {
-    pub fn next(&self) -> Option<&Node> {
-        if !*self.reversed.borrow() {
-            self.iter.next()
-        } else {
-            self.iter.prev()
-        }
-    }
-
-    pub fn rewind(&self) -> Option<&Node> {
-        if !*self.reversed.borrow() {
-            self.iter.seek_for_first()
-        } else {
-            self.iter.seek_for_last()
-        }
-    }
-
-    pub fn seek(&self, key: &[u8]) -> Option<&Node> {
-        if !*self.reversed.borrow() {
-            self.iter.seek(key)
-        } else {
-            self.iter.seek_for_prev(key)
-        }
-    }
-
-    pub fn key(&self) -> &[u8] {
-        self.iter.key()
-    }
-
-    pub fn value(&self) -> ValueStruct {
-        self.iter.value()
-    }
-
-    pub fn valid(&self) -> bool {
-        self.valid()
-    }
-
-    pub fn close(&self) {
-        todo!()
-    }
-}
-
+// impl<'a> Drop for Cursor<'a> {
+//     fn drop(&mut self) {
+//         println!("drop cursor");
+//         self.list.deref();
+//     }
+// }
 //
+// pub struct CursorReverse<'a> {
+//     iter: &'a Cursor<'a>,
+//     reversed: RefCell<bool>,
+// }
+//
+// impl<'a> CursorReverse<'a> {
+//     pub fn next(&self) -> Option<&Node> {
+//         if !*self.reversed.borrow() {
+//             self.iter.next()
+//         } else {
+//             self.iter.prev()
+//         }
+//     }
+//
+//     pub fn rewind(&self) -> Option<&Node> {
+//         if !*self.reversed.borrow() {
+//             self.iter.seek_for_first()
+//         } else {
+//             self.iter.seek_for_last()
+//         }
+//     }
+//
+//     pub fn seek(&self, key: &[u8]) -> Option<&Node> {
+//         if !*self.reversed.borrow() {
+//             self.iter.seek(key)
+//         } else {
+//             self.iter.seek_for_prev(key)
+//         }
+//     }
+//
+//     pub fn key(&self) -> &[u8] {
+//         self.iter.key()
+//     }
+//
+//     pub fn value(&self) -> ValueStruct {
+//         self.iter.value()
+//     }
+//
+//     pub fn valid(&self) -> bool {
+//         self.valid()
+//     }
+//
+//     pub fn close(&self) {
+//         todo!()
+//     }
+// }
+//
+// //
 // impl<'a> UniIterator<'a> {
 //     pub fn next(&self) {
 //         todo!()

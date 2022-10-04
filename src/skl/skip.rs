@@ -1,17 +1,23 @@
 use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
 use crate::BadgerErr;
 use rand::random;
+use serde_json::Value;
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::fmt::{write, Display, Formatter};
+use std::ops::Deref;
 use std::sync::atomic::Ordering;
 use std::{cmp, ptr, ptr::NonNull, sync::atomic::AtomicI32};
+use std::sync::Arc;
 
 use crate::y::ValueStruct;
 
 use super::{arena::Arena, node::Node};
 
 pub struct SkipList {
-    height: AtomicI32,
+    height: Arc<AtomicI32>,
     head: NonNull<Node>,
-    _ref: AtomicI32,
+    _ref: Arc<AtomicI32>,
     pub(crate) arena: Arena,
 }
 
@@ -19,18 +25,40 @@ unsafe impl Send for SkipList {}
 
 unsafe impl Sync for SkipList {}
 
+// impl Clone for SkipList {
+//     fn clone(&self) -> Self {
+//         Self{
+//             height: self.height.clone(),
+//             head: self.head.clone(),
+//             _ref: self._ref.clone(),
+//             arena: self.arena.clone(),
+//         }
+//     }
+// }
+
 impl SkipList {
     pub fn new(arena_size: usize) -> Self {
         let mut arena = Arena::new(arena_size);
         let v = ValueStruct::default();
         let node = Node::new(&mut arena, "".as_bytes(), &v, MAX_HEIGHT as isize);
         Self {
-            height: AtomicI32::new(1),
+            height: Arc::new(AtomicI32::new(1)),
             head: NonNull::new(node).unwrap(),
-            _ref: AtomicI32::new(1),
+            _ref: Arc::new(AtomicI32::new(1)),
             arena: arena,
         }
     }
+
+    // pub fn new_with_arena(mut arena: Arena) -> Self {
+    //     let v = ValueStruct::default();
+    //     let node = Node::new(&mut arena, "".as_bytes(), &v, MAX_HEIGHT as isize);
+    //     Self {
+    //         height: Arc::new(AtomicI32::new(1)),
+    //         head: NonNull::new(node).unwrap(),
+    //         _ref: Arc::new(AtomicI32::new(1)),
+    //         arena: NonNull::new(&mut arena).unwrap(),
+    //     }
+    // }
 
     /// Increases the reference count
     pub fn incr_ref(&self) {
@@ -38,20 +66,21 @@ impl SkipList {
     }
     // Sub crease the reference count
     pub fn decr_ref(&self) {
-        let old = self._ref.fetch_sub(1, Ordering::SeqCst);
-        if old > 1 {
-            return;
-        }
-        self.arena.reset();
-    }
-
-    fn close(&self) -> Result<(), BadgerErr> {
-        self.decr_ref();
-        Ok(())
+        self._ref.fetch_sub(1, Ordering::Relaxed);
     }
 
     fn valid(&self) -> bool {
-        self.arena.valid()
+        self.arena_ref().valid()
+    }
+
+    pub(crate) fn arena_ref(&self) -> &Arena {
+        // unsafe {self.arena.as_ref()}
+        &self.arena
+    }
+
+    pub(crate)  fn arena_mut_ref(&mut self) -> &mut Arena {
+        // unsafe  {self.arena.as_mut()}
+        &mut self.arena
     }
 
     pub(crate) fn get_head(&self) -> &Node {
@@ -65,8 +94,7 @@ impl SkipList {
     }
 
     pub(crate) fn get_next(&self, nd: &Node, height: isize) -> Option<&Node> {
-        self.arena
-            .get_node(nd.get_next_offset(height as usize) as usize)
+        self.arena_ref().get_node(nd.get_next_offset(height as usize) as usize)
     }
 
     fn get_height(&self) -> isize {
@@ -109,7 +137,7 @@ impl SkipList {
                 return (Some(x), false);
             }
             let next = next.unwrap();
-            let next_key = next.key(&self.arena);
+            let next_key = next.key(self.arena_ref());
             match key.cmp(next_key) {
                 cmp::Ordering::Greater => {
                     // x.key < next.key < key. We can continue to move right.
@@ -169,12 +197,12 @@ impl SkipList {
     ) -> (&'a Node, Option<&'a Node>) {
         loop {
             // Assume before.key < key.
-            let mut next = self.get_next(before, level);
+            let next = self.get_next(before, level);
             if next.is_none() {
                 return (before, next);
             }
-            let mut next = next.unwrap();
-            let next_key = next.key(&self.arena);
+            let next = next.unwrap();
+            let next_key = next.key(self.arena_ref());
             match key.cmp(next_key) {
                 cmp::Ordering::Equal => {
                     return (next, Some(next));
@@ -201,69 +229,75 @@ impl SkipList {
         // let mut def_node = &mut Node::default();
         let list_height = self.get_height();
         let mut prev = [ptr::null::<Node>(); MAX_HEIGHT + 1].to_vec();
-        prev[list_height as usize] = unsafe { self.get_head() as *const Node };
+        prev[list_height as usize] = self.get_head();
         let mut next = [ptr::null::<Node>(); MAX_HEIGHT + 1].to_vec();
         next[list_height as usize] = std::ptr::null();
         for i in (0..list_height as usize).rev() {
             // Use higher level to speed up for current level.
             let cur = unsafe { &*prev[i + 1] };
             let (_pre, _next) = self.find_splice_for_level(key, cur, i as isize);
+            prev[i] = _pre;
             if _next.is_some() && ptr::eq(_pre, _next.unwrap()) {
-                let mut arena = self.arena.copy().as_mut();
+                let mut arena = self.arena_ref().copy().as_mut();
                 prev[i].as_ref().unwrap().set_value(&mut arena, &v);
                 return;
             }
-            prev[i] = unsafe { _pre as *const Node };
             if _next.is_some() {
-                next[i] = unsafe { _next.unwrap() as *const Node };
+                next[i] = _next.unwrap() as *const Node;
             }
         }
 
         // We do need to create a new node.
         let height = Self::random_height();
-        let mut arena = self.arena.copy();
+        let mut arena = self.arena_ref().copy();
         let x = Node::new(arena.as_mut(), key, &v, height as isize);
 
-        // Try to increase a new node.
+        // Try to increase a new node. linked pre-->x-->next
         let mut list_height = self.get_height() as i32;
         while height > list_height as usize {
             if self
                 .height
-                .compare_and_swap(list_height, height as i32, Ordering::SeqCst)
-                == list_height
+                .compare_exchange_weak(
+                    list_height,
+                    height as i32,
+                    Ordering::Acquire,
+                    Ordering::Acquire,
+                )
+                .is_ok()
             {
                 // Successfully increased SkipList.height
                 break;
             } else {
                 list_height = self.get_height() as i32;
             }
-            println!("try again");
         }
-
         // We always insert from the base level and up. After you add a node in base level, we cannot
         // create a node in the level above because it would have discovered the node in the base level.
         for i in 0..height {
             loop {
                 if prev[i as usize].is_null() {
-                    assert!(i > 1); // This cannot happen in base level.
-                                    // We haven't computed prev, next for this level because height exceeds old list_height.
-                                    // For these levels, we expect the lists to be sparse, so we can just search from head.
-                    let mut head = self.get_head_mut();
+                    // This cannot happen in base level.
+                    // We haven't computed prev, next for this level because height exceeds old list_height.
+                    // For these levels, we expect the lists to be sparse, so we can just search from head.
+                    assert!(i > 1);
+                    let head = self.get_head_mut();
                     let (_pre, _next) = self.find_splice_for_level(key, head, i as isize);
-                    prev[i] = _pre as *const Node;
-                    next[i] = _next.unwrap() as *const Node;
+                    prev[i] = _pre;
+                    if _next.is_some() {
+                        next[i] = _next.unwrap() as *const Node;
+                    }
 
                     // Someone adds the exact same key before we are able to do so. This can only happen on
                     // the base level. But we know we are not on the base level.
                     assert!(!ptr::eq(prev[i], next[i]));
                 }
 
-                let next_offset = self.arena.get_node_offset(next[i]);
+                let next_offset = self.arena_ref().get_node_offset(next[i]);
                 x.tower[i].store(next_offset as u32, Ordering::SeqCst);
                 if prev[i].as_ref().unwrap().cas_next_offset(
                     i,
                     next_offset as u32,
-                    self.arena.get_node_offset(unsafe { x as *const Node }) as u32,
+                    self.arena_ref().get_node_offset(x) as u32,
                 ) {
                     // Managed to insert x between prev[i] and next[i]. Go to the next level.
                     break;
@@ -274,12 +308,12 @@ impl SkipList {
                 // because it is unlikely that lots of nodes are inserted between prev[i] and next[i].
                 let (_pre, _next) =
                     self.find_splice_for_level(key, prev[i].as_ref().unwrap(), i as isize);
-                prev[i] = _pre as *const Node;
+                prev[i] = _pre;
                 // FIXME: maybe nil pointer
-                next[i] = _next.unwrap() as *const Node;
+                next[i] = _next.unwrap();
                 if ptr::eq(prev[i], next[i]) {
                     assert_eq!(i, 0, "Equality can happen only on base level: {}", i);
-                    prev[i].as_ref().unwrap().set_value(&mut self.arena, &v);
+                    prev[i].as_ref().unwrap().set_value( self.arena_mut_ref(), &v);
                     return;
                 }
             }
@@ -298,7 +332,7 @@ impl SkipList {
         loop {
             let next = self.get_next(&*n, level);
             if next.is_some() {
-                n = unsafe { next.unwrap() as *const Node };
+                n = next.unwrap();
                 continue;
             }
             if level == 0 {
@@ -320,18 +354,32 @@ impl SkipList {
         }
         println!("find a key: {:?}", key);
         let (value_offset, value_size) = node.unwrap().get_value_offset();
-        Some(self.arena.get_val(value_offset, value_size))
+        Some(self.arena_ref().get_val(value_offset, value_size))
     }
 
     /// Returns a SkipList cursor. You have to close() the cursor.
     pub fn new_cursor(&self) -> Cursor<'_> {
-        self.incr_ref();
+        self._ref.fetch_add(1, Ordering::Relaxed);
         Cursor::new(self)
     }
 
     /// returns the size of the SkipList in terms of how much memory is used within its internal arena.
     pub fn mem_size(&self) -> u32 {
-        self.arena.size()
+        self.arena_ref().size()
+    }
+
+    pub fn key_values(&self) -> Vec<(&[u8], ValueStruct)> {
+        let mut cur = self.get_head().get_next_offset(0);
+        let mut v = vec![];
+        while cur > 0 {
+            let node = self.arena_ref().get_node(cur as usize).unwrap();
+            let key = node.key(self.arena_ref());
+            let (value_offset, value_sz) = node.get_value_offset();
+            let value = self.arena_ref().get_val(value_offset, value_sz);
+            v.push((key, value));
+            cur = node.get_next_offset(0);
+        }
+        v
     }
 
     fn random_height() -> usize {
@@ -343,12 +391,47 @@ impl SkipList {
     }
 }
 
+impl Drop for SkipList {
+    fn drop(&mut self) {
+        let _ref = self._ref.load(Ordering::Relaxed);
+        println!("SkipList reference: {:?}", _ref);
+        // assert_eq!(_ref, 1, "it should be 1 reference after drop skiplist");
+        self.arena_mut_ref().reset();
+    }
+}
+
+impl Display for SkipList {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        use tabled::{Table, Tabled};
+
+        #[derive(Tabled)]
+        struct KV {
+            k: String,
+            v: String,
+        }
+        let mut kv = vec![];
+        for _kv in self.key_values() {
+            kv.push(KV {
+                k: String::from_utf8(_kv.0.to_vec()).unwrap(),
+                v: String::from_utf8(_kv.1.value).unwrap(),
+            });
+        }
+        let table = Table::new(kv).to_string();
+        writeln!(f, "SkipList=>").unwrap();
+        writeln!(f, "{}", table)
+    }
+}
+
 mod tests {
+    use crate::skl::node::Node;
     use crate::skl::skip::SkipList;
-    use crate::skl::MAX_HEIGHT;
+    use crate::skl::{Arena, Cursor, MAX_HEIGHT};
+    use crate::y::ValueStruct;
+    use std::ptr;
     use std::sync::atomic::Ordering;
 
     const ARENA_SIZE: usize = 1 << 20;
+
     #[test]
     fn t_skip_list_size() {
         let mut st = SkipList::new(ARENA_SIZE);
@@ -365,5 +448,74 @@ mod tests {
         let key = b"aaa";
         let got = st.get(key);
         assert!(got.is_none());
+
+        for (_, less) in vec![(true, false)] {
+            for (_, allow_equal) in vec![(true, false)] {
+                let found = st.find_near(key, less, allow_equal);
+                assert!(found.0.is_none());
+                assert_eq!(found.1, false);
+            }
+        }
+
+        {
+            let it = st.new_cursor();
+            assert!(!it.valid());
+            assert!(it.seek_for_first().is_none());
+            assert!(it.seek_for_last().is_none());
+            assert!(it.seek(key).is_none());
+            it.close();
+        }
+        // Check the reference counting.
+        assert!(st.valid());
     }
+
+    // Tests single-threaded inserts and updates and gets.
+    #[test]
+    fn t_base() {
+        let node = Node::default();
+        let n1 = &node;
+        let n2 = Some(&node);
+        assert!(ptr::eq(n1, n2.unwrap()));
+        let mut st = SkipList::new(ARENA_SIZE);
+        let val1 = b"42";
+        let val2 = b"52";
+        let val3 = b"62";
+        let val4 = b"72";
+        // try inserting values.
+        st.put(b"key1", ValueStruct::new(val1.to_vec(), 55, 0, 60000));
+        st.put(b"key2", ValueStruct::new(val2.to_vec(), 56, 0, 60001));
+        st.put(b"key3", ValueStruct::new(val3.to_vec(), 57, 0, 60002));
+
+        println!("{}", st);
+
+        let v = st.get(b"key");
+        assert!(v.is_none());
+
+        let v = st.get(b"key1");
+        assert!(v.is_some());
+        assert_eq!(v.unwrap(), ValueStruct::new(val1.to_vec(), 55, 0, 60000));
+
+        let v = st.get(b"key2");
+        assert!(v.is_some());
+        assert_eq!(v.unwrap(), ValueStruct::new(val2.to_vec(), 56, 0, 60001));
+
+        let v = st.get(b"key3");
+        assert!(v.is_some());
+        assert_eq!(v.unwrap(), ValueStruct::new(val3.to_vec(), 57, 0, 60002));
+
+        st.put(b"key2", ValueStruct::new(val4.to_vec(), 12, 0, 50000));
+        let v = st.get(b"key2").unwrap();
+        assert_eq!(12, v.meta);
+        assert_eq!(50000, v.cas_counter);
+    }
+
+    // #[test]
+    // fn t_concurrent_basic() {
+    //     let mut arena = Arena::new(ARENA_SIZE);
+    //     let mut st = SkipList::new_with_arena(arena);
+    //     const n: usize = 100;
+    //     // let mut st1 = st.clone();
+    //     st.put(b"a", ValueStruct::new(b"100".to_vec(), 0, 0, 0));
+    //     // let value = st1.get(b"a").unwrap();
+    // }
 }

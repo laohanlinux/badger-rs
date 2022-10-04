@@ -88,10 +88,10 @@ impl Chunk for BlockBytes {
 }
 
 // The alloc is only supported on layout, and it only append
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OnlyLayoutAllocate<T> {
-    cursor: AtomicUsize,
-    len: AtomicUsize,
+    cursor: Arc<AtomicUsize>,
+    len: Arc<AtomicUsize>,
     pub(crate) ptr: ManuallyDrop<Vec<u8>>,
     _data: PhantomData<T>,
 }
@@ -107,8 +107,8 @@ impl<T> OnlyLayoutAllocate<T> {
 
     pub fn new(n: usize) -> Self {
         OnlyLayoutAllocate {
-            cursor: AtomicUsize::new(Self::size()),
-            len: AtomicUsize::new(n),
+            cursor: Arc::from(AtomicUsize::new(Self::size())),
+            len: Arc::from(AtomicUsize::new(n)),
             ptr: ManuallyDrop::new(vec![0u8; n]),
             _data: Default::default(),
         }
@@ -170,6 +170,12 @@ impl<T> OnlyLayoutAllocate<T> {
         &mut mid[0]
     }
 
+    pub(crate) fn reset(&mut self) {
+        self.len.store(0, Ordering::Relaxed);
+        self.cursor.store(0, Ordering::Relaxed);
+        self.ptr.clear();
+    }
+
     #[inline]
     fn borrow_mut_slice(&mut self, start: usize, n: usize) -> &mut [u8] {
         let ptr = self.get_data_mut_ptr();
@@ -207,8 +213,8 @@ impl<T> Drop for OnlyLayoutAllocate<T> {
 // The alloc is only supported on layout, and it only append
 #[derive(Debug)]
 pub struct SliceAllocate {
-    cursor: AtomicUsize,
-    len: AtomicUsize,
+    cursor: Arc<AtomicUsize>,
+    len: Arc<AtomicUsize>,
     pub(crate) ptr: ManuallyDrop<Vec<u8>>,
 }
 
@@ -223,8 +229,8 @@ impl SliceAllocate {
 
     pub(crate) fn new(n: usize) -> Self {
         SliceAllocate {
-            cursor: AtomicUsize::new(1),
-            len: AtomicUsize::new(n),
+            cursor: Arc::from(AtomicUsize::new(1)),
+            len: Arc::from(AtomicUsize::new(n)),
             ptr: ManuallyDrop::new(vec![0u8; n]),
         }
     }
@@ -262,6 +268,12 @@ impl SliceAllocate {
         let mut buffer = self.borrow_mut_slice(start, bytes.len());
         buffer.copy_from_slice(bytes);
         start + buffer.len()
+    }
+
+    pub fn reset(&mut self) {
+        self.len.swap(0, Ordering::Relaxed);
+        self.cursor.store(0, Ordering::Relaxed);
+        self.ptr.clear();
     }
 
     #[inline]
@@ -320,7 +332,6 @@ fn t_onlylayoutalloc_slice() {
         let key = alloc.alloc_mut(i * 10);
         key.fill(20);
     }
-    println!("{:?}", alloc.ptr);
 }
 
 #[test]
@@ -336,4 +347,9 @@ fn t_block_bytes() {
     for datum in 0..block.size() {
         assert_eq!(buffer[datum], datum as u8);
     }
+}
+
+#[test]
+fn t_clone() {
+
 }
