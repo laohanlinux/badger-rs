@@ -3,7 +3,6 @@ mod arena;
 mod cursor;
 mod node;
 mod skip;
-pub mod small_allocate;
 
 use crate::skl::node::Node;
 use crate::y::ValueStruct;
