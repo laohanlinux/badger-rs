@@ -7,8 +7,6 @@
 
 use std::mem::align_of;
 
-extern crate core;
-
 mod options;
 mod skl;
 mod y;

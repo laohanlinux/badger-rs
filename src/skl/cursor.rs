@@ -30,7 +30,9 @@ impl<'a> Cursor<'a> {
     /// Returns the key at the current position.
     pub fn key(&self) -> &[u8] {
         let node = self.item.borrow().unwrap();
-        self.list.arena_ref().get_key(node.key_offset, node.key_size)
+        self.list
+            .arena_ref()
+            .get_key(node.key_offset, node.key_size)
     }
 
     /// Return value.
@@ -48,7 +50,7 @@ impl<'a> Cursor<'a> {
         next
     }
 
-    // Advances to the previous position.
+    /// Advances to the previous position.
     pub fn prev(&'a self) -> Option<&Node> {
         assert!(self.valid());
         let (node, _) = self.list.find_near(self.key(), true, false);
@@ -73,8 +75,7 @@ impl<'a> Cursor<'a> {
     /// Seeks position at the first entry in list.
     /// Final state of iterator is Valid() iff list is not empty.
     pub fn seek_for_first(&'a self) -> Option<&'a Node> {
-        let head = self.list.get_head();
-        let node = self.list.get_next(&head, 0);
+        let node = self.list.get_next(self.list.get_head(), 0);
         *self.item.borrow_mut() = node;
         node
     }
