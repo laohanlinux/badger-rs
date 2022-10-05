@@ -55,7 +55,7 @@ impl Arena {
     }
 
     // TODO: maybe use MaybeUint instead
-    pub(crate) fn reset(&mut self) {
+    pub(crate) fn reset(&self) {
         self.slice.reset();
         self.node_alloc.reset();
     }
@@ -73,7 +73,7 @@ impl Arena {
         Some(self.node_alloc.get(offset))
     }
 
-    pub(crate) fn get_mut_node(&mut self, offset: usize) -> Option<&mut Node> {
+    pub(crate) fn get_mut_node(&self, offset: usize) -> Option<&mut Node> {
         if offset == 0 {
             return None;
         }
@@ -81,7 +81,7 @@ impl Arena {
     }
 
     // Returns start location
-    pub(crate) fn put_key(&mut self, key: &[u8]) -> u32 {
+    pub(crate) fn put_key(&self, key: &[u8]) -> u32 {
         self.slice.append(key) as u32
     }
 
@@ -89,7 +89,7 @@ impl Arena {
     // val buffer. Returns an offset into buf. User is responsible for remembering
     // size of val. We could also store this size inside arena but the encoding and
     // decoding will incur some overhead.
-    pub(crate) fn put_val(&mut self, v: &ValueStruct) -> (u32, u16) {
+    pub(crate) fn put_val(&self, v: &ValueStruct) -> (u32, u16) {
         let buf: Vec<u8> = v.into();
         let offset = self.put_key(buf.as_slice());
         (offset, buf.len() as u16)
@@ -164,7 +164,7 @@ fn t_arena_value() {
 
 #[test]
 fn t_arena_store_node() {
-    let mut arena = Arena::new(1 << 20);
+    let arena = Arena::new(1 << 20);
     let mut starts = vec![];
     for i in 0..5 {
         let start = arena.put_node(i);
@@ -184,4 +184,21 @@ fn t_arena_store_node() {
     let second_node = arena.get_node(Node::size()).unwrap();
     let offset = arena.get_node_offset(second_node);
     assert_eq!(offset, Node::size());
+}
+
+#[test]
+fn t_arena_currency() {
+    let arena = Arc::new(Arena::new(1 << 20));
+    let mut waits = vec![];
+    for i in 0..100 {
+        let arena = Arc::clone(&arena);
+        waits.push(spawn(move || arena.put_key(b"abc")));
+    }
+
+    let mut offsets = waits
+        .into_iter()
+        .map(|join| join.join().unwrap())
+        .collect::<Vec<_>>();
+    offsets.sort();
+    println!("offsets: {:?}", offsets);
 }

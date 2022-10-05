@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::fmt::{write, Display, Formatter};
 use std::ops::Deref;
 use std::sync::atomic::Ordering;
-use std::{cmp, ptr, ptr::NonNull, sync::atomic::AtomicI32};
 use std::sync::Arc;
+use std::{cmp, ptr, ptr::NonNull, sync::atomic::AtomicI32};
 
 use crate::y::ValueStruct;
 
@@ -25,17 +25,6 @@ unsafe impl Send for SkipList {}
 
 unsafe impl Sync for SkipList {}
 
-// impl Clone for SkipList {
-//     fn clone(&self) -> Self {
-//         Self{
-//             height: self.height.clone(),
-//             head: self.head.clone(),
-//             _ref: self._ref.clone(),
-//             arena: self.arena.clone(),
-//         }
-//     }
-// }
-
 impl SkipList {
     pub fn new(arena_size: usize) -> Self {
         let mut arena = Arena::new(arena_size);
@@ -45,20 +34,9 @@ impl SkipList {
             height: Arc::new(AtomicI32::new(1)),
             head: NonNull::new(node).unwrap(),
             _ref: Arc::new(AtomicI32::new(1)),
-            arena: arena,
+            arena,
         }
     }
-
-    // pub fn new_with_arena(mut arena: Arena) -> Self {
-    //     let v = ValueStruct::default();
-    //     let node = Node::new(&mut arena, "".as_bytes(), &v, MAX_HEIGHT as isize);
-    //     Self {
-    //         height: Arc::new(AtomicI32::new(1)),
-    //         head: NonNull::new(node).unwrap(),
-    //         _ref: Arc::new(AtomicI32::new(1)),
-    //         arena: NonNull::new(&mut arena).unwrap(),
-    //     }
-    // }
 
     /// Increases the reference count
     pub fn incr_ref(&self) {
@@ -78,9 +56,9 @@ impl SkipList {
         &self.arena
     }
 
-    pub(crate)  fn arena_mut_ref(&mut self) -> &mut Arena {
+    pub(crate) fn arena_mut_ref(&self) -> &Arena {
         // unsafe  {self.arena.as_mut()}
-        &mut self.arena
+        &self.arena
     }
 
     pub(crate) fn get_head(&self) -> &Node {
@@ -94,7 +72,8 @@ impl SkipList {
     }
 
     pub(crate) fn get_next(&self, nd: &Node, height: isize) -> Option<&Node> {
-        self.arena_ref().get_node(nd.get_next_offset(height as usize) as usize)
+        self.arena_ref()
+            .get_node(nd.get_next_offset(height as usize) as usize)
     }
 
     fn get_height(&self) -> isize {
@@ -115,7 +94,7 @@ impl SkipList {
     ) -> (Option<&Node>, bool) {
         let mut x = self.get_head();
         let mut level = self.get_height() - 1;
-        println!("start to hight: {}", level);
+        //println!("start to hight: {}", level);
         loop {
             // Assume x.key < key
             let mut next = self.get_next(x, level);
@@ -219,11 +198,11 @@ impl SkipList {
 
     /// Inserts the key-value pair.
     /// FIXME: it bad, should be not use unsafe, but ....
-    pub fn put(&mut self, key: &[u8], v: ValueStruct) {
+    pub fn put(&self, key: &[u8], v: ValueStruct) {
         unsafe { self._put(key, v) }
     }
 
-    unsafe fn _put(&mut self, key: &[u8], v: ValueStruct) {
+    unsafe fn _put(&self, key: &[u8], v: ValueStruct) {
         // Since we allow overwrite, we may not need to create a new node. We might not even need to
         // increase the height. Let's defer these actions.
         // let mut def_node = &mut Node::default();
@@ -239,7 +218,7 @@ impl SkipList {
             prev[i] = _pre;
             if _next.is_some() && ptr::eq(_pre, _next.unwrap()) {
                 let mut arena = self.arena_ref().copy().as_mut();
-                prev[i].as_ref().unwrap().set_value(&mut arena, &v);
+                prev[i].as_ref().unwrap().set_value(&arena, &v);
                 return;
             }
             if _next.is_some() {
@@ -310,10 +289,17 @@ impl SkipList {
                     self.find_splice_for_level(key, prev[i].as_ref().unwrap(), i as isize);
                 prev[i] = _pre;
                 // FIXME: maybe nil pointer
-                next[i] = _next.unwrap();
+                if _next.is_some() {
+                    next[i] = _next.unwrap();
+                } else {
+                    next[i] = std::ptr::null();
+                }
                 if ptr::eq(prev[i], next[i]) {
                     assert_eq!(i, 0, "Equality can happen only on base level: {}", i);
-                    prev[i].as_ref().unwrap().set_value( self.arena_mut_ref(), &v);
+                    prev[i]
+                        .as_ref()
+                        .unwrap()
+                        .set_value(self.arena_mut_ref(), &v);
                     return;
                 }
             }
@@ -352,7 +338,7 @@ impl SkipList {
         if !found {
             return None;
         }
-        println!("find a key: {:?}", key);
+        // println!("find a key: {:?}", key);
         let (value_offset, value_size) = node.unwrap().get_value_offset();
         Some(self.arena_ref().get_val(value_offset, value_size))
     }
@@ -427,8 +413,12 @@ mod tests {
     use crate::skl::skip::SkipList;
     use crate::skl::{Arena, Cursor, MAX_HEIGHT};
     use crate::y::ValueStruct;
+    use rand::distributions::{Alphanumeric, DistString};
     use std::ptr;
-    use std::sync::atomic::Ordering;
+    use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::Arc;
+    use std::thread::spawn;
 
     const ARENA_SIZE: usize = 1 << 20;
 
@@ -509,13 +499,188 @@ mod tests {
         assert_eq!(50000, v.cas_counter);
     }
 
-    // #[test]
-    // fn t_concurrent_basic() {
-    //     let mut arena = Arena::new(ARENA_SIZE);
-    //     let mut st = SkipList::new_with_arena(arena);
-    //     const n: usize = 100;
-    //     // let mut st1 = st.clone();
-    //     st.put(b"a", ValueStruct::new(b"100".to_vec(), 0, 0, 0));
-    //     // let value = st1.get(b"a").unwrap();
-    // }
+    #[test]
+    fn t_concurrent_basic() {
+        use rand::{thread_rng, Rng};
+
+        let st = Arc::new(SkipList::new(ARENA_SIZE));
+        let mut kv = vec![];
+        for i in 0..10000 {
+            kv.push((
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 10),
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 20),
+            ));
+        }
+
+        let mut waits = vec![];
+        for (key, value) in kv.clone() {
+            let st_ptr = st.clone();
+            waits.push(spawn(move || {
+                // let st = unsafe {st.as_ref()};
+                st_ptr.put(
+                    key.as_bytes(),
+                    ValueStruct::new(value.as_bytes().to_vec(), 0, 0, 0),
+                )
+            }));
+        }
+        for join in waits {
+            join.join().unwrap();
+        }
+
+        for (key, value) in kv {
+            let got = st.get(key.as_bytes()).unwrap();
+            assert_eq!(got.value, value.as_bytes().to_vec());
+        }
+    }
+
+    #[test]
+    fn t_one_key() {
+        let key = "thekey";
+        let st = Arc::new(SkipList::new(ARENA_SIZE));
+        let mut waits = (0..100)
+            .map(|i| {
+                let st = st.clone();
+                let key = key.clone();
+                spawn(move || {
+                    st.put(
+                        key.as_bytes(),
+                        ValueStruct::new(format!("{}", i).as_bytes().to_vec(), 0, 0, i as u64),
+                    );
+                })
+            })
+            .collect::<Vec<_>>();
+        // We expect that at least some write made it such that some read returns a value.
+        let save_value = Arc::new(AtomicI32::new(0));
+        for i in 0..100 {
+            let st = st.clone();
+            let key = key.clone();
+            let save_value = save_value.clone();
+            let join = spawn(move || {
+                if let Some(value) = st.get(key.as_bytes()) {
+                    save_value.fetch_add(1, Ordering::Relaxed);
+                    let v = String::from_utf8_lossy(&value.value)
+                        .parse::<i32>()
+                        .unwrap();
+                    assert!(0 <= v && v < 100);
+                    let cas_counter = value.cas_counter;
+                    assert_eq!(v as u64, cas_counter);
+                }
+            });
+            waits.push(join);
+        }
+
+        for join in waits {
+            join.join().unwrap();
+        }
+
+        assert!(save_value.load(Ordering::Relaxed) > 0);
+    }
+
+    #[test]
+    fn t_find_near() {
+        let st = SkipList::new(ARENA_SIZE);
+        for i in 0..1000 {
+            let key = format!("{:05}", i * 10 + 5);
+            st.put(
+                key.as_bytes(),
+                ValueStruct::new(i.to_string().as_bytes().to_vec(), 0, 0, i),
+            );
+        }
+
+        let v = st.find_near(b"00001", false, false);
+        assert!(v.0.is_some());
+        assert_eq!(b"00005", v.0.unwrap().key(&st.arena));
+        assert!(!v.1);
+        let v = st.find_near(b"00001", false, true);
+        assert!(v.0.is_some());
+        assert_eq!(b"00005", v.0.unwrap().key(&st.arena));
+        assert!(!v.1);
+        let v = st.find_near(b"00001", true, false);
+        assert!(v.0.is_none());
+        assert!(!v.1);
+        let v = st.find_near(b"00001", true, true);
+        assert!(v.0.is_none());
+        assert!(!v.1);
+
+        let (n, eq) = st.find_near(b"00005", false, false);
+        assert!(n.is_some());
+        assert_eq!(b"00015", n.unwrap().key(&st.arena));
+        assert!(!eq);
+        let (n, eq) = st.find_near(b"00005", false, true);
+        assert!(n.is_some());
+        assert_eq!(b"00005", n.unwrap().key(&st.arena));
+        assert!(eq);
+        let (n, eq) = st.find_near(b"00005", true, false);
+        assert!(n.is_none());
+        assert!(!eq);
+        let (n, eq) = st.find_near(b"00005", true, true);
+        assert!(n.is_some());
+        assert_eq!(b"00005", n.unwrap().key(&st.arena));
+        assert!(eq);
+
+        let (n, eq) = st.find_near(b"05555", false, false);
+        assert!(n.is_some());
+        assert_eq!(b"05565", n.unwrap().key(&st.arena));
+        assert!(!eq);
+        let (n, eq) = st.find_near(b"05555", false, true);
+        assert!(n.is_some());
+        assert_eq!(b"05555", n.unwrap().key(&st.arena));
+        assert!(eq);
+        let (n, eq) = st.find_near(b"05555", true, false);
+        assert!(n.is_some());
+        assert!(!eq);
+        assert_eq!(b"05545", n.unwrap().key(&st.arena));
+        let (n, eq) = st.find_near(b"05555", true, true);
+        assert!(n.is_some());
+        assert_eq!(b"05555", n.unwrap().key(&st.arena));
+        assert!(eq);
+
+        let (n, eq) = st.find_near(b"05558", false, false);
+        assert!(n.is_some());
+        assert_eq!(b"05565", n.unwrap().key(&st.arena));
+        assert!(!eq);
+        let (n, eq) = st.find_near(b"05558", false, true);
+        assert!(n.is_some());
+        assert_eq!(b"05565", n.unwrap().key(&st.arena));
+        assert!(!eq);
+        let (n, eq) = st.find_near(b"05558", true, false);
+        assert!(n.is_some());
+        assert!(!eq);
+        assert_eq!(b"05555", n.unwrap().key(&st.arena));
+        let (n, eq) = st.find_near(b"05558", true, true);
+        assert!(n.is_some());
+        assert_eq!(b"05555", n.unwrap().key(&st.arena));
+        assert!(!eq);
+
+        let (n, eq) = st.find_near(b"09995", false, false);
+        assert!(n.is_none());
+        assert!(!eq);
+        let (n, eq) = st.find_near(b"09995", false, true);
+        assert!(n.is_some());
+        assert_eq!(b"09995", n.unwrap().key(&st.arena));
+        assert!(eq);
+        let (n, eq) = st.find_near(b"09995", true, false);
+        assert!(n.is_some());
+        assert!(!eq);
+        assert_eq!(b"09985", n.unwrap().key(&st.arena));
+        let (n, eq) = st.find_near(b"09995", true, true);
+        assert!(n.is_some());
+        assert_eq!(b"09995", n.unwrap().key(&st.arena));
+        assert!(eq);
+
+        let (n, eq) = st.find_near(b"59995", false, false);
+        assert!(n.is_none());
+        assert!(!eq);
+        let (n, eq) = st.find_near(b"59995", false, true);
+        assert!(n.is_none());
+        assert!(!eq);
+        let (n, eq) = st.find_near(b"59995", true, false);
+        assert!(n.is_some());
+        assert!(!eq);
+        assert_eq!(b"09995", n.unwrap().key(&st.arena));
+        let (n, eq) = st.find_near(b"59995", true, true);
+        assert!(n.is_some());
+        assert_eq!(b"09995", n.unwrap().key(&st.arena));
+        assert!(!eq);
+    }
 }
