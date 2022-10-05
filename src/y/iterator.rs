@@ -52,7 +52,7 @@ impl ValueStruct {
 
     pub(crate) fn read_data(&mut self, buffer: &[u8]) {
         use std::io::Read;
-        println!("{:?}", buffer);
+        // println!("{:?}", buffer);
         let mut cursor = Cursor::new(buffer);
         self.meta = cursor.read_u8().unwrap();
         self.user_meta = cursor.read_u8().unwrap();
@@ -89,7 +89,7 @@ impl Into<Vec<u8>> for &ValueStruct {
     fn into(self) -> Vec<u8> {
         let mut buffer = vec![0; self.size()];
         self.write_data(&mut buffer);
-        println!("{:?}", buffer);
+        // println!("{:?}", buffer);
         buffer
     }
 }

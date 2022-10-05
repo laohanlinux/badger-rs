@@ -1,5 +1,7 @@
 use std::marker::PhantomData;
+use std::mem::size_of;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 pub trait Allocate {
     fn borrow_vec(&self, start: usize, n: usize) -> Slice;
