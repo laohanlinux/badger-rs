@@ -1,11 +1,9 @@
 use crate::skl::arena::Arena;
 use crate::y::ValueStruct;
+use crate::skl::MAX_HEIGHT;
+use crate::skl::HEIGHT_INCREASE;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-
-const MAX_HEIGHT: usize = 20;
-const HEIGHT_INCREASE: u32 = u32::MAX / 3;
-const MAX_NODE_SIZE: usize = size_of::<Node>();
 
 #[derive(Debug)]
 #[repr(C)]

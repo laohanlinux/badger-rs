@@ -1,7 +1,6 @@
 // use crate::skl::{Node, OwnedNode, MAX_HEIGHT, MAX_NODE_SIZE};
 use crate::skl::alloc::{OnlyLayoutAllocate, SliceAllocate};
 use crate::skl::node::Node;
-use crate::skl::small_allocate::SmallAllocate;
 use crate::skl::Allocate;
 use crate::skl::{alloc::Chunk, SmartAllocate};
 use crate::y::ValueStruct;
