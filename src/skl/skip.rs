@@ -1,5 +1,4 @@
 use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
-use crate::BadgerErr;
 use rand::random;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -381,8 +380,7 @@ impl SkipList {
 impl Drop for SkipList {
     fn drop(&mut self) {
         let _ref = self._ref.load(Ordering::Relaxed);
-        println!("SkipList reference: {:?}", _ref);
-        // assert_eq!(_ref, 1, "it should be 1 reference after drop skiplist");
+        println!("SkipList reference: {:p} => {:?}", &self, _ref);
         self.arena_mut_ref().reset();
     }
 }
