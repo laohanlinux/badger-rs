@@ -10,10 +10,15 @@ use memmap::Mmap;
 use std::fs::{remove_file, File};
 use std::io;
 use std::io::{Cursor, Seek, SeekFrom};
-use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
+
+#[cfg(target_os = "")]
+use std::os::unix::fs::FileExt;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::FileExt;
 
 const FILE_SUFFIX: &str = "";
 
@@ -107,7 +112,8 @@ impl TableCore {
             }
         }
         let mut buffer = vec![0u8; sz];
-        let nbr = self.fd.read_at(&mut buffer, off as u64)?;
+        #[cfg(any(target_os = "windows"))]
+        let nbr = self.fd.seek_read(&mut buffer, off as u64)?;
         // todo add stats
         Ok(buffer)
     }
@@ -219,7 +225,7 @@ impl TableCore {
 
     fn load_to_ram(&mut self) -> Result<()> {
         let mut _mmap = vec![0u8; self.table_size];
-        let read = self.fd.read_at(&mut _mmap, 0).or_else(Err)?;
+        let read = self.fd.seek_read(&mut _mmap, 0).or_else(Err)?;
         if read != self.table_size {
             return Err(format!(
                 "Unable to load file in memory, Table faile: {}",
