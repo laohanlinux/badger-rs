@@ -12,9 +12,9 @@ use std::io::{self, Cursor, Read, Write};
 
 #[derive(Debug, Default)]
 pub(crate) struct Header {
-    pub(crate) p_len: u16, // Overlap with base key.
-    pub(crate) k_len: u16, // Length of the diff.
-    v_len: u16, // Length of the value.
+    pub(crate) p_len: u16, // Overlap with base key(Prefix length)
+    pub(crate) k_len: u16, // Length of the diff. Eg: "d" = "abcd" - "abc"
+    v_len: u16,            // Length of the value.
     prev: u32, // Offset for the previous key-value pair. The offset is relative to `block` base offset.
 }
 
@@ -99,8 +99,9 @@ impl Builder {
 
     fn add_helper(&mut self, key: &[u8], v: &ValueStruct) {
         // Add key to bloom filter.
-        let sz = 2 + key.len();
-        self.key_buf.write_u16::<BigEndian>(sz as u16).unwrap();
+        self.key_buf
+            .write_u16::<BigEndian>(key.len() as u16)
+            .unwrap();
         self.key_buf.write_all(key).unwrap();
         self.key_count += 1;
 
@@ -132,6 +133,7 @@ impl Builder {
         self.buf
             .write_all(<&ValueStruct as Into<Vec<u8>>>::into(v).as_slice())
             .unwrap();
+        println!("insert a key-value: {:?}", key.to_vec());
         // Increment number of keys added for this current block.
         self.counter += 1;
     }
@@ -144,9 +146,10 @@ impl Builder {
 
     // Add adds a key-value pair to the block.
     // If doNotRestart is true, we will not restart even if b.counter >= restartInterval.
-    fn add(&mut self, key: &[u8], value: &ValueStruct) -> crate::y::Result<()> {
+    pub fn add(&mut self, key: &[u8], value: &ValueStruct) -> crate::y::Result<()> {
         if self.counter >= Self::RESTART_INTERVAL {
             self.finish_block();
+            println!("create new block: base:{}, pre: {}", self.base_offset, self.prev_offset);
             // Start a new block. Initialize the block.
             self.restarts.push(self.buf.get_ref().len() as u32);
             self.counter = 0;
@@ -222,17 +225,16 @@ impl Builder {
 
 impl Default for Builder {
     fn default() -> Self {
-        // Self {
-        //     counter: 0,
-        //     buf: BytesMut::with_capacity(64 << 20),
-        //     base_key: vec![],
-        //     base_offset: vec![],
-        //     restarts: vec![],
-        //     prev_offset: u32::MAX,
-        //     key_buf: BytesMut::with_capacity(32 << 20),
-        //     key_count: 0,
-        // }
-        todo!()
+        Self {
+            counter: 0,
+            buf: Cursor::new(Vec::with_capacity(64 << 20)),
+            base_key: vec![],
+            base_offset: 0,
+            restarts: vec![],
+            prev_offset: u32::MAX,
+            key_buf: Cursor::new(Vec::with_capacity(32 << 20)),
+            key_count: 0,
+        }
     }
 }
 

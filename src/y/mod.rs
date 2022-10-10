@@ -36,6 +36,20 @@ pub enum Error {
     /// Returned
     #[error("SetIfAbsent failed since key already exists")]
     ValueKeyExists,
+    /// Returned if threshold is set to zero, and value log GC is called.
+    /// In such a case, GC can't be run.
+    #[error("Value log GC can't run because threshold is set to zero")]
+    ValueThresholdZero,
+    /// Returned if a call for value log GC doesn't result in a log file rewrite.
+    #[error("Value log GC attempt didn't result in any cleanup")]
+    ValueNoRewrite,
+    /// Returned if a value log GC is called either while another GC is running, or
+    /// after KV::Close has been called.
+    #[error("Value log GC request rejected")]
+    ValueRejected,
+    /// Returned if the user request is invalid.
+    #[error("Invalid request")]
+    ValueInvalidRequest,
 }
 
 impl Default for Error {
@@ -92,4 +106,15 @@ pub fn mmap(fd: &File, writable: bool, size: usize) -> Result<Mmap> {
             .map_err(|_| "Failed to mmap")?
     };
     Ok(m)
+}
+
+pub fn open_synced_file(file_name: &str, sync: bool) -> Result<File> {
+    let file = File::options()
+        .write(true)
+        .read(true)
+        .create(true)
+        .append(true)
+        .open(file_name)
+        .or_else(Err)?;
+    Ok(file)
 }

@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
-#[cfg(target_os = "")]
+#[cfg(target_os = "macos")]
 use std::os::unix::fs::FileExt;
 
 #[cfg(target_os = "windows")]
@@ -225,7 +225,10 @@ impl TableCore {
 
     fn load_to_ram(&mut self) -> Result<()> {
         let mut _mmap = vec![0u8; self.table_size];
+        #[cfg(target_os = "windows")]
         let read = self.fd.seek_read(&mut _mmap, 0).or_else(Err)?;
+        #[cfg(target_os = "macos")]
+        let read = self.fd.read_at(&mut _mmap, 0)?;
         if read != self.table_size {
             return Err(format!(
                 "Unable to load file in memory, Table faile: {}",
