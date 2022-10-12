@@ -6,7 +6,8 @@ use crate::Error;
 use byteorder::{BigEndian, ReadBytesExt};
 use filename::file_name;
 use growable_bloom_filter::GrowableBloom;
-use memmap::Mmap;
+use memmap::{Mmap, MmapMut};
+use std::fmt::{Display, Formatter};
 use std::fs::{remove_file, File};
 use std::io;
 use std::io::{Cursor, Seek, SeekFrom};
@@ -17,10 +18,12 @@ use std::time::Duration;
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::FileExt;
 
+use serde_json::to_vec;
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::FileExt;
+use std::str::pattern::Pattern;
 
-const FILE_SUFFIX: &str = "";
+pub(crate) const FILE_SUFFIX: &str = ".sst";
 
 #[derive(Clone)]
 struct KeyOffset {
@@ -31,7 +34,7 @@ struct KeyOffset {
 
 pub struct Table {}
 
-struct TableCore {
+pub(crate) struct TableCore {
     _ref: AtomicI32,
     fd: File,
     file_name: String,
@@ -39,7 +42,7 @@ struct TableCore {
     table_size: usize,
     block_index: Vec<KeyOffset>,
     loading_mode: FileLoadingMode,
-    _mmap: Option<Mmap>, // Memory mapped.
+    _mmap: Option<MmapMut>, // Memory mapped.
     // The following are initialized once and const.
     smallest: Vec<u8>, // smallest keys.
     biggest: Vec<u8>,  // biggest keys.
@@ -52,17 +55,10 @@ impl TableCore {
     // entry.  Returns a table with one reference count on it (decrementing which may delete the file!
     // -- consider t.Close() instead).  The fd has to writeable because we call Truncate on it before
     // deleting.
-    pub fn open_table(mut fd: File, loading_mode: FileLoadingMode) -> Result<Self> {
-        let filename = file_name(&fd)
-            .unwrap()
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
+    pub fn open_table(mut fd: File, filename: &str, loading_mode: FileLoadingMode) -> Result<Self> {
         let file_sz = fd.seek(SeekFrom::End(0)).or_else(Err)?;
         fd.seek(SeekFrom::Start(0)).or_else(Err)?;
-        let id = parse_file_id(&filename)?;
+        let id = parse_file_id(filename)?;
         let mut table = TableCore {
             _ref: AtomicI32::new(1),
             fd,
@@ -82,7 +78,7 @@ impl TableCore {
             table.load_to_ram()?;
         }
         table.read_index()?;
-
+        println!("open table ==> {}", table);
         // todo
         Ok(table)
     }
@@ -112,8 +108,13 @@ impl TableCore {
             }
         }
         let mut buffer = vec![0u8; sz];
-        #[cfg(any(target_os = "windows"))]
-        let nbr = self.fd.seek_read(&mut buffer, off as u64)?;
+
+        #[cfg(target_os = "windows")]
+        self.fd.seek_read(&mut buffer, off as u64)?;
+
+        #[cfg(target_os = "macos")]
+        self.fd.read_at(&mut buffer, sz as u64)?;
+
         // todo add stats
         Ok(buffer)
     }
@@ -177,7 +178,7 @@ impl TableCore {
                 block.offset, head.p_len
             );
             let out = self.read(Header::size() + block.offset, head.k_len as usize)?;
-            self.block_index[i].key = out;
+            self.block_index[i].key = out.clone().to_vec();
         }
         self.block_index.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(())
@@ -189,11 +190,11 @@ impl TableCore {
         }
 
         let ko = &self.block_index[index];
+        let data = self.read(ko.offset, ko.len)?;
         let mut blk = Block {
             offset: ko.offset,
-            data: vec![],
+            data: data,
         };
-        blk.data = self.read(blk.offset, ko.len)?;
         Ok(blk)
     }
 
@@ -224,7 +225,7 @@ impl TableCore {
     }
 
     fn load_to_ram(&mut self) -> Result<()> {
-        let mut _mmap = vec![0u8; self.table_size];
+        let mut _mmap = MmapMut::map_anon(self.table_size).unwrap();
         #[cfg(target_os = "windows")]
         let read = self.fd.seek_read(&mut _mmap, 0).or_else(Err)?;
         #[cfg(target_os = "macos")]
@@ -237,6 +238,7 @@ impl TableCore {
             .into());
         }
         // todo stats
+        self._mmap = Some(_mmap);
         Ok(())
     }
 }
@@ -248,11 +250,31 @@ impl Drop for TableCore {
 
         // It's necessary to delete windows files
         if self.loading_mode == MemoryMap {
-            // todo
+            self._mmap
+                .as_mut()
+                .unwrap()
+                .flush()
+                .expect("failed to mmap")
         }
+        // This is very important to let the FS know that the file is deleted.
+        #[cfg(not(test))]
         self.fd.set_len(0).expect("can not truncate file to 0");
-        drop(&mut self.fd);
+        #[cfg(not(test))]
         remove_file(Path::new(&self.file_name)).expect("fail to remove file");
+    }
+}
+
+impl Display for TableCore {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}",
+            self._ref.load(Ordering::Relaxed),
+            self.file_name,
+            self.block_index.len(),
+            self.id,
+            self.table_size
+        )
     }
 }
 
@@ -267,7 +289,7 @@ pub fn parse_file_id(name: &str) -> Result<u64> {
     use std::str::pattern::Pattern;
     let path = Path::new(name);
     let filename = path.file_name().unwrap().to_str().unwrap();
-    if !filename.is_suffix_of(FILE_SUFFIX) {
+    if !FILE_SUFFIX.is_suffix_of(filename) {
         return Ok(0);
     }
     let name = filename.trim_end_matches(FILE_SUFFIX);

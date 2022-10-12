@@ -3,7 +3,7 @@ mod metrics;
 
 use crate::Error::Unexpected;
 pub use iterator::ValueStruct;
-use memmap::Mmap;
+use memmap::{Mmap, MmapMut};
 use std::collections::hash_map::DefaultHasher;
 use std::fs::File;
 use std::hash::Hasher;
@@ -97,12 +97,12 @@ pub fn hash(buffer: &[u8]) -> u64 {
     hasher.finish()
 }
 
-pub fn mmap(fd: &File, writable: bool, size: usize) -> Result<Mmap> {
+pub fn mmap(fd: &File, writable: bool, size: usize) -> Result<MmapMut> {
     let m = unsafe {
         memmap::MmapOptions::new()
             .offset(0)
             .len(size)
-            .map(fd)
+            .map_mut(fd)
             .map_err(|_| "Failed to mmap")?
     };
     Ok(m)

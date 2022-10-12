@@ -10,12 +10,12 @@ use std::collections::HashMap;
 use std::hash::Hasher;
 use std::io::{self, Cursor, Read, Write};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Header {
     pub(crate) p_len: u16, // Overlap with base key(Prefix length)
     pub(crate) k_len: u16, // Length of the diff. Eg: "d" = "abcd" - "abc"
-    v_len: u16,            // Length of the value.
-    prev: u32, // Offset for the previous key-value pair. The offset is relative to `block` base offset.
+    pub(crate) v_len: u16, // Length of the value.
+    pub(crate) prev: u32, // Offset for the previous key-value pair. The offset is relative to `block` base offset.
 }
 
 impl Header {
@@ -133,7 +133,7 @@ impl Builder {
         self.buf
             .write_all(<&ValueStruct as Into<Vec<u8>>>::into(v).as_slice())
             .unwrap();
-        println!("insert a key-value: {:?}", key.to_vec());
+        // println!("insert a key-value: {:?}", key.to_vec());
         // Increment number of keys added for this current block.
         self.counter += 1;
     }
@@ -149,7 +149,7 @@ impl Builder {
     pub fn add(&mut self, key: &[u8], value: &ValueStruct) -> crate::y::Result<()> {
         if self.counter >= Self::RESTART_INTERVAL {
             self.finish_block();
-            println!("create new block: base:{}, pre: {}", self.base_offset, self.prev_offset);
+            // println!("create new block: base:{}, pre: {}", self.base_offset, self.prev_offset);
             // Start a new block. Initialize the block.
             self.restarts.push(self.buf.get_ref().len() as u32);
             self.counter = 0;
