@@ -26,8 +26,8 @@ use std::str::pattern::Pattern;
 pub(crate) const FILE_SUFFIX: &str = ".sst";
 
 #[derive(Clone)]
-struct KeyOffset {
-    key: Vec<u8>,
+pub(crate) struct KeyOffset {
+    pub(crate) key: Vec<u8>,
     offset: usize,
     len: usize,
 }
@@ -40,7 +40,7 @@ pub(crate) struct TableCore {
     file_name: String,
     // Initialized in OpenTable, using fd.Stat()
     table_size: usize,
-    block_index: Vec<KeyOffset>,
+    pub(crate) block_index: Vec<KeyOffset>,
     loading_mode: FileLoadingMode,
     _mmap: Option<MmapMut>, // Memory mapped.
     // The following are initialized once and const.
@@ -191,7 +191,7 @@ impl TableCore {
         Ok(())
     }
 
-    fn block(&self, index: usize) -> Result<Block> {
+    pub(crate) fn block(&self, index: usize) -> Result<Block> {
         if index >= self.block_index.len() {
             return Err("block out of index".into());
         }
@@ -282,9 +282,9 @@ impl Display for TableCore {
     }
 }
 
-struct Block {
+pub(crate)  struct Block {
     offset: usize,
-    data: Vec<u8>,
+    pub(crate) data: Vec<u8>,
 }
 
 type ByKey = Vec<KeyOffset>;

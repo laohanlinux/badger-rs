@@ -1,16 +1,16 @@
 use crate::table::builder::Header;
-use crate::table::table::Table;
+use crate::table::table::{Block, Table, TableCore};
 use crate::y::{Result, ValueStruct};
 use crate::Error;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell, RefMut};
 use std::ops::Deref;
 use std::{cmp, io};
 
 #[derive(Debug)]
-pub(crate) struct BlockIterator<'a> {
-    data: &'a [u8],
+pub(crate) struct BlockIterator {
+    data: Vec<u8>,
     pos: RefCell<u32>,
-    base_key: RefCell<&'a [u8]>,
+    base_key: RefCell<Vec<u8>>,
     last_header: RefCell<Header>,
 }
 
@@ -34,44 +34,41 @@ pub(crate) enum BlockIteratorSeek {
     Current,
 }
 
-impl<'a> BlockIterator<'a> {
-    pub(crate) fn new(data: &'a [u8]) -> Self {
+impl BlockIterator {
+    pub(crate) fn new(data: Vec<u8>) -> Self {
         Self {
             data,
             pos: RefCell::new(0),
-            base_key: RefCell::new(&data[..0]),
+            base_key: RefCell::new(vec![]),
             last_header: RefCell::new(Header::default()),
         }
     }
 
-    pub(crate) fn seek(
-        &'a self,
-        key: &[u8],
-        whence: BlockIteratorSeek,
-    ) -> Option<BlockIteratorItem<'a>> {
+    /// Brings us to the first block element that is >= input key.
+    pub fn seek(&self, key: &[u8], whence: BlockIteratorSeek) -> Option<BlockIteratorItem> {
         match whence {
             BlockIteratorSeek::Origin => self.reset(),
             BlockIteratorSeek::Current => {}
         }
         while let Some(item) = self.next() {
-            if item.key() == key {
+            if item.key() >= key {
                 return Some(item);
             }
         }
         None
     }
 
-    fn seek_to_first(&'a self) -> Option<BlockIteratorItem<'a>> {
+    fn seek_to_first(&self) -> Option<BlockIteratorItem> {
         self.reset();
         self.next()
     }
 
-    fn seek_to_last(&'a self) -> Option<BlockIteratorItem<'a>> {
+    fn seek_to_last(&self) -> Option<BlockIteratorItem> {
         while let Some(_) = self.next() {}
         self.prev()
     }
 
-    fn prev(&'a self) -> Option<BlockIteratorItem<'a>> {
+    fn prev(&self) -> Option<BlockIteratorItem> {
         // todo Why?
         if self.last_header.borrow().prev == u32::MAX {
             return None;
@@ -92,10 +89,10 @@ impl<'a> BlockIterator<'a> {
 
     fn reset(&self) {
         *self.pos.borrow_mut() = 0;
-        *self.base_key.borrow_mut() = &self.base_key.borrow().deref()[..0];
+        self.base_key.borrow_mut().clear();
     }
 
-    pub(crate) fn next(&'a self) -> Option<BlockIteratorItem<'a>> {
+    pub(crate) fn next(&self) -> Option<BlockIteratorItem> {
         let mut pos = self.pos.borrow_mut();
         if *pos >= self.data.len() as u32 {
             return None;
@@ -114,15 +111,16 @@ impl<'a> BlockIterator<'a> {
         if self.base_key.borrow().is_empty() {
             // This should be the first Next() for this block. Hence, prefix length should be zero.
             assert_eq!(h.p_len, 0);
-            *self.base_key.borrow_mut() =
-                &self.data[*pos as usize..(*pos + h.k_len as u32) as usize];
+            self.base_key
+                .borrow_mut()
+                .extend_from_slice(&self.data[*pos as usize..(*pos + h.k_len as u32) as usize]);
         }
         drop(pos);
         let (key, value) = self.parse_kv(&h);
         Some(BlockIteratorItem { key, value })
     }
 
-    pub(crate) fn _next(&'a self) -> Option<BlockIteratorItem<'a>> {
+    pub(crate) fn _next(&self) -> Option<BlockIteratorItem> {
         self.next()
     }
 
@@ -158,76 +156,185 @@ impl<'a> BlockIterator<'a> {
 // }
 
 struct Iterator<'a> {
-    table: &'a Table,
-    bpos: usize,
-    bi: &'a BlockIterator<'a>,
-    reversed: bool,
+    table: &'a TableCore,
+    bpos: RefCell<isize>,
+    bi: RefCell<Option<BlockIterator>>,
+    reversed: RefCell<bool>,
 }
 
 impl<'a> Iterator<'a> {
-    fn close(&mut self) {
-        self.table.deref();
-    }
-    fn reset(&mut self) {
-        self.bpos = 0;
+    fn reset(&self) {
+        *self.bpos.borrow_mut() = 0;
     }
 
-    fn valid(&self) -> bool {
-        todo!()
+    fn get_bi(&self) -> &Option<&BlockIterator> {
+        if self.bi.borrow().is_none() {
+            return &None;
+        }
+        let bi = self.bi.as_ptr() as *const Option<&BlockIterator>;
+        unsafe { &*bi }
     }
 
-    fn seek_to_first(&self) {
-        todo!()
+    fn get_or_set_bi(&self, bpos: usize) -> RefMut<'_, Option<BlockIterator>> {
+        let mut bi = self.bi.borrow_mut();
+        if bi.is_some() {
+            return bi;
+        }
+        let mut block = self.table.block(bpos).unwrap();
+        let it = BlockIterator::new(block.data);
+        *bi = Some(it);
+        bi
     }
 
-    fn seek_to_last(&self) {
-        todo!()
+    fn get_bi_by_bpos(&self, bpos: usize) -> RefMut<'_, Option<BlockIterator>> {
+        let mut bi = self.bi.borrow_mut();
+        let mut block = self.table.block(bpos).unwrap();
+        let it = BlockIterator::new(block.data);
+        *bi = Some(it);
+        bi
     }
 
-    fn seek_helper(&self, block_index: usize, key: &[u8]) {
-        todo!()
+    fn seek_to_first(&self) -> Option<IteratorItem> {
+        if self.table.block_index.is_empty() {
+            return None;
+        }
+        *self.bpos.borrow_mut() = 0;
+        let bi = self.get_bi_by_bpos(*self.bpos.borrow() as usize);
+        bi.as_ref()
+            .unwrap()
+            .seek_to_first()
+            .map(|b_item| b_item.into())
     }
 
-    fn seek_from(&self, key: &[u8], whence: BlockIteratorSeek) {
-        todo!()
+    fn seek_to_last(&self) -> Option<IteratorItem> {
+        if self.table.block_index.is_empty() {
+            return None;
+        }
+        *self.bpos.borrow_mut() = (self.table.block_index.len() - 1) as isize;
+        let bi = self.get_bi_by_bpos(*self.bpos.borrow() as usize);
+        bi.as_ref()
+            .unwrap()
+            .seek_to_last()
+            .map(|b_item| b_item.into())
     }
 
-    fn _seek(&self, key: &[u8]) {
-        todo!()
+    fn seek_helper(&self, block_index: usize, key: &[u8]) -> Option<IteratorItem> {
+        *self.bpos.borrow_mut() = block_index as isize;
+        let bi = self.get_bi_by_bpos(*self.bpos.borrow() as usize);
+        bi.as_ref()
+            .unwrap()
+            .seek(key, BlockIteratorSeek::Origin)
+            .map(|b_item| b_item.into())
     }
 
-    fn seek_for_prev(&self, key: &[u8]) {
-        todo!()
+    // Brings us to a key that is >= input key.
+    fn seek_from(&self, key: &[u8], whence: BlockIteratorSeek) -> Option<IteratorItem> {
+        match whence {
+            BlockIteratorSeek::Origin => self.reset(),
+            BlockIteratorSeek::Current => {}
+        }
+
+        let idx = self
+            .table
+            .block_index
+            .binary_search_by(|ko| ko.key.as_slice().cmp(key));
+        if idx.is_ok() {
+            return self.seek_helper(idx.unwrap(), key);
+        }
+
+        // not found
+        let idx = idx.err().unwrap();
+
+        if idx == 0 {
+            return self.seek_helper(idx, key);
+        }
+
+        if idx > self.table.block_index.len() {
+            return self.seek_helper(idx - 1, key);
+        }
+
+        //[ (5,6,7), (10, 11), (12, 15)], find 6, check (5,6,7) ~ (10, 11),
+        let item = self.seek_helper(idx - 1, key);
+        if item.is_some() {
+            return item;
+        }
+        self.seek_helper(idx, key)
     }
 
-    fn _next(&self) {
-        todo!()
+    // brings us to a key that is >= input key.
+    fn seek(&self, key: &[u8]) -> Option<IteratorItem> {
+        self.seek_from(key, BlockIteratorSeek::Origin)
     }
 
-    fn prev(&self) {
-        todo!()
+    // will reset iterator and seek to <= key.
+    fn seek_for_prev(&self, key: &[u8]) -> Option<IteratorItem> {
+        // TODO: Optimize this. We shouldn't have to take a Prev step.
+        if let Some(item) = self.seek_from(key, BlockIteratorSeek::Origin) {
+            if item.key == key {
+                return Some(item);
+            }
+            return self.prev(key);
+        }
+        None
     }
 
-    fn key(&self) -> &[u8] {
-        todo!()
+    fn prev(&self, key: &[u8]) -> Option<IteratorItem> {
+        if *self.bpos.borrow() < 0 {
+            // maybe reset bpos ==0?
+            return None;
+        }
+        let bi = self.get_or_set_bi(*self.bpos.borrow() as usize);
+        let item = bi.as_ref().unwrap().prev();
+        let item = item.map(|b_item| b_item.into());
+        if item.is_some() {
+            return item;
+        }
+
+        if *self.bpos.borrow() == 0 {
+            return None;
+        }
+        {
+            *self.bpos.borrow_mut() -= 1;
+        }
+        self.prev(key)
     }
 
-    fn value(&self) -> ValueStruct {
-        todo!()
-    }
+    // fn recursion_pre(bpos: isize, table: &TableCore, key: &[u8]) -> Option<BlockIteratorItem> {
+    //     if bpos < 0 {
+    //         return None;
+    //     }
+    //     let block = table.block(bpos as usize).unwrap();
+    //     let bi = BlockIterator::new(block.data);
+    //     bi.seek(key)
+    // }
 
-    fn next(&self) {
-        todo!()
+    fn next(&self) -> Option<IteratorItem> {
+        let bpos = self.bpos.borrow_mut();
+        if *bpos >= self.table.block_index.len() as isize {
+            return None;
+        }
+        let bi = self.get_or_set_bi(*bpos as usize);
+        bi.as_ref().unwrap().next().map(|b_item| b_item.into())
     }
 
     fn rewind(&self) {
         todo!()
     }
+}
 
-    fn seek(&self) {
-        todo!()
+pub(crate) struct IteratorItem {
+    key: Vec<u8>,
+    value: ValueStruct,
+}
+
+impl<'a> From<BlockIteratorItem<'a>> for IteratorItem {
+    fn from(b_item: BlockIteratorItem) -> Self {
+        let key = b_item.key;
+        let value = ValueStruct::from(b_item.value);
+        IteratorItem { key, value }
     }
 }
+
 // concatenates the sequences defined by several iterators.  (It only works with
 // TableIterators, probably just because it's faster to not be so generic.)
 struct ConcatIterator<'a> {
@@ -239,4 +346,7 @@ struct ConcatIterator<'a> {
 }
 
 #[test]
-fn it() {}
+fn it() {
+    let n = vec![2, 19, 30, 31, 33, 34, 35, 37];
+    println!("{:?}", n.binary_search_by(|a| a.cmp(&1)));
+}

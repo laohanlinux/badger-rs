@@ -7,6 +7,8 @@
 #![feature(cursor_remaining)]
 #![feature(pattern)]
 
+extern crate core;
+
 use std::io;
 use std::mem::align_of;
 
