@@ -58,6 +58,20 @@ impl BlockIterator {
         None
     }
 
+    /// Brings us to the first block element that is <= input key.
+    pub fn seek_rewind(&self, key: &[u8], whence: BlockIteratorSeek) -> Option<BlockIteratorItem> {
+        match whence {
+            BlockIteratorSeek::Origin => self.reset(),
+            BlockIteratorSeek::Current => {}
+        }
+        while let Some(item) = self.next() {
+            if item.key() <= key {
+                return Some(item);
+            }
+        }
+        None
+    }
+
     fn seek_to_first(&self) -> Option<BlockIteratorItem> {
         self.reset();
         self.next()
@@ -155,45 +169,17 @@ impl BlockIterator {
 //     }
 // }
 
-struct Iterator<'a> {
+/// An iterator for a table.
+pub struct Iterator<'a> {
     table: &'a TableCore,
     bpos: RefCell<isize>,
     bi: RefCell<Option<BlockIterator>>,
-    reversed: RefCell<bool>,
+    // Internally, Iterator is bidirectional. However, we only expose the
+    // unidirectional functionality for now.
+    reversed: bool,
 }
 
 impl<'a> Iterator<'a> {
-    fn reset(&self) {
-        *self.bpos.borrow_mut() = 0;
-    }
-
-    fn get_bi(&self) -> &Option<&BlockIterator> {
-        if self.bi.borrow().is_none() {
-            return &None;
-        }
-        let bi = self.bi.as_ptr() as *const Option<&BlockIterator>;
-        unsafe { &*bi }
-    }
-
-    fn get_or_set_bi(&self, bpos: usize) -> RefMut<'_, Option<BlockIterator>> {
-        let mut bi = self.bi.borrow_mut();
-        if bi.is_some() {
-            return bi;
-        }
-        let mut block = self.table.block(bpos).unwrap();
-        let it = BlockIterator::new(block.data);
-        *bi = Some(it);
-        bi
-    }
-
-    fn get_bi_by_bpos(&self, bpos: usize) -> RefMut<'_, Option<BlockIterator>> {
-        let mut bi = self.bi.borrow_mut();
-        let mut block = self.table.block(bpos).unwrap();
-        let it = BlockIterator::new(block.data);
-        *bi = Some(it);
-        bi
-    }
-
     fn seek_to_first(&self) -> Option<IteratorItem> {
         if self.table.block_index.is_empty() {
             return None;
@@ -227,7 +213,17 @@ impl<'a> Iterator<'a> {
             .map(|b_item| b_item.into())
     }
 
+    fn seek_helper_rewind(&self, block_index: usize, key: &[u8]) -> Option<IteratorItem> {
+        *self.bpos.borrow_mut() = block_index as isize;
+        let bi = self.get_bi_by_bpos(*self.bpos.borrow() as usize);
+        bi.as_ref()
+            .unwrap()
+            .seek_rewind(key, BlockIteratorSeek::Origin)
+            .map(|b_item| b_item.into())
+    }
+
     // Brings us to a key that is >= input key.
+    // todo maybe reset bpos
     fn seek_from(&self, key: &[u8], whence: BlockIteratorSeek) -> Option<IteratorItem> {
         match whence {
             BlockIteratorSeek::Origin => self.reset(),
@@ -261,6 +257,29 @@ impl<'a> Iterator<'a> {
         self.seek_helper(idx, key)
     }
 
+    // maybe reset bpos
+    fn pre_from(&self, key: &[u8], whence: BlockIteratorSeek) -> Option<IteratorItem> {
+        match whence {
+            BlockIteratorSeek::Origin => self.reset(),
+            BlockIteratorSeek::Current => {}
+        }
+
+        let idx = self
+            .table
+            .block_index
+            .binary_search_by(|ko| ko.key.as_slice().cmp(key));
+        if idx.is_ok() {
+            return self.seek_helper_rewind(idx.unwrap(), key);
+        }
+
+        // not found
+        let idx = idx.err().unwrap();
+        if idx == 0 {
+            return None;
+        }
+        self.seek_helper_rewind(idx - 1, key)
+    }
+
     // brings us to a key that is >= input key.
     fn seek(&self, key: &[u8]) -> Option<IteratorItem> {
         self.seek_from(key, BlockIteratorSeek::Origin)
@@ -269,16 +288,17 @@ impl<'a> Iterator<'a> {
     // will reset iterator and seek to <= key.
     fn seek_for_prev(&self, key: &[u8]) -> Option<IteratorItem> {
         // TODO: Optimize this. We shouldn't have to take a Prev step.
-        if let Some(item) = self.seek_from(key, BlockIteratorSeek::Origin) {
-            if item.key == key {
-                return Some(item);
-            }
-            return self.prev(key);
-        }
-        None
+        // if let Some(item) = self.seek_from(key, BlockIteratorSeek::Origin) {
+        //     if item.key == key {
+        //         return Some(item);
+        //     }
+        //     return self.prev(key);
+        // }
+        // None
+        todo!()
     }
 
-    fn prev(&self, key: &[u8]) -> Option<IteratorItem> {
+    fn prev(&self) -> Option<IteratorItem> {
         if *self.bpos.borrow() < 0 {
             // maybe reset bpos ==0?
             return None;
@@ -296,7 +316,7 @@ impl<'a> Iterator<'a> {
         {
             *self.bpos.borrow_mut() -= 1;
         }
-        self.prev(key)
+        self.prev()
     }
 
     // fn recursion_pre(bpos: isize, table: &TableCore, key: &[u8]) -> Option<BlockIteratorItem> {
@@ -309,6 +329,14 @@ impl<'a> Iterator<'a> {
     // }
 
     fn next(&self) -> Option<IteratorItem> {
+        if self.reversed {
+            self.next()
+        } else {
+            self.prev()
+        }
+    }
+
+    fn _next(&self) -> Option<IteratorItem> {
         let bpos = self.bpos.borrow_mut();
         if *bpos >= self.table.block_index.len() as isize {
             return None;
@@ -317,6 +345,36 @@ impl<'a> Iterator<'a> {
         bi.as_ref().unwrap().next().map(|b_item| b_item.into())
     }
 
+    fn reset(&self) {
+        *self.bpos.borrow_mut() = 0;
+    }
+
+    fn get_bi(&self) -> &Option<&BlockIterator> {
+        if self.bi.borrow().is_none() {
+            return &None;
+        }
+        let bi = self.bi.as_ptr() as *const Option<&BlockIterator>;
+        unsafe { &*bi }
+    }
+
+    fn get_or_set_bi(&self, bpos: usize) -> RefMut<'_, Option<BlockIterator>> {
+        let mut bi = self.bi.borrow_mut();
+        if bi.is_some() {
+            return bi;
+        }
+        let mut block = self.table.block(bpos).unwrap();
+        let it = BlockIterator::new(block.data);
+        *bi = Some(it);
+        bi
+    }
+
+    fn get_bi_by_bpos(&self, bpos: usize) -> RefMut<'_, Option<BlockIterator>> {
+        let mut bi = self.bi.borrow_mut();
+        let mut block = self.table.block(bpos).unwrap();
+        let it = BlockIterator::new(block.data);
+        *bi = Some(it);
+        bi
+    }
     fn rewind(&self) {
         todo!()
     }

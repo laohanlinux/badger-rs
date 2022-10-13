@@ -129,6 +129,7 @@ pub(crate) fn read_at(fp: &File, buffer: &mut [u8], offset: u64) -> Result<usize
 
 #[cfg(target_os = "windows")]
 pub(crate) fn read_at(fp: &File, buffer: &mut [u8], offset: u64) -> Result<usize> {
+    use std::os::windows::fs::FileExt;
     fp.seek_read(buffer, offset).map_err(|err| err.into())
 }
 
