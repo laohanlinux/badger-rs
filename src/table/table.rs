@@ -1,7 +1,7 @@
 use crate::options::FileLoadingMode;
 use crate::options::FileLoadingMode::MemoryMap;
 use crate::table::builder::Header;
-use crate::y::{hash, mmap, Result};
+use crate::y::{hash, mmap, parallel_load_block_key, read_at, Result};
 use crate::Error;
 use byteorder::{BigEndian, ReadBytesExt};
 use filename::file_name;
@@ -108,13 +108,7 @@ impl TableCore {
             }
         }
         let mut buffer = vec![0u8; sz];
-
-        #[cfg(target_os = "windows")]
-        self.fd.seek_read(&mut buffer, off as u64)?;
-
-        #[cfg(target_os = "macos")]
-        self.fd.read_at(&mut buffer, sz as u64)?;
-
+        read_at(&self.fd, &mut buffer, sz as u64)?;
         // todo add stats
         Ok(buffer)
     }
@@ -147,20 +141,20 @@ impl TableCore {
             offsets[i] = buf.read_u32::<BigEndian>().unwrap();
         }
 
+        println!("restart {:?}", offsets);
         // The last offset stores the end of the last block.
         for i in 0..offsets.len() {
-            let index = if i == 0 {
-                KeyOffset {
-                    offset: 0,
-                    len: offsets[i] as usize,
-                    key: vec![],
+            let offset = {
+                if i == 0 {
+                    0
+                } else {
+                    offsets[i - 1]
                 }
-            } else {
-                KeyOffset {
-                    offset: offsets[i] as usize,
-                    len: (offsets[i] - offsets[i - 1]) as usize,
-                    key: vec![],
-                }
+            };
+            let index = KeyOffset {
+                offset: offset as usize,
+                len: (offsets[i] - offset) as usize,
+                key: vec![],
             };
             self.block_index.push(index);
         }
@@ -169,16 +163,29 @@ impl TableCore {
         }
 
         // TODO use currency
-        for (i, block) in self.block_index.clone().iter().enumerate() {
-            let buffer = self.read(block.offset, Header::size())?;
-            let head = Header::from(buffer.as_slice());
-            assert_eq!(
-                head.p_len, 0,
-                "key offset: {}, h.p_len = {}",
-                block.offset, head.p_len
-            );
-            let out = self.read(Header::size() + block.offset, head.k_len as usize)?;
-            self.block_index[i].key = out.clone().to_vec();
+        if self._mmap.is_some() {
+            for (i, block) in self.block_index.clone().iter().enumerate() {
+                let buffer = self.read(block.offset, Header::size())?;
+                let head = Header::from(buffer.as_slice());
+                assert_eq!(
+                    head.p_len, 0,
+                    "key offset: {}, h.p_len = {}",
+                    block.offset, head.p_len
+                );
+                let out = self.read(Header::size() + block.offset, head.k_len as usize)?;
+                self.block_index[i].key = out.clone().to_vec();
+            }
+        } else {
+            let fp = self.fd.try_clone().unwrap();
+            let offsets = self
+                .block_index
+                .iter()
+                .map(|key_offset| key_offset.offset as u64)
+                .collect::<Vec<_>>();
+            let keys = parallel_load_block_key(fp, offsets);
+            for i in 0..keys.len() {
+                self.block_index[i].key = keys[i].to_vec();
+            }
         }
         self.block_index.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(())
@@ -226,10 +233,7 @@ impl TableCore {
 
     fn load_to_ram(&mut self) -> Result<()> {
         let mut _mmap = MmapMut::map_anon(self.table_size).unwrap();
-        #[cfg(target_os = "windows")]
-        let read = self.fd.seek_read(&mut _mmap, 0).or_else(Err)?;
-        #[cfg(target_os = "macos")]
-        let read = self.fd.read_at(&mut _mmap, 0)?;
+        let read = read_at(&self.fd, &mut _mmap, 0)?;
         if read != self.table_size {
             return Err(format!(
                 "Unable to load file in memory, Table faile: {}",

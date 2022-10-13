@@ -3,15 +3,15 @@ mod utils {
     use crate::options::FileLoadingMode;
     use crate::table::builder::Builder;
     use crate::table::iterator::BlockIterator;
-    use crate::table::table::{FILE_SUFFIX, Table, TableCore};
-    use crate::y::{open_synced_file, ValueStruct};
+    use crate::table::table::{Table, TableCore, FILE_SUFFIX};
+    use crate::y::{open_synced_file, read_at, ValueStruct};
     use rand::random;
     use std::env::temp_dir;
     use std::fmt::format;
     use std::fs::File;
-    use std::io::{Cursor, Write};
+    use std::io::{Cursor, Seek, SeekFrom, Write};
+    use std::sync::Arc;
     use std::thread::spawn;
-
 
     #[test]
     fn it_block_iterator() {
@@ -28,7 +28,7 @@ mod utils {
 
     #[test]
     fn it_seek_to_fist() {
-        let (mut fp, path) = build_test_table("key", 10);
+        let (mut fp, path) = build_test_table("key", 101);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
         // let mut joins = vec![];
         // for n in vec![101, 199, 200, 250, 9999, 10000] {
@@ -43,9 +43,36 @@ mod utils {
         // }
     }
 
+    #[test]
+    fn currency() {
+        use std::fs;
+        let (mut fp, path) = build_test_table("key", 101);
+        fp.set_len(0);
+        fp.write_all(&vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).unwrap();
+        fp.seek(SeekFrom::Start(0)).unwrap();
+        let mut joins = vec![];
+        for i in 0..10 {
+            let mut fp = fp.try_clone().unwrap();
+            joins.push(spawn(move || {
+                let mut buffer = vec![0u8; 1];
+                read_at(&fp, &mut buffer, i).unwrap();
+                println!("{:?}", buffer);
+            }));
+        }
+
+        for join in joins {
+            join.join().unwrap();
+        }
+    }
+
     fn build_table(mut key_value: Vec<(Vec<u8>, Vec<u8>)>) -> (File, String) {
         let mut builder = Builder::default();
-        let file_name = format!("{}{}{}", temp_dir().to_str().unwrap(), random::<u64>(), FILE_SUFFIX);
+        let file_name = format!(
+            "{}{}{}",
+            temp_dir().to_str().unwrap(),
+            random::<u64>(),
+            FILE_SUFFIX
+        );
         let mut fp = open_synced_file(&file_name, true).unwrap();
         key_value.sort_by(|a, b| a.0.cmp(&b.0));
 

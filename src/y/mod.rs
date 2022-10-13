@@ -5,10 +5,12 @@ use crate::Error::Unexpected;
 pub use iterator::ValueStruct;
 use memmap::{Mmap, MmapMut};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::fs::File;
 use std::hash::Hasher;
 use std::io;
 use std::io::ErrorKind;
+use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
 /// Constants use in serialization sizes, and in ValueStruct serialization
@@ -117,4 +119,63 @@ pub fn open_synced_file(file_name: &str, sync: bool) -> Result<File> {
         .open(file_name)
         .or_else(Err)?;
     Ok(file)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn read_at(fp: &File, buffer: &mut [u8], offset: u64) -> Result<usize> {
+    use std::os::unix::fs::FileExt;
+    fp.read_at(buffer, offset).map_err(|err| err.into())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn read_at(fp: &File, buffer: &mut [u8], offset: u64) -> Result<usize> {
+    fp.seek_read(buffer, offset).map_err(|err| err.into())
+}
+
+pub(crate) fn num_cpu() -> usize {
+    let n = num_cpus::get();
+    n
+}
+
+// todo add error
+pub(crate) fn parallel_load_block_key(fp: File, offsets: Vec<u64>) -> Vec<Vec<u8>> {
+    use crate::table::builder::Header;
+    use std::sync::mpsc::sync_channel;
+    use threads_pool::*;
+    let (tx, rx) = sync_channel(offsets.len());
+    let num = num_cpu();
+    let mut pool = ThreadPool::new(num);
+    for (i, offset) in offsets.iter().enumerate() {
+        let offset = *offset;
+        let mut fp = fp.try_clone().unwrap();
+        let tx = tx.clone();
+        pool.execute(move || {
+            let mut buffer = vec![0u8; Header::size()];
+            read_at(&fp, &mut buffer, offset).unwrap();
+            let head = Header::from(buffer.as_slice());
+            assert_eq!(
+                head.p_len, 0,
+                "key offset: {}, h.p_len = {}",
+                offset, head.p_len
+            );
+            let mut out = vec![0u8; head.k_len as usize];
+            read_at(&fp, &mut buffer, offset + Header::size() as u64).unwrap();
+            tx.send((i, out)).unwrap();
+        })
+        .unwrap();
+    }
+    pool.close();
+
+    let mut keys = vec![vec![0u8]; offsets.len()];
+    for _ in 0..offsets.len() {
+        let (i, key) = rx.recv().unwrap();
+        keys[i] = key;
+    }
+    drop(tx);
+    keys
+}
+
+#[test]
+fn it_cpu() {
+    println!("{:?}", num_cpu());
 }

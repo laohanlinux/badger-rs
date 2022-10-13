@@ -22,3 +22,5 @@ bloom = "0.3.2"
 growable-bloom-filter = { version = "2.0.1", features = ["nightly"] }
 tokio-metrics = "0.1.0"
 filename = "0.1.1"
+num_cpus = "1.13.1"
+threads_pool = "0.2.6"

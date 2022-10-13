@@ -149,7 +149,7 @@ impl Builder {
     pub fn add(&mut self, key: &[u8], value: &ValueStruct) -> crate::y::Result<()> {
         if self.counter >= Self::RESTART_INTERVAL {
             self.finish_block();
-            // println!("create new block: base:{}, pre: {}", self.base_offset, self.prev_offset);
+            println!("create new block: base:{}, pre: {}, {:?}", self.base_offset, self.prev_offset, String::from_utf8_lossy(key));
             // Start a new block. Initialize the block.
             self.restarts.push(self.buf.get_ref().len() as u32);
             self.counter = 0;
@@ -183,20 +183,21 @@ impl Builder {
 
         // Add 4 because we want to write out number of restarts at the end.
         let sz = 4 * self.restarts.len() + 4;
-        let out = vec![0u8; sz];
-        let mut wt = Cursor::new(out);
-        for restart in self.restarts.clone() {
-            wt.write_u32::<BigEndian>(restart).unwrap();
+        let mut wt = Cursor::new(vec![0u8; sz]);
+        for restart in self.restarts.iter() {
+            wt.write_u32::<BigEndian>(*restart).unwrap();
         }
         wt.write_u32::<BigEndian>(self.restarts.len() as u32)
             .unwrap();
-        wt.into_inner()
+        let out = wt.into_inner();
+        println!("write restart: {:?}", self.restarts);
+        assert_eq!(out.len(), sz);
+        out
     }
 
     /// Finishes the table by appending the index.
     pub fn finish(&mut self) -> Vec<u8> {
         let mut bf = GrowableBloom::new(0.01, self.counter);
-        let mut klen = [0u8, 2];
         loop {
             let kl = self.key_buf.read_u16::<BigEndian>();
             if is_eof(&kl) {
@@ -217,6 +218,7 @@ impl Builder {
 
         // Write bloom filter
         let bdata = serde_json::to_vec(&bf).unwrap();
+        println!("{}", serde_json::to_string(&bf).unwrap());
         self.buf.write_all(&bdata).unwrap();
         self.buf.write_u32::<BigEndian>(bdata.len() as u32).unwrap();
         self.buf.get_ref().clone()
