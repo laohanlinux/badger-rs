@@ -22,7 +22,6 @@ impl Header {
     pub(crate) const fn size() -> usize {
         10
     }
-
     fn decode(buffer: &[u8]) -> Self {
         let mut header = Header::default();
         let mut cursor = Cursor::new(buffer);
@@ -39,6 +38,10 @@ impl Header {
         cursor.write_u16::<BigEndian>(self.k_len).unwrap();
         cursor.write_u16::<BigEndian>(self.v_len).unwrap();
         cursor.write_u32::<BigEndian>(self.prev).unwrap();
+    }
+
+    pub(crate) fn is_dummy(&self) -> bool {
+        self.k_len == 0 && self.p_len == 0
     }
 }
 
@@ -149,7 +152,12 @@ impl Builder {
     pub fn add(&mut self, key: &[u8], value: &ValueStruct) -> crate::y::Result<()> {
         if self.counter >= Self::RESTART_INTERVAL {
             self.finish_block();
-            println!("create new block: base:{}, pre: {}, {:?}", self.base_offset, self.prev_offset, String::from_utf8_lossy(key));
+            println!(
+                "create new block: base:{}, pre: {}, {:?}",
+                self.base_offset,
+                self.prev_offset,
+                String::from_utf8_lossy(key)
+            );
             // Start a new block. Initialize the block.
             self.restarts.push(self.buf.get_ref().len() as u32);
             self.counter = 0;

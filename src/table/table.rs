@@ -117,7 +117,6 @@ impl TableCore {
         self.read(off, sz).unwrap()
     }
 
-    // todo
     fn read_index(&mut self) -> Result<()> {
         let mut read_pos = self.table_size;
         // Read bloom filter.
@@ -141,7 +140,7 @@ impl TableCore {
             offsets[i] = buf.read_u32::<BigEndian>().unwrap();
         }
 
-        println!("restart {:?}", offsets);
+        // println!("restart {:?}", offsets);
         // The last offset stores the end of the last block.
         for i in 0..offsets.len() {
             let offset = {
@@ -158,11 +157,11 @@ impl TableCore {
             };
             self.block_index.push(index);
         }
+        // todo Why reload key
         if self.block_index.len() == 1 {
             return Ok(());
         }
 
-        // TODO use currency
         if self._mmap.is_some() {
             for (i, block) in self.block_index.clone().iter().enumerate() {
                 let buffer = self.read(block.offset, Header::size())?;
@@ -195,14 +194,12 @@ impl TableCore {
         if index >= self.block_index.len() {
             return Err("block out of index".into());
         }
-
         let ko = &self.block_index[index];
         let data = self.read(ko.offset, ko.len)?;
-        let mut blk = Block {
+        Ok(Block {
             offset: ko.offset,
             data: data,
-        };
-        Ok(blk)
+        })
     }
 
     pub fn size(&self) -> usize {
@@ -231,6 +228,7 @@ impl TableCore {
         self.bf.contains(&id)
     }
 
+    /// load to ram that stored with mmap
     fn load_to_ram(&mut self) -> Result<()> {
         let mut _mmap = MmapMut::map_anon(self.table_size).unwrap();
         let read = read_at(&self.fd, &mut _mmap, 0)?;
@@ -282,7 +280,7 @@ impl Display for TableCore {
     }
 }
 
-pub(crate)  struct Block {
+pub(crate) struct Block {
     offset: usize,
     pub(crate) data: Vec<u8>,
 }

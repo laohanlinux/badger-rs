@@ -87,14 +87,13 @@ impl Into<Vec<u8>> for &ValueStruct {
 
 pub trait Iterator {
     type Output;
-    fn next(&self) -> Option<&Self::Output>;
-    fn rewind(&self) -> Option<&Self::Output>;
-    fn seek(&self, key: &[u8]) -> Option<&Self::Output>;
-    // fn key(&self) -> &[u8];
-    // fn value(&self) -> ValueStruct;
+    fn next(&self) -> Option<Self::Output>;
+    fn rewind(&self) -> Option<Self::Output>;
+    fn seek(&self, key: &[u8]) -> Option<Self::Output>;
     fn valid(&self) -> bool;
     fn close(&self);
 }
+
 
 pub trait KeyValue<V> {
     fn key(&self) -> &[u8];

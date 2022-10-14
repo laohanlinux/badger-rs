@@ -100,8 +100,8 @@ pub struct CursorReverse<'a> {
 }
 
 impl<'a> crate::y::iterator::Iterator for CursorReverse<'a> {
-    type Output = Node;
-    fn next(&self) -> Option<&Node> {
+    type Output = &'a Node;
+    fn next(&self) -> Option<Self::Output> {
         if !*self.reversed.borrow() {
             self.iter.next()
         } else {
@@ -109,7 +109,7 @@ impl<'a> crate::y::iterator::Iterator for CursorReverse<'a> {
         }
     }
 
-    fn rewind(&self) -> Option<&Node> {
+    fn rewind(&self) -> Option<Self::Output> {
         if !*self.reversed.borrow() {
             self.iter.seek_for_first()
         } else {
@@ -117,7 +117,7 @@ impl<'a> crate::y::iterator::Iterator for CursorReverse<'a> {
         }
     }
 
-    fn seek(&self, key: &[u8]) -> Option<&Node> {
+    fn seek(&self, key: &[u8]) -> Option<Self::Output> {
         if !*self.reversed.borrow() {
             self.iter.seek(key)
         } else {
