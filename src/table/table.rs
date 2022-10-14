@@ -34,7 +34,7 @@ pub(crate) struct KeyOffset {
 
 pub struct Table {}
 
-pub(crate) struct TableCore {
+pub struct TableCore {
     _ref: AtomicI32,
     fd: File,
     file_name: String,
@@ -206,11 +206,11 @@ impl TableCore {
         self.table_size
     }
 
-    pub fn smallest(&self) -> &Vec<u8> {
+    pub fn smallest(&self) -> &[u8] {
         &self.smallest
     }
 
-    pub fn biggest(&self) -> &Vec<u8> {
+    pub fn biggest(&self) -> &[u8] {
         &self.biggest
     }
 

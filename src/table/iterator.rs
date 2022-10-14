@@ -5,6 +5,8 @@ use crate::{y, Error};
 use std::borrow::Borrow;
 use std::cell::{Ref, RefCell, RefMut};
 use std::ops::Deref;
+use std::process::id;
+use std::ptr::NonNull;
 use std::{cmp, io};
 
 pub enum IteratorSeek {
@@ -221,6 +223,15 @@ impl<'a> y::iterator::Iterator for Iterator<'a> {
 }
 
 impl<'a> Iterator<'a> {
+    pub fn new(table: &'a TableCore, reversed: bool) -> Iterator<'a> {
+        Iterator {
+            table,
+            bpos: RefCell::new(0),
+            bi: RefCell::new(None),
+            reversed,
+        }
+    }
+
     pub fn seek_to_first(&self) -> Option<IteratorItem> {
         if self.table.block_index.is_empty() {
             return None;
@@ -351,15 +362,6 @@ impl<'a> Iterator<'a> {
         self.prev()
     }
 
-    // fn recursion_pre(bpos: isize, table: &TableCore, key: &[u8]) -> Option<BlockIteratorItem> {
-    //     if bpos < 0 {
-    //         return None;
-    //     }
-    //     let block = table.block(bpos as usize).unwrap();
-    //     let bi = BlockIterator::new(block.data);
-    //     bi.seek(key)
-    // }
-
     fn _next(&self) -> Option<IteratorItem> {
         let bpos = self.bpos.borrow_mut();
         if *bpos >= self.table.block_index.len() {
@@ -431,11 +433,120 @@ impl<'a> From<BlockIteratorItem<'a>> for IteratorItem {
 /// concatenates the sequences defined by several iterators.  (It only works with
 /// TableIterators, probably just because it's faster to not be so generic.)
 pub struct ConcatIterator<'a> {
-    index: usize, // Which iterator is active now.
-    cur: &'a Iterator<'a>,
-    iters: &'a [&'a Iterator<'a>], // Corresponds to `tables`.
-    tables: &'a [&'a Table], // Disregarding `reversed`, this is in ascending order.
+    index: RefCell<isize>, // Which iterator is active now. todo use usize
+    iters: Vec<Iterator<'a>>,    // Corresponds to `tables`.
+    tables: &'a [&'a TableCore], // Disregarding `reversed`, this is in ascending order.
     reversed: bool,
+}
+
+impl<'a> ConcatIterator<'a> {
+    pub fn new(tables: &'a [&TableCore], reversed: bool) -> Self {
+        let iters = tables
+            .iter()
+            .map(|tb| Iterator::new(tb, reversed))
+            .collect::<Vec<_>>();
+        Self {
+            index: RefCell::new(-1),
+            iters,
+            tables,
+            reversed,
+        }
+    }
+
+    fn set_idx(&self, idx: isize) {
+        *self.index.borrow_mut() = idx;
+    }
+
+    fn get_cur(&self) -> Option<&Iterator> {
+        if *self.index.borrow() < 0 {
+            return None;
+        }
+        let cur = self.index.borrow();
+        let iter = &self.iters[*cur as usize];
+        Some(iter)
+    }
+}
+
+impl<'a> y::iterator::Iterator for ConcatIterator<'a> {
+    type Output = IteratorItem;
+
+    fn next(&self) -> Option<Self::Output> {
+        let cur_iter = self.get_cur().unwrap();
+        let item = cur_iter.next();
+        if item.is_some() {
+            return item;
+        }
+        loop {
+            if !self.reversed {
+                self.set_idx(*self.index.borrow() + 1);
+            } else {
+                self.set_idx(*self.index.borrow() - 1);
+            }
+            if self.get_cur().is_none() {
+                return None;
+            }
+            // let item = self.cur.borrow().unwrap().rewind();
+            let item = self.get_cur().unwrap().rewind();
+            if item.is_some() {
+                return item;
+            }
+        }
+    }
+
+    fn rewind(&self) -> Option<Self::Output> {
+        if self.iters.is_empty() {
+            return None;
+        }
+        if !self.reversed {
+            self.set_idx(0);
+        } else {
+            self.set_idx(self.iters.len() as isize - 1);
+        }
+        self.get_cur().unwrap().rewind()
+    }
+
+    /// Brings us to element >= key if reversed is false. Otherwise, <= key.
+    fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+        if !self.reversed {
+            // >= key
+            let idx = self.tables.binary_search_by(|tb| tb.biggest().cmp(key));
+            if idx.is_ok() {
+                self.set_idx(idx.unwrap() as isize);
+                return self.get_cur().unwrap()._seek(key);
+            }
+            // not found
+            // For reversed=false, we know s.tables[i-1].Biggest() < key. Thus, the
+            // previous table cannot possibly contain key.
+            self.set_idx(-1);
+            None
+        } else {
+            let idx = self.tables.binary_search_by(|tb| tb.smallest().cmp(key));
+            if idx.is_ok() {
+                if self.tables[idx.unwrap()].smallest() == key {
+                    self.set_idx(idx.unwrap() as isize);
+                    return self.get_cur().unwrap()._seek(key);
+                } else {
+                    // Move to prev, maybe idx == 0
+                    self.set_idx(idx.unwrap() as isize - 1);
+                    if self.get_cur().is_none() {
+                        return None;
+                    }
+                    // prev table last value
+                    return self.get_cur().unwrap().seek_to_last();
+                }
+            }
+
+            None
+        }
+    }
+
+    fn valid(&self) -> bool {
+        todo!()
+    }
+
+    fn close(&self) {
+        todo!()
+    }
 }
 
 #[test]
