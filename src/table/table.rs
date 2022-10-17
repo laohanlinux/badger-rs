@@ -25,7 +25,7 @@ use std::str::pattern::Pattern;
 
 pub(crate) const FILE_SUFFIX: &str = ".sst";
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct KeyOffset {
     pub(crate) key: Vec<u8>,
     offset: usize,
@@ -72,11 +72,17 @@ impl TableCore {
             id,
             bf: GrowableBloom::new(0.01, 1),
         };
+
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if loading_mode == MemoryMap {
             table._mmap = Some(mmap(&table.fd, false, file_sz as usize)?);
         } else {
             table.load_to_ram()?;
         }
+
+        #[cfg(any(target_os = "windows"))]
+        table.load_to_ram()?;
+
         table.read_index()?;
         println!("open table ==> {}", table);
         // todo
@@ -187,6 +193,7 @@ impl TableCore {
             }
         }
         self.block_index.sort_by(|a, b| a.key.cmp(&b.key));
+        println!("block index {:?}", self.block_index);
         Ok(())
     }
 
@@ -249,8 +256,7 @@ impl Drop for TableCore {
     fn drop(&mut self) {
         // We can safely delete this file, because for all the current files, we always have
         // at least one reference pointing to them.
-
-        // It's necessary to delete windows files
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         if self.loading_mode == MemoryMap {
             self._mmap
                 .as_mut()
@@ -258,6 +264,7 @@ impl Drop for TableCore {
                 .flush()
                 .expect("failed to mmap")
         }
+        // It's necessary to delete windows files
         // This is very important to let the FS know that the file is deleted.
         #[cfg(not(test))]
         self.fd.set_len(0).expect("can not truncate file to 0");

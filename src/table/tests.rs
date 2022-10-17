@@ -119,7 +119,7 @@ mod utils {
     fn iterator_from_start() {
         for n in vec![101] {
             let (mut fp, path) = build_test_table("key", n);
-            let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
+            let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
             let iter = crate::table::iterator::Iterator::new(&table, false);
             iter.reset();
             let value = iter.seek(b"");
@@ -128,12 +128,12 @@ mod utils {
             // ti.Seek brings us to the first key >= "". Essentially a SeekToFirst.
             let mut count = 0;
             while let Some(value) = iter.next() {
+                count += 1;
                 let value = value.value();
-                println!("{:?}", value.value);
                 assert_eq!(value.value, format!("{}", count).as_bytes().to_vec());
                 assert_eq!(value.meta, 'A' as u8);
                 assert_eq!(value.cas_counter, count as u64);
-                count += 1;
+                println!("==> {:?}", value.value);
             }
             assert_eq!(count, n as isize);
         }

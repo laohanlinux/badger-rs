@@ -188,7 +188,7 @@ impl IteratorItem {
 /// An iterator for a table.
 pub struct Iterator<'a> {
     table: &'a TableCore,
-    bpos: RefCell<usize>,
+    bpos: RefCell<usize>, // start 0 to block.len() - 1
     bi: RefCell<Option<BlockIterator>>,
     // Internally, Iterator is bidirectional. However, we only expose the
     // unidirectional functionality for now.
@@ -376,12 +376,19 @@ impl<'a> Iterator<'a> {
     }
 
     fn _next(&self) -> Option<IteratorItem> {
-        let bpos = self.bpos.borrow_mut();
+        let mut bpos = self.bpos.borrow_mut();
+        println!("bpos {}", bpos);
         if *bpos >= self.table.block_index.len() {
             return None;
         }
         let bi = self.get_or_set_bi(*bpos);
-        bi.as_ref().unwrap().next().map(|b_item| b_item.into())
+        if let Some(item) = bi.as_ref().unwrap().next() {
+            return Some(item.into());
+        }
+        *bpos += 1;
+        drop(bpos);
+        drop(bi);
+        self._next()
     }
 
     pub(crate) fn reset(&self) {
