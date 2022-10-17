@@ -176,6 +176,15 @@ pub struct IteratorItem {
     value: ValueStruct,
 }
 
+impl IteratorItem {
+    pub fn key(&self) -> &[u8] {
+        &self.key
+    }
+    pub fn value(&self) -> &ValueStruct {
+        &self.value
+    }
+}
+
 /// An iterator for a table.
 pub struct Iterator<'a> {
     table: &'a TableCore,
@@ -190,8 +199,8 @@ impl<'a> y::iterator::Iterator for Iterator<'a> {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
-        if self.reversed {
-            self.next()
+        if !self.reversed {
+            self._next()
         } else {
             self.prev()
         }
@@ -283,7 +292,7 @@ impl<'a> Iterator<'a> {
             return self.seek_helper(idx, key);
         }
 
-        if idx > self.table.block_index.len() {
+        if idx >= self.table.block_index.len() {
             return self.seek_helper(idx - 1, key);
         }
 
@@ -324,18 +333,21 @@ impl<'a> Iterator<'a> {
     }
 
     // will reset iterator and seek to <= key.
-    fn seek_for_prev(&self, key: &[u8]) -> Option<IteratorItem> {
+    pub(crate) fn seek_for_prev(&self, key: &[u8]) -> Option<IteratorItem> {
         // TODO: Optimize this. We shouldn't have to take a Prev step.
         if let Some(item) = self.seek_from(key, IteratorSeek::Origin) {
+            // >= key
             if item.key == key {
+                // == key
                 return Some(item);
             }
-            return self.prev();
+            return self.prev(); // > key
+        } else {
+            return self.prev(); // Just move it front one
         }
-        None
     }
 
-    fn prev(&self) -> Option<IteratorItem> {
+    pub(crate) fn prev(&self) -> Option<IteratorItem> {
         let nil_bi = self.bi.borrow_mut().is_none();
         if nil_bi {
             assert_eq!(*self.bpos.borrow(), 0);
@@ -359,6 +371,7 @@ impl<'a> Iterator<'a> {
             return None;
         }
         *self.bpos.borrow_mut() -= 1;
+        self.bi.borrow_mut().take();
         self.prev()
     }
 
@@ -371,7 +384,7 @@ impl<'a> Iterator<'a> {
         bi.as_ref().unwrap().next().map(|b_item| b_item.into())
     }
 
-    fn reset(&self) {
+    pub(crate) fn reset(&self) {
         *self.bpos.borrow_mut() = 0;
     }
 
@@ -433,7 +446,7 @@ impl<'a> From<BlockIteratorItem<'a>> for IteratorItem {
 /// concatenates the sequences defined by several iterators.  (It only works with
 /// TableIterators, probably just because it's faster to not be so generic.)
 pub struct ConcatIterator<'a> {
-    index: RefCell<isize>, // Which iterator is active now. todo use usize
+    index: RefCell<isize>,       // Which iterator is active now. todo use usize
     iters: Vec<Iterator<'a>>,    // Corresponds to `tables`.
     tables: &'a [&'a TableCore], // Disregarding `reversed`, this is in ascending order.
     reversed: bool,
