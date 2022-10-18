@@ -2,7 +2,7 @@ use crate::table::builder::Header;
 use crate::table::table::{Block, Table, TableCore};
 use crate::y::{Result, ValueStruct};
 use crate::{y, Error};
-use std::borrow::Borrow;
+use std::borrow::{Borrow, BorrowMut};
 use std::cell::{Ref, RefCell, RefMut};
 use std::ops::Deref;
 use std::process::id;
@@ -377,22 +377,23 @@ impl<'a> Iterator<'a> {
 
     fn _next(&self) -> Option<IteratorItem> {
         let mut bpos = self.bpos.borrow_mut();
-        println!("bpos {}", bpos);
         if *bpos >= self.table.block_index.len() {
             return None;
         }
-        let bi = self.get_or_set_bi(*bpos);
+        let mut bi = self.get_or_set_bi(*bpos);
         if let Some(item) = bi.as_ref().unwrap().next() {
             return Some(item.into());
         }
         *bpos += 1;
         drop(bpos);
+        bi.borrow_mut().take();
         drop(bi);
         self._next()
     }
 
     pub(crate) fn reset(&self) {
         *self.bpos.borrow_mut() = 0;
+        self.bi.borrow_mut().take();
     }
 
     // >= key

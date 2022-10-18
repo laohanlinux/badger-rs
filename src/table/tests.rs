@@ -122,18 +122,18 @@ mod utils {
             let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
             let iter = crate::table::iterator::Iterator::new(&table, false);
             iter.reset();
+            let mut count = 0;
             let value = iter.seek(b"");
             assert!(value.is_some());
+            count += 1;
             // No need to do a Next.
             // ti.Seek brings us to the first key >= "". Essentially a SeekToFirst.
-            let mut count = 0;
             while let Some(value) = iter.next() {
-                count += 1;
                 let value = value.value();
                 assert_eq!(value.value, format!("{}", count).as_bytes().to_vec());
                 assert_eq!(value.meta, 'A' as u8);
                 assert_eq!(value.cas_counter, count as u64);
-                println!("==> {:?}", value.value);
+                count += 1;
             }
             assert_eq!(count, n as isize);
         }

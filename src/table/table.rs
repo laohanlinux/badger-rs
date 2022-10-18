@@ -9,11 +9,11 @@ use growable_bloom_filter::GrowableBloom;
 use memmap::{Mmap, MmapMut};
 use std::fmt::{Display, Formatter};
 use std::fs::{remove_file, File};
-use std::io;
 use std::io::{Cursor, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
+use std::{fmt, io};
 
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::FileExt;
@@ -30,6 +30,19 @@ pub(crate) struct KeyOffset {
     pub(crate) key: Vec<u8>,
     offset: usize,
     len: usize,
+}
+
+impl fmt::Display for KeyOffset {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        #[cfg(test)]
+        write!(
+            f,
+            "key:{}, offset:{}, len:{}",
+            String::from_utf8_lossy(&self.key),
+            self.offset,
+            self.len
+        )
+    }
 }
 
 pub struct Table {}
@@ -193,7 +206,6 @@ impl TableCore {
             }
         }
         self.block_index.sort_by(|a, b| a.key.cmp(&b.key));
-        println!("block index {:?}", self.block_index);
         Ok(())
     }
 
@@ -275,14 +287,20 @@ impl Drop for TableCore {
 
 impl Display for TableCore {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let index_str = self
+            .block_index
+            .iter()
+            .map(|x| format!("{}", x))
+            .collect::<Vec<_>>();
         writeln!(
             f,
-            "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}",
+            "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}, index-size: {:?}",
             self._ref.load(Ordering::Relaxed),
             self.file_name,
             self.block_index.len(),
             self.id,
-            self.table_size
+            self.table_size,
+            index_str
         )
     }
 }
