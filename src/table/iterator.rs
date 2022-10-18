@@ -4,10 +4,11 @@ use crate::y::{Result, ValueStruct};
 use crate::{y, Error};
 use std::borrow::{Borrow, BorrowMut};
 use std::cell::{Ref, RefCell, RefMut};
+use std::fmt::Formatter;
 use std::ops::Deref;
 use std::process::id;
 use std::ptr::NonNull;
-use std::{cmp, io};
+use std::{cmp, fmt, io};
 
 pub enum IteratorSeek {
     Origin,
@@ -21,6 +22,20 @@ pub struct BlockIterator {
     pos: RefCell<u32>,
     base_key: RefCell<Vec<u8>>,
     last_header: RefCell<Option<Header>>,
+}
+
+impl fmt::Display for BlockIterator {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let base_key = self.base_key.borrow();
+        write!(
+            f,
+            "BlockIterator data-len:{}, pos:{}, base_key:{}, last_header:{:?}",
+            self.data.len(),
+            self.pos.borrow(),
+            String::from_utf8_lossy(base_key.as_slice()),
+            self.last_header.borrow()
+        )
+    }
 }
 
 pub struct BlockIteratorItem<'a> {
@@ -193,6 +208,19 @@ pub struct Iterator<'a> {
     // Internally, Iterator is bidirectional. However, we only expose the
     // unidirectional functionality for now.
     reversed: bool,
+}
+
+impl<'a> fmt::Display for Iterator<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let bi = self.bi.borrow().as_ref().map(|b| format!("{}", b));
+        write!(
+            f,
+            "Iterator: bpos: {}, bi:{:?}, reversed:{}",
+            self.bpos.borrow(),
+            bi,
+            self.reversed
+        )
+    }
 }
 
 impl<'a> y::iterator::Iterator for Iterator<'a> {

@@ -117,7 +117,7 @@ mod utils {
 
     #[test]
     fn iterator_from_start() {
-        for n in vec![101] {
+        for n in vec![101, 199, 200, 250, 9999, 10000] {
             let (mut fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
             let iter = crate::table::iterator::Iterator::new(&table, false);
@@ -136,6 +136,19 @@ mod utils {
                 count += 1;
             }
             assert_eq!(count, n as isize);
+        }
+    }
+
+    #[test]
+    fn iterator_from_end() {
+        for n in vec![101] {
+            let (mut fp, path) = build_test_table("key", n);
+            let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
+            let iter = crate::table::iterator::Iterator::new(&table, false);
+            iter.reset();
+            let value = iter.seek(b"zzzzzz");
+            assert!(value.is_none());
+            println!("{}", iter);
         }
     }
 
