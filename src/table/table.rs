@@ -34,11 +34,11 @@ pub(crate) struct KeyOffset {
 
 impl fmt::Display for KeyOffset {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        #[cfg(test)]
+        let key = String::from_utf8(self.key.clone()).map_err(|_| "...").unwrap();
         write!(
             f,
             "key:{}, offset:{}, len:{}",
-            String::from_utf8_lossy(&self.key),
+            key,
             self.offset,
             self.len
         )
