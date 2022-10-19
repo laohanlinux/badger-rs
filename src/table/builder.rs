@@ -7,15 +7,27 @@ use serde_json;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::fmt;
+use std::fmt::Formatter;
 use std::hash::Hasher;
 use std::io::{self, Cursor, Read, Write};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Header {
     pub(crate) p_len: u16, // Overlap with base key(Prefix length)
     pub(crate) k_len: u16, // Length of the diff. Eg: "d" = "abcd" - "abc"
     pub(crate) v_len: u16, // Length of the value.
     pub(crate) prev: u32, // Offset for the previous key-value pair. The offset is relative to `block` base offset.
+}
+
+impl fmt::Display for Header {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "plen:{}, klen:{}, vlen:{}, prev:{}",
+            self.p_len, self.k_len, self.v_len, self.prev
+        )
+    }
 }
 
 impl Header {

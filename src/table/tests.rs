@@ -14,6 +14,7 @@ mod utils {
     use std::io::{Cursor, Seek, SeekFrom, Write};
     use std::sync::Arc;
     use std::thread::spawn;
+    use tokio::io::AsyncSeekExt;
 
     #[test]
     fn it_block_iterator() {
@@ -141,15 +142,51 @@ mod utils {
 
     #[test]
     fn iterator_from_end() {
-        for n in vec![101] {
+        for n in vec![101, 199, 200, 250, 9999, 10000] {
             let (mut fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
             let iter = crate::table::iterator::Iterator::new(&table, false);
             iter.reset();
             let value = iter.seek(b"zzzzzz");
             assert!(value.is_none());
-            println!("{}", iter);
+            // println!("{} {}", n, iter);
+
+            for i in (0..n).rev() {
+                // println!("{} {}", n, iter);
+                let value = iter.prev();
+                assert!(value.is_some());
+                let value = value.as_ref().unwrap().value();
+                assert_eq!(value.value, format!("{}", i).as_bytes().to_vec());
+                assert_eq!(value.meta, 'A' as u8);
+                assert_eq!(value.cas_counter, i as u64);
+            }
+            assert!(iter.prev().is_none());
         }
+    }
+
+    #[test]
+    fn table() {
+        let (mut fp, path) = build_test_table("key", 10000);
+        let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
+        let iter = crate::table::iterator::Iterator::new(&table, false);
+        let mut kid = 1010;
+        let seek = key("key", kid);
+        iter.seek(seek.as_bytes());
+        kid += 1;
+        while let Some(item) = iter.next() {
+            assert_eq!(item.key(), key("key", kid).as_bytes());
+            kid += 1;
+        }
+
+        assert_eq!(kid, 10000, "Expected kid: 10000. Got: {}", kid);
+        assert!(iter.seek(key("key{}", 99999).as_bytes()).is_none());
+        assert_eq!(
+            iter.seek(key("key{}", -1).as_bytes())
+                .as_ref()
+                .unwrap()
+                .key(),
+            key("key{}", 0).as_bytes()
+        );
     }
 
     #[test]
@@ -201,7 +238,7 @@ mod utils {
         (fp, file_name)
     }
 
-    fn new_builder(prefix: &str, n: usize) -> Builder {
+    fn new_builder(prefix: &str, n: isize) -> Builder {
         assert!(n <= 10000);
         let mut key_values = vec![];
         for i in 0..n {
@@ -221,7 +258,7 @@ mod utils {
         builder
     }
 
-    fn build_test_table(prefix: &str, n: usize) -> (File, String) {
+    fn build_test_table(prefix: &str, n: isize) -> (File, String) {
         assert!(n <= 10000);
         let mut key_values = vec![];
         for i in 0..n {
@@ -233,7 +270,7 @@ mod utils {
         build_table(key_values)
     }
 
-    fn key(prefix: &str, n: usize) -> String {
+    fn key(prefix: &str, n: isize) -> String {
         format!("{}{:04}", prefix, n)
     }
 }

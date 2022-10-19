@@ -16,7 +16,6 @@ pub enum IteratorSeek {
 }
 
 /// Block iterator
-#[derive(Debug)]
 pub struct BlockIterator {
     data: Vec<u8>,
     pos: RefCell<u32>,
@@ -27,13 +26,20 @@ pub struct BlockIterator {
 impl fmt::Display for BlockIterator {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let base_key = self.base_key.borrow();
+        let last_header = self
+            .last_header
+            .borrow()
+            .as_ref()
+            .map(|h| format!("{}", h))
+            .or_else(|| Some("Empty".to_string()))
+            .unwrap();
         write!(
             f,
-            "BlockIterator data-len:{}, pos:{}, base_key:{}, last_header:{:?}",
+            "biter len:{}, pos:{}, base_key:{}, last_header:[{}]",
             self.data.len(),
             self.pos.borrow(),
             String::from_utf8_lossy(base_key.as_slice()),
-            self.last_header.borrow()
+            last_header,
         )
     }
 }
@@ -96,8 +102,10 @@ impl BlockIterator {
         self.next()
     }
 
+    // todo o shift, too slow, must do something
     fn seek_to_last(&self) -> Option<BlockIteratorItem> {
         while let Some(_) = self.next() {}
+        // skip dummy header
         self.prev()
     }
 
@@ -172,7 +180,7 @@ impl BlockIterator {
         *pos += h.k_len as u32;
         assert!(
             *pos as usize + h.v_len as usize <= self.data.len(),
-            "Value exceeded size of block: {} {} {} {} {:?}",
+            "Value exceeded size of block: {} {} {} {} {}",
             pos,
             h.k_len,
             h.v_len,
@@ -212,10 +220,10 @@ pub struct Iterator<'a> {
 
 impl<'a> fmt::Display for Iterator<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let bi = self.bi.borrow().as_ref().map(|b| format!("{}", b));
+        let bi = self.bi.borrow().as_ref().map(|b| format!("{}", b)).unwrap();
         write!(
             f,
-            "Iterator: bpos: {}, bi:{:?}, reversed:{}",
+            "Iter: bpos: {}, bi:{:?}, reversed:{}",
             self.bpos.borrow(),
             bi,
             self.reversed
@@ -378,7 +386,7 @@ impl<'a> Iterator<'a> {
     pub(crate) fn prev(&self) -> Option<IteratorItem> {
         let nil_bi = self.bi.borrow_mut().is_none();
         if nil_bi {
-            assert_eq!(*self.bpos.borrow(), 0);
+            // assert_eq!(*self.bpos.borrow(), 0);
             // uninit
             let bi = self.get_or_set_bi(*self.bpos.borrow());
             let item = bi.as_ref().unwrap().seek_to_last();
