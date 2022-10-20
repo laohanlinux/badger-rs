@@ -166,7 +166,7 @@ mod utils {
 
     #[test]
     fn table() {
-        let (mut fp, path) = build_test_table("key", 10000);
+        let (fp, path) = build_test_table("key", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
         let iter = crate::table::iterator::Iterator::new(&table, false);
         let mut kid = 1010;
@@ -179,14 +179,49 @@ mod utils {
         }
 
         assert_eq!(kid, 10000, "Expected kid: 10000. Got: {}", kid);
-        assert!(iter.seek(key("key{}", 99999).as_bytes()).is_none());
+        assert!(iter.seek(key("key", 99999).as_bytes()).is_none());
         assert_eq!(
-            iter.seek(key("key{}", -1).as_bytes())
-                .as_ref()
-                .unwrap()
-                .key(),
-            key("key{}", 0).as_bytes()
+            iter.seek(key("key", -1).as_bytes()).as_ref().unwrap().key(),
+            key("key", 0).as_bytes()
         );
+    }
+
+    #[test]
+    fn iterate_back_and_forth() {
+        let (fp, path) = build_test_table("key", 10000);
+        let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
+
+        let seek = key("key", 1010);
+        let iter = crate::table::iterator::Iterator::new(&table, false);
+        let item = iter.seek(seek.as_bytes());
+        assert!(item.is_some());
+        assert_eq!(item.as_ref().unwrap().key(), seek.as_bytes().to_vec());
+
+        iter.prev();
+        let item = iter.prev();
+        let k = item.as_ref().unwrap().key();
+        assert_eq!(k, key("key", 1008).as_bytes());
+
+        iter.next();
+        let item = iter.next();
+        let k = item.as_ref().unwrap().key();
+        assert_eq!(k, seek.as_bytes());
+
+        let item = iter.seek(key("key", 2000).as_bytes());
+        let k = item.as_ref().unwrap().key();
+        assert_eq!(k, key("key", 2000).as_bytes());
+
+        let item = iter.prev();
+        let k = item.as_ref().unwrap().key();
+        assert_eq!(k, key("key", 1999).as_bytes());
+
+        let item = iter.seek_to_first();
+        let k = item.as_ref().unwrap().key();
+        assert_eq!(k, key("key", 0).as_bytes());
+
+        let item = iter.seek_to_last();
+        let k = item.as_ref().unwrap().key();
+        assert_eq!(k, key("key", 9999).as_bytes());
     }
 
     #[test]
