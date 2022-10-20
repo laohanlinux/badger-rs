@@ -4,13 +4,14 @@ mod metrics;
 use crate::Error::Unexpected;
 pub use iterator::ValueStruct;
 use memmap::{Mmap, MmapMut};
+use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs::File;
 use std::hash::Hasher;
-use std::io;
 use std::io::ErrorKind;
 use std::sync::{Arc, RwLock};
+use std::{cmp, io};
 use thiserror::Error;
 
 /// Constants use in serialization sizes, and in ValueStruct serialization
@@ -174,6 +175,14 @@ pub(crate) fn parallel_load_block_key(fp: File, offsets: Vec<u64>) -> Vec<Vec<u8
     }
     drop(tx);
     keys
+}
+
+pub(crate) fn slice_cmp_gte(a: &[u8], b: &[u8]) -> cmp::Ordering {
+    match a.cmp(&b) {
+        cmp::Ordering::Less => cmp::Ordering::Less,
+        cmp::Ordering::Greater => cmp::Ordering::Equal,
+        cmp::Ordering::Equal => cmp::Ordering::Equal,
+    }
 }
 
 #[test]

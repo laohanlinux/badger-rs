@@ -5,6 +5,8 @@ use crate::y::{Result, ValueStruct};
 use crate::{y, Error};
 use std::borrow::{Borrow, BorrowMut};
 use std::cell::{Ref, RefCell, RefMut};
+use std::cmp::Ordering;
+use std::cmp::Ordering::{Equal, Less};
 use std::fmt::Formatter;
 use std::ops::Deref;
 use std::process::id;
@@ -593,29 +595,27 @@ impl<'a> y::iterator::Iterator for ConcatIterator<'a> {
                 self.set_idx(idx.unwrap() as isize);
                 return self.get_cur().unwrap()._seek(key);
             }
+            let idx = idx.err().unwrap();
+            if idx < self.tables.len() {
+                self.set_idx(idx as isize);
+                return self.get_cur().unwrap()._seek(key);
+            }
             // not found
-            // For reversed=false, we know s.tables[i-1].Biggest() < key. Thus, the
-            // previous table cannot possibly contain key.
             self.set_idx(-1);
             None
         } else {
             let idx = self.tables.binary_search_by(|tb| tb.smallest().cmp(key));
             if idx.is_ok() {
-                if self.tables[idx.unwrap()].smallest() == key {
-                    self.set_idx(idx.unwrap() as isize);
-                    return self.get_cur().unwrap()._seek(key);
-                } else {
-                    // Move to prev, maybe idx == 0
-                    self.set_idx(idx.unwrap() as isize - 1);
-                    if self.get_cur().is_none() {
-                        return None;
-                    }
-                    // prev table last value
-                    return self.get_cur().unwrap().seek_to_last();
-                }
+                self.set_idx(idx.unwrap() as isize);
+                return self.get_cur().unwrap()._seek(key);
             }
-
-            None
+            let idx = idx.err().unwrap();
+            if idx == 0 {
+                self.set_idx(-1);
+                return None;
+            }
+            self.set_idx((idx - 1) as isize);
+            self.get_cur().unwrap().seek_for_prev(key)
         }
     }
 
@@ -655,5 +655,14 @@ impl<'a> fmt::Display for ConcatIterator<'a> {
 #[test]
 fn it() {
     let n = vec![2, 19, 30, 31, 33, 34, 35, 37];
-    println!("{:?}", n.binary_search_by(|a| a.cmp(&1)));
+    println!(
+        "{:?}",
+        n.binary_search_by(|a| {
+            match a.cmp(&1) {
+                Ordering::Equal => Ordering::Equal,
+                Ordering::Greater => Ordering::Equal,
+                Ordering::Less => Ordering::Less,
+            }
+        })
+    );
 }

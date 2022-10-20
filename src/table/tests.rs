@@ -298,11 +298,27 @@ mod utils {
                 let value = item.value();
                 assert_eq!(format!("{}", count % 10000).as_bytes(), value.value);
             }
-
             assert_eq!(count + 1, 30000);
-            println!("{}", iter);
+
             let value = iter.seek(b"a");
             assert_eq!(value.as_ref().unwrap().key(), b"keya0000");
+            assert_eq!(value.as_ref().unwrap().value().value, b"0");
+
+            let value = iter.seek(b"keyb");
+            assert_eq!(value.as_ref().unwrap().key(), b"keyb0000");
+            assert_eq!(value.as_ref().unwrap().value().value, b"0");
+
+            let value = iter.seek(b"keyb9999b");
+            assert_eq!(value.as_ref().unwrap().key(), b"keyc0000");
+            assert_eq!(value.as_ref().unwrap().value().value, b"0");
+
+            let value = iter.seek(b"keyd");
+            assert!(value.is_none());
+        }
+
+        {
+            let iter = ConcatIterator::new(vec![&f1, &f2, &f3], true);
+            assert!(iter.rewind().is_some());
         }
     }
 
