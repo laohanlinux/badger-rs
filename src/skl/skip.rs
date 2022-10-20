@@ -1,5 +1,4 @@
 use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
-use crate::BadgerErr;
 use rand::random;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -14,6 +13,7 @@ use crate::y::ValueStruct;
 
 use super::{arena::Arena, node::Node};
 
+/// SkipList
 pub struct SkipList {
     height: Arc<AtomicI32>,
     head: NonNull<Node>,
@@ -380,8 +380,7 @@ impl SkipList {
 impl Drop for SkipList {
     fn drop(&mut self) {
         let _ref = self._ref.load(Ordering::Relaxed);
-        println!("SkipList reference: {:?}", _ref);
-        // assert_eq!(_ref, 1, "it should be 1 reference after drop skiplist");
+        println!("SkipList reference: {:p} => {:?}", &self, _ref);
         self.arena_mut_ref().reset();
     }
 }
@@ -414,6 +413,7 @@ mod tests {
     use crate::skl::{Arena, Cursor, MAX_HEIGHT};
     use crate::y::ValueStruct;
     use rand::distributions::{Alphanumeric, DistString};
+    use std::fmt::format;
     use std::ptr;
     use std::ptr::NonNull;
     use std::sync::atomic::{AtomicI32, Ordering};
@@ -682,5 +682,123 @@ mod tests {
         assert!(n.is_some());
         assert_eq!(b"09995", n.unwrap().key(&st.arena));
         assert!(!eq);
+    }
+
+    // Tests a basic iteration over all nodes from the beginning.
+    #[test]
+    fn t_iterator_next() {
+        const n: usize = 100;
+        let st = SkipList::new(ARENA_SIZE);
+
+        {
+            let cur = st.new_cursor();
+            assert!(!cur.valid());
+            cur.seek_for_first();
+            assert!(!cur.valid());
+
+            for i in 0..n {
+                let key = format!("{:05}", i);
+                st.put(
+                    key.as_bytes(),
+                    ValueStruct::new(key.as_bytes().to_vec(), 0, 0, i as u64),
+                );
+            }
+
+            cur.seek_for_first();
+            for i in 0..n {
+                assert!(cur.valid());
+                let v = cur.value();
+                assert_eq!(v.value, format!("{:05}", i).as_bytes().to_vec());
+                cur.next();
+            }
+
+            assert!(!cur.valid());
+            cur.close();
+        }
+    }
+
+    #[test]
+    fn t_iterator_prev() {
+        const n: usize = 100;
+        let st = SkipList::new(ARENA_SIZE);
+        let cur = st.new_cursor();
+        assert!(!cur.valid());
+        cur.seek_for_first();
+        assert!(!cur.valid());
+
+        for i in 0..100 {
+            let key = format!("{:05}", i);
+            st.put(
+                key.as_bytes(),
+                ValueStruct::new(key.as_bytes().to_vec(), 0, 0, i as u64),
+            );
+        }
+        cur.seek_for_last();
+
+        for i in (0..100).rev() {
+            assert!(cur.valid());
+            let v = cur.value();
+            assert_eq!(v.value, format!("{:05}", i).as_bytes().to_vec());
+            cur.prev();
+        }
+
+        assert!(!cur.valid());
+        cur.close();
+    }
+
+    #[test]
+    fn t_iterator_seek() {
+        const n: usize = 100;
+        let st = SkipList::new(ARENA_SIZE);
+        let cur = st.new_cursor();
+        assert!(!cur.valid());
+
+        cur.seek_for_first();
+        assert!(!cur.valid());
+        for i in 0..n {
+            let key = format!("{:05}", i * 10 + 1000);
+            st.put(
+                key.as_bytes(),
+                ValueStruct::new(key.as_bytes().to_vec(), 0, 0, 555),
+            );
+        }
+        cur.seek(b"");
+        assert!(cur.valid());
+        assert_eq!(b"01000", cur.value().value.as_slice());
+
+        cur.seek(b"01000");
+        assert!(cur.valid());
+        assert_eq!(b"01000", cur.value().value.as_slice());
+
+        cur.seek(b"01005");
+        assert!(cur.valid());
+        assert_eq!(b"01010", cur.value().value.as_slice());
+
+        cur.seek(b"01010");
+        assert!(cur.valid());
+        assert_eq!(b"01010", cur.value().value.as_slice());
+
+        cur.seek(b"99999");
+        assert!(!cur.valid());
+
+        // Try seek_for_prev
+        cur.seek_for_prev(b"");
+        assert!(!cur.valid());
+        cur.seek_for_prev(b"01000");
+        assert!(cur.valid());
+        assert_eq!(b"01000", cur.value().value.as_slice());
+
+        cur.seek_for_prev(b"01005");
+        assert!(cur.valid());
+        assert_eq!(b"01000", cur.value().value.as_slice());
+
+        cur.seek_for_prev(b"01010");
+        assert!(cur.valid());
+        assert_eq!(b"01010", cur.value().value.as_slice());
+
+        cur.seek_for_prev(b"99999");
+        assert!(cur.valid());
+        assert_eq!(b"01990", cur.value().value.as_slice());
+        cur.close();
     }
 }

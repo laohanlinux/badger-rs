@@ -1,0 +1,378 @@
+use crate::options::FileLoadingMode;
+use crate::options::FileLoadingMode::MemoryMap;
+use crate::table::builder::Header;
+use crate::y::{hash, mmap, parallel_load_block_key, read_at, Result};
+use crate::Error;
+use byteorder::{BigEndian, ReadBytesExt};
+use filename::file_name;
+use growable_bloom_filter::GrowableBloom;
+use memmap::{Mmap, MmapMut};
+use std::fmt::{Display, Formatter};
+use std::fs::{remove_file, File};
+use std::io::{Cursor, Seek, SeekFrom};
+use std::path::Path;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::time::Duration;
+use std::{fmt, io};
+
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::FileExt;
+
+use crate::y::iterator::Iterator;
+use serde_json::to_vec;
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::FileExt;
+use std::str::pattern::Pattern;
+
+pub(crate) const FILE_SUFFIX: &str = ".sst";
+
+#[derive(Clone, Debug)]
+pub(crate) struct KeyOffset {
+    pub(crate) key: Vec<u8>,
+    offset: usize,
+    len: usize,
+}
+
+impl fmt::Display for KeyOffset {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let key = String::from_utf8(self.key.clone())
+            .map_err(|_| "...")
+            .unwrap();
+        write!(f, "key:{}, offset:{}, len:{}", key, self.offset, self.len)
+    }
+}
+
+pub struct Table {}
+
+pub struct TableCore {
+    _ref: AtomicI32,
+    fd: File,
+    file_name: String,
+    // Initialized in OpenTable, using fd.Stat()
+    table_size: usize,
+    pub(crate) block_index: Vec<KeyOffset>,
+    loading_mode: FileLoadingMode,
+    _mmap: Option<MmapMut>, // Memory mapped.
+    // The following are initialized once and const.
+    smallest: Vec<u8>, // smallest keys.
+    biggest: Vec<u8>,  // biggest keys.
+    id: u64,
+    bf: GrowableBloom,
+}
+
+impl TableCore {
+    // assumes file has only one table and opens it.  Takes ownership of fd upon function
+    // entry.  Returns a table with one reference count on it (decrementing which may delete the file!
+    // -- consider t.Close() instead).  The fd has to writeable because we call Truncate on it before
+    // deleting.
+    pub fn open_table(mut fd: File, filename: &str, loading_mode: FileLoadingMode) -> Result<Self> {
+        let file_sz = fd.seek(SeekFrom::End(0)).or_else(Err)?;
+        fd.seek(SeekFrom::Start(0)).or_else(Err)?;
+        let id = parse_file_id(filename)?;
+        let mut table = TableCore {
+            _ref: AtomicI32::new(1),
+            fd,
+            file_name: filename.to_string(),
+            table_size: file_sz as usize,
+            block_index: vec![],
+            loading_mode,
+            _mmap: None,
+            smallest: vec![],
+            biggest: vec![],
+            id,
+            bf: GrowableBloom::new(0.01, 1),
+        };
+
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if loading_mode == MemoryMap {
+            table._mmap = Some(mmap(&table.fd, false, file_sz as usize)?);
+        } else {
+            table.load_to_ram()?;
+        }
+
+        #[cfg(any(target_os = "windows"))]
+        table.load_to_ram()?;
+
+        table.read_index()?;
+        let biggest = {
+            let iter1 = super::iterator::Iterator::new(&table, true);
+            iter1
+                .rewind()
+                .map(|item| item.key().to_vec())
+                .or_else(|| Some(vec![]))
+        }
+        .unwrap();
+
+        let smallest = {
+            let iter1 = super::iterator::Iterator::new(&table, false);
+            iter1
+                .rewind()
+                .map(|item| item.key().to_vec())
+                .or_else(|| Some(vec![]))
+        }
+        .unwrap();
+        table.biggest = biggest;
+        table.smallest = smallest;
+        println!("open table ==> {}", table);
+        Ok(table)
+    }
+
+    // increments the refcount (having to do with whether the file should be deleted)
+    fn incr_ref(&self) {
+        self._ref.fetch_add(1, Ordering::Relaxed);
+    }
+    // decrements the refcount and possibly deletes the table
+    fn decr_ref(&self) {
+        self._ref.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn close(&mut self) {
+        todo!()
+    }
+}
+
+impl TableCore {
+    fn read(&self, off: usize, sz: usize) -> Result<Vec<u8>> {
+        if let Some(m) = self._mmap.as_ref() {
+            if !m.is_empty() {
+                if m[off..].len() < sz {
+                    return Err(Error::Io(io::ErrorKind::UnexpectedEof.to_string()));
+                }
+                return Ok(m[off..off + sz].to_vec());
+            }
+        }
+        let mut buffer = vec![0u8; sz];
+        read_at(&self.fd, &mut buffer, sz as u64)?;
+        // todo add stats
+        Ok(buffer)
+    }
+
+    fn read_no_fail(&self, off: usize, sz: usize) -> Vec<u8> {
+        self.read(off, sz).unwrap()
+    }
+
+    fn read_index(&mut self) -> Result<()> {
+        let mut read_pos = self.table_size;
+        // Read bloom filter.
+        read_pos -= 4;
+        let buf = self.read_no_fail(read_pos, 4);
+        let bloom_len = Cursor::new(buf).read_u32::<BigEndian>().unwrap();
+        read_pos -= bloom_len as usize;
+        let data = self.read_no_fail(read_pos, bloom_len as usize);
+        self.bf = serde_json::from_slice(&data).unwrap();
+
+        read_pos -= 4;
+        let restarts_len = Cursor::new(self.read_no_fail(read_pos, 4))
+            .read_u32::<BigEndian>()
+            .unwrap();
+
+        read_pos -= 4 * restarts_len as usize;
+        let mut buf = Cursor::new(self.read_no_fail(read_pos, 4 * restarts_len as usize));
+
+        let mut offsets = vec![0u32; restarts_len as usize];
+        for i in 0..restarts_len as usize {
+            offsets[i] = buf.read_u32::<BigEndian>().unwrap();
+        }
+
+        // println!("restart {:?}", offsets);
+        // The last offset stores the end of the last block.
+        for i in 0..offsets.len() {
+            let offset = {
+                if i == 0 {
+                    0
+                } else {
+                    offsets[i - 1]
+                }
+            };
+            let index = KeyOffset {
+                offset: offset as usize,
+                len: (offsets[i] - offset) as usize,
+                key: vec![],
+            };
+            self.block_index.push(index);
+        }
+        // todo Why reload key
+        if self.block_index.len() == 1 {
+            return Ok(());
+        }
+
+        if self._mmap.is_some() {
+            for (i, block) in self.block_index.clone().iter().enumerate() {
+                let buffer = self.read(block.offset, Header::size())?;
+                let head = Header::from(buffer.as_slice());
+                assert_eq!(
+                    head.p_len, 0,
+                    "key offset: {}, h.p_len = {}",
+                    block.offset, head.p_len
+                );
+                let out = self.read(Header::size() + block.offset, head.k_len as usize)?;
+                self.block_index[i].key = out.clone().to_vec();
+            }
+        } else {
+            let fp = self.fd.try_clone().unwrap();
+            let offsets = self
+                .block_index
+                .iter()
+                .map(|key_offset| key_offset.offset as u64)
+                .collect::<Vec<_>>();
+            let keys = parallel_load_block_key(fp, offsets);
+            for i in 0..keys.len() {
+                self.block_index[i].key = keys[i].to_vec();
+            }
+        }
+        self.block_index.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(())
+    }
+
+    pub(crate) fn block(&self, index: usize) -> Result<Block> {
+        if index >= self.block_index.len() {
+            return Err("block out of index".into());
+        }
+        let ko = &self.block_index[index];
+        let data = self.read(ko.offset, ko.len)?;
+        Ok(Block {
+            offset: ko.offset,
+            data: data,
+        })
+    }
+
+    pub fn size(&self) -> usize {
+        self.table_size
+    }
+
+    pub fn smallest(&self) -> &[u8] {
+        &self.smallest
+    }
+
+    pub fn biggest(&self) -> &[u8] {
+        &self.biggest
+    }
+
+    pub fn filename(&self) -> &String {
+        &self.file_name
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Returns true if (but not "only if") the table does not have the key. It does a bloom filter lookup.
+    pub fn does_not_have(&self, key: &[u8]) -> bool {
+        let id = hash(key);
+        self.bf.contains(&id)
+    }
+
+    /// load to ram that stored with mmap
+    fn load_to_ram(&mut self) -> Result<()> {
+        let mut _mmap = MmapMut::map_anon(self.table_size).unwrap();
+        let read = read_at(&self.fd, &mut _mmap, 0)?;
+        if read != self.table_size {
+            return Err(format!(
+                "Unable to load file in memory, Table faile: {}",
+                self.filename()
+            )
+            .into());
+        }
+        // todo stats
+        self._mmap = Some(_mmap);
+        Ok(())
+    }
+}
+
+impl Drop for TableCore {
+    fn drop(&mut self) {
+        // We can safely delete this file, because for all the current files, we always have
+        // at least one reference pointing to them.
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        if self.loading_mode == MemoryMap {
+            self._mmap
+                .as_mut()
+                .unwrap()
+                .flush()
+                .expect("failed to mmap")
+        }
+        // It's necessary to delete windows files
+        // This is very important to let the FS know that the file is deleted.
+        #[cfg(not(test))]
+        self.fd.set_len(0).expect("can not truncate file to 0");
+        #[cfg(not(test))]
+        remove_file(Path::new(&self.file_name)).expect("fail to remove file");
+    }
+}
+
+impl Display for TableCore {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let index_str = self
+            .block_index
+            .iter()
+            .map(|x| format!("{}", x))
+            .collect::<Vec<_>>();
+        let smallest = String::from_utf8_lossy(self.smallest());
+        let biggest = String::from_utf8_lossy(self.biggest());
+        writeln!(
+            f,
+            "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}, index-size: {:?}, smallest: {}, biggest: {}",
+            self._ref.load(Ordering::Relaxed),
+            self.file_name,
+            self.block_index.len(),
+            self.id,
+            self.table_size,
+            index_str,
+            smallest, biggest,
+        )
+    }
+}
+
+pub(crate) struct Block {
+    offset: usize,
+    pub(crate) data: Vec<u8>,
+}
+
+type ByKey = Vec<KeyOffset>;
+
+pub fn parse_file_id(name: &str) -> Result<u64> {
+    use std::str::pattern::Pattern;
+    let path = Path::new(name);
+    let filename = path.file_name().unwrap().to_str().unwrap();
+    if !FILE_SUFFIX.is_suffix_of(filename) {
+        return Ok(0);
+    }
+    let name = filename.trim_end_matches(FILE_SUFFIX);
+    name.parse::<u64>()
+        .or_else(|err| Err(err.to_string().into()))
+}
+
+pub fn id_to_filename(id: u64) -> String {
+    format!("{}{}", id, FILE_SUFFIX)
+}
+
+pub fn new_file_name(id: u64, dir: String) -> String {
+    Path::new(&dir)
+        .join(&id_to_filename(id))
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn t_metrics() {
+    // // construct a TaskMonitor
+    // let monitor = tokio_metrics::TaskMonitor::new();
+    //
+    // // print task metrics every 500ms
+    // {
+    //     let frequency = std::time::Duration::from_millis(500);
+    //     let monitor = monitor.clone();
+    //     tokio::spawn(async move {
+    //         for metrics in monitor.intervals() {
+    //             println!("{:?}", metrics);
+    //             tokio::time::sleep(frequency).await;
+    //         }
+    //     });
+    // }
+    //
+    // // instrument some tasks and spawn them
+    // loop {
+    //     monitor.instrument(async { tokio::time::sleep(Duration::from_millis(20)).await;
+    // }
+}

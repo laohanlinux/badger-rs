@@ -2,6 +2,7 @@ use std::sync::atomic::AtomicU8;
 
 /// Specifies how data in LSM table files and value log files should
 /// be loaded.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FileLoadingMode {
     /// Indicates that files must be loaded using standard I/O
     FileIO,

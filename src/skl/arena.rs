@@ -153,7 +153,6 @@ fn t_arena_value() {
         meta: 1,
         user_meta: 1,
         cas_counter: 2,
-        value_sz: v.len() as u32,
         value: v,
     };
     let (start, n) = arena.put_val(&value);
