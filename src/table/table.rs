@@ -18,6 +18,7 @@ use std::{fmt, io};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::FileExt;
 
+use crate::y::iterator::Iterator;
 use serde_json::to_vec;
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::FileExt;
@@ -34,14 +35,10 @@ pub(crate) struct KeyOffset {
 
 impl fmt::Display for KeyOffset {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let key = String::from_utf8(self.key.clone()).map_err(|_| "...").unwrap();
-        write!(
-            f,
-            "key:{}, offset:{}, len:{}",
-            key,
-            self.offset,
-            self.len
-        )
+        let key = String::from_utf8(self.key.clone())
+            .map_err(|_| "...")
+            .unwrap();
+        write!(f, "key:{}, offset:{}, len:{}", key, self.offset, self.len)
     }
 }
 
@@ -97,8 +94,26 @@ impl TableCore {
         table.load_to_ram()?;
 
         table.read_index()?;
+        let biggest = {
+            let iter1 = super::iterator::Iterator::new(&table, true);
+            iter1
+                .rewind()
+                .map(|item| item.key().to_vec())
+                .or_else(|| Some(vec![]))
+        }
+        .unwrap();
+
+        let smallest = {
+            let iter1 = super::iterator::Iterator::new(&table, false);
+            iter1
+                .rewind()
+                .map(|item| item.key().to_vec())
+                .or_else(|| Some(vec![]))
+        }
+        .unwrap();
+        table.biggest = biggest;
+        table.smallest = smallest;
         println!("open table ==> {}", table);
-        // todo
         Ok(table)
     }
 
@@ -292,15 +307,18 @@ impl Display for TableCore {
             .iter()
             .map(|x| format!("{}", x))
             .collect::<Vec<_>>();
+        let smallest = String::from_utf8_lossy(self.smallest());
+        let biggest = String::from_utf8_lossy(self.biggest());
         writeln!(
             f,
-            "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}, index-size: {:?}",
+            "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}, index-size: {:?}, smallest: {}, biggest: {}",
             self._ref.load(Ordering::Relaxed),
             self.file_name,
             self.block_index.len(),
             self.id,
             self.table_size,
-            index_str
+            index_str,
+            smallest, biggest,
         )
     }
 }

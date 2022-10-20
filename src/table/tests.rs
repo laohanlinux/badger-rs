@@ -2,7 +2,7 @@
 mod utils {
     use crate::options::FileLoadingMode;
     use crate::table::builder::Builder;
-    use crate::table::iterator::BlockIterator;
+    use crate::table::iterator::{BlockIterator, ConcatIterator};
     use crate::table::table::{Table, TableCore, FILE_SUFFIX};
     use crate::y::iterator::Iterator;
     use crate::y::{open_synced_file, read_at, ValueStruct};
@@ -15,6 +15,7 @@ mod utils {
     use std::sync::Arc;
     use std::thread::spawn;
     use tokio::io::AsyncSeekExt;
+    use tokio_metrics::TaskMetrics;
 
     #[test]
     fn it_block_iterator() {
@@ -189,7 +190,7 @@ mod utils {
     #[test]
     fn iterate_back_and_forth() {
         let (fp, path) = build_test_table("key", 10000);
-        let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
+        let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
 
         let seek = key("key", 1010);
         let iter = crate::table::iterator::Iterator::new(&table, false);
@@ -222,6 +223,87 @@ mod utils {
         let item = iter.seek_to_last();
         let k = item.as_ref().unwrap().key();
         assert_eq!(k, key("key", 9999).as_bytes());
+    }
+
+    #[test]
+    fn uni_iterator() {
+        let (fp, path) = build_test_table("key", 10000);
+        let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
+
+        {
+            let iter = crate::table::iterator::Iterator::new(&table, false);
+            iter.rewind();
+            let mut count = 0;
+            while let Some(item) = iter.next() {
+                let value = item.value();
+                count += 1;
+                assert_eq!(format!("{}", count).as_bytes().to_vec(), value.value);
+                assert_eq!('A' as u8, value.meta);
+                assert_eq!(count, value.cas_counter);
+            }
+            assert_eq!(count + 1, 10000);
+        }
+
+        {
+            let iter = crate::table::iterator::Iterator::new(&table, true);
+            iter.rewind();
+            let mut count = 0;
+            while let Some(item) = iter.next() {
+                let value = item.value();
+                count += 1;
+                assert_eq!(
+                    format!("{}", 10000 - 1 - count).as_bytes().to_vec(),
+                    value.value
+                );
+                assert_eq!('A' as u8, value.meta);
+                assert_eq!(10000 - 1 - count, value.cas_counter);
+            }
+            assert_eq!(count + 1, 10000);
+        }
+    }
+
+    #[test]
+    fn concat_iterator_one_table() {
+        let (fp, path) = build_table(vec![
+            (b"k1".to_vec(), b"a1".to_vec()),
+            (b"k2".to_vec(), b"a2".to_vec()),
+        ]);
+
+        let t1 = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
+        let table_iter = ConcatIterator::new(vec![&t1], false);
+        let v = table_iter.rewind().unwrap();
+        assert_eq!(v.key(), b"k1");
+        assert_eq!(v.value().value, b"a1".to_vec());
+        assert_eq!(v.value().meta, 'A' as u8);
+    }
+
+    #[test]
+    fn concat_iterator() {
+        let f1 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .build_n("keya", 10000);
+        let f2 = TableBuilder::new()
+            .mode(FileLoadingMode::LoadToRADM)
+            .build_n("keyb", 10000);
+        let f3 = TableBuilder::new()
+            .mode(FileLoadingMode::FileIO)
+            .build_n("keyc", 10000);
+
+        {
+            let iter = ConcatIterator::new(vec![&f1, &f2, &f3], false);
+            assert!(iter.rewind().is_some());
+            let mut count = 0;
+            while let Some(item) = iter.next() {
+                count += 1;
+                let value = item.value();
+                assert_eq!(format!("{}", count % 10000).as_bytes(), value.value);
+            }
+
+            assert_eq!(count + 1, 30000);
+            println!("{}", iter);
+            let value = iter.seek(b"a");
+            assert_eq!(value.as_ref().unwrap().key(), b"keya0000");
+        }
     }
 
     #[test]
@@ -307,5 +389,58 @@ mod utils {
 
     fn key(prefix: &str, n: isize) -> String {
         format!("{}{:04}", prefix, n)
+    }
+
+    struct TableBuilder {
+        path: String,
+        key_value: Vec<(Vec<u8>, Vec<u8>)>,
+        mode: FileLoadingMode,
+    }
+
+    impl TableBuilder {
+        fn new() -> TableBuilder {
+            TableBuilder {
+                path: "".to_string(),
+                // key_prefix: "".to_string(),
+                key_value: vec![],
+                mode: FileLoadingMode::MemoryMap,
+            }
+        }
+
+        fn path(mut self, path: String) -> Self {
+            self.path = path;
+            self
+        }
+
+        fn mode(mut self, mode: FileLoadingMode) -> Self {
+            self.mode = mode;
+            self
+        }
+
+        fn key_value(mut self, key_value: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
+            self.key_value = key_value;
+            self
+        }
+
+        // fn prefix(mut self, prefix: &str) -> Self {
+        //     self.key_prefix = prefix.to_string();
+        //     self
+        // }
+
+        fn build(&mut self) -> TableCore {
+            let table = build_table(self.key_value.clone());
+            self.path = table.1.clone();
+            let t1 = TableCore::open_table(table.0, self.path.as_ref(), FileLoadingMode::MemoryMap)
+                .unwrap();
+            t1
+        }
+
+        fn build_n(&mut self, prefix: &str, n: isize) -> TableCore {
+            let table = build_test_table(prefix, n);
+            self.path = table.1.clone();
+            let t1 = TableCore::open_table(table.0, self.path.as_ref(), FileLoadingMode::MemoryMap)
+                .unwrap();
+            t1
+        }
     }
 }

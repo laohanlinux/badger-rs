@@ -1,5 +1,6 @@
 use crate::table::builder::Header;
 use crate::table::table::{Block, Table, TableCore};
+use crate::y::iterator::KeyValue;
 use crate::y::{Result, ValueStruct};
 use crate::{y, Error};
 use std::borrow::{Borrow, BorrowMut};
@@ -216,6 +217,18 @@ pub struct Iterator<'a> {
     // Internally, Iterator is bidirectional. However, we only expose the
     // unidirectional functionality for now.
     reversed: bool,
+}
+
+impl<'a> std::iter::Iterator for Iterator<'a> {
+    type Item = IteratorItem;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if !self.reversed {
+            self._next()
+        } else {
+            self.prev()
+        }
+    }
 }
 
 impl<'a> fmt::Display for Iterator<'a> {
@@ -490,14 +503,14 @@ impl<'a> From<BlockIteratorItem<'a>> for IteratorItem {
 /// concatenates the sequences defined by several iterators.  (It only works with
 /// TableIterators, probably just because it's faster to not be so generic.)
 pub struct ConcatIterator<'a> {
-    index: RefCell<isize>,       // Which iterator is active now. todo use usize
-    iters: Vec<Iterator<'a>>,    // Corresponds to `tables`.
-    tables: &'a [&'a TableCore], // Disregarding `reversed`, this is in ascending order.
+    index: RefCell<isize>,      // Which iterator is active now. todo use usize
+    iters: Vec<Iterator<'a>>,   // Corresponds to `tables`.
+    tables: Vec<&'a TableCore>, // Disregarding `reversed`, this is in ascending order.
     reversed: bool,
 }
 
 impl<'a> ConcatIterator<'a> {
-    pub fn new(tables: &'a [&TableCore], reversed: bool) -> Self {
+    pub fn new(tables: Vec<&'a TableCore>, reversed: bool) -> Self {
         let iters = tables
             .iter()
             .map(|tb| Iterator::new(tb, reversed))
@@ -511,7 +524,11 @@ impl<'a> ConcatIterator<'a> {
     }
 
     fn set_idx(&self, idx: isize) {
-        *self.index.borrow_mut() = idx;
+        if idx >= self.iters.len() as isize {
+            *self.index.borrow_mut() = -1;
+        } else {
+            *self.index.borrow_mut() = idx;
+        }
     }
 
     fn get_cur(&self) -> Option<&Iterator> {
@@ -527,6 +544,7 @@ impl<'a> ConcatIterator<'a> {
 impl<'a> y::iterator::Iterator for ConcatIterator<'a> {
     type Output = IteratorItem;
 
+    /// advances our concat iterator.
     fn next(&self) -> Option<Self::Output> {
         let cur_iter = self.get_cur().unwrap();
         let item = cur_iter.next();
@@ -534,15 +552,17 @@ impl<'a> y::iterator::Iterator for ConcatIterator<'a> {
             return item;
         }
         loop {
+            //  In case there are empty tables.
+            let index = self.index.borrow().clone();
             if !self.reversed {
-                self.set_idx(*self.index.borrow() + 1);
+                self.set_idx(index + 1);
             } else {
-                self.set_idx(*self.index.borrow() - 1);
+                self.set_idx(index - 1);
             }
             if self.get_cur().is_none() {
+                // End of list. Valid will become false.
                 return None;
             }
-            // let item = self.cur.borrow().unwrap().rewind();
             let item = self.get_cur().unwrap().rewind();
             if item.is_some() {
                 return item;
@@ -554,11 +574,13 @@ impl<'a> y::iterator::Iterator for ConcatIterator<'a> {
         if self.iters.is_empty() {
             return None;
         }
+        // 1: reset iterator of tables
         if !self.reversed {
             self.set_idx(0);
         } else {
             self.set_idx(self.iters.len() as isize - 1);
         }
+        // 2: reset iterator of current table
         self.get_cur().unwrap().rewind()
     }
 
@@ -603,6 +625,30 @@ impl<'a> y::iterator::Iterator for ConcatIterator<'a> {
 
     fn close(&self) {
         todo!()
+    }
+}
+
+impl<'a> fmt::Display for ConcatIterator<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let cur = self
+            .get_cur()
+            .map(|iter| format!("{}", iter))
+            .or_else(|| Some("None".to_string()))
+            .unwrap();
+        let table_str = self
+            .tables
+            .iter()
+            .map(|t| format!("{}", t))
+            .collect::<Vec<_>>()
+            .join(",");
+        f.write_fmt(format_args!(
+            "index:{}, iters:{}, tables:{}, reversed:{}, cur:{}",
+            *self.index.borrow(),
+            self.iters.len(),
+            table_str,
+            *self.reversed.borrow(),
+            cur
+        ))
     }
 }
 
