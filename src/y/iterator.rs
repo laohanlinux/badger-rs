@@ -3,6 +3,8 @@ use crate::skl::Chunk;
 use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE, VALUE_SIZE};
 use byteorder::BigEndian;
 use byteorder::{ReadBytesExt, WriteBytesExt};
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::io::{Cursor, Read, Write};
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -92,18 +94,111 @@ pub trait Iterator {
     fn seek(&self, key: &[u8]) -> Option<Self::Output>;
     fn valid(&self) -> bool;
     fn close(&self);
+    fn get_cur_kv(&self) -> Option<(&[u8], Self::Output)> {
+        todo!()
+    }
 }
-
 
 pub trait KeyValue<V> {
     fn key(&self) -> &[u8];
     fn value(&self) -> V;
 }
 
+#[derive(Debug, Eq)]
+pub(crate) struct HeapItem<T: Eq> {
+    idx: usize,
+    element: T,
+}
+
+impl<T: Eq> Ord for HeapItem<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.idx.cmp(&self.idx)
+    }
+}
+
+impl<T: Eq> PartialOrd for HeapItem<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T: Eq> PartialEq for HeapItem<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.idx == other.idx
+    }
+}
+
+pub struct MergeIterator<T> {
+    // h: BinaryHeap<HeapItem>,
+    cur_key: Vec<u8>,
+    reversed: bool,
+    all: Vec<Box<dyn Iterator<Output = T>>>,
+}
+
+impl<T> MergeIterator<T>
+where
+    T: Iterator,
+{
+    fn store_key(&mut self, smallest: T) {
+        let key = smallest.get_cur_kv().unwrap().0;
+        self.cur_key.clear();
+        self.cur_key.extend_from_slice(key);
+    }
+}
+
+impl Iterator for MergeIterator<ValueStruct> {
+    type Output = ValueStruct;
+
+    fn next(&self) -> Option<Self::Output> {
+        let smallest = self.all.first().unwrap();
+        smallest.next()
+    }
+
+    fn rewind(&self) -> Option<Self::Output> {
+        todo!()
+    }
+
+    fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+        todo!()
+    }
+
+    fn valid(&self) -> bool {
+        todo!()
+    }
+
+    fn close(&self) {
+        todo!()
+    }
+}
+
 #[test]
 fn it() {
-    let ref v = ValueStruct::new(vec![1, 2, 3, 4, 5], 1, 2, 10);
-    let buffer: Vec<u8> = v.into();
-    let got: ValueStruct = buffer.as_slice().into();
-    assert_eq!(*v, got);
+    // let ref v = ValueStruct::new(vec![1, 2, 3, 4, 5], 1, 2, 10);
+    // let buffer: Vec<u8> = v.into();
+    // let got: ValueStruct = buffer.as_slice().into();
+    // assert_eq!(*v, got);
+    // let mut h = BinaryHeap::new();
+    // h.push(HeapItem {
+    //     idx: 0,
+    //     // element: 10,
+    // });
+    // h.push(HeapItem {
+    //     idx: 0,
+    //     // element: 100,
+    // });
+    // h.push(HeapItem {
+    //     idx: 10,
+    //     // element: 200,
+    // });
+
+    println!(
+        " {}",
+        HeapItem {
+            idx: 110,
+            element: 100
+        } >= HeapItem {
+            idx: 120,
+            element: 200
+        }
+    );
 }

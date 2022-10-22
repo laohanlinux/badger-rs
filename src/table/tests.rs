@@ -319,6 +319,30 @@ mod utils {
         {
             let iter = ConcatIterator::new(vec![&f1, &f2, &f3], true);
             assert!(iter.rewind().is_some());
+            let mut count = 0;
+            while let Some(item) = iter.next() {
+                count += 1;
+                let value = item.value();
+                assert_eq!(
+                    format!("{}", 10000 - count % 10000 - 1).as_bytes(),
+                    value.value
+                );
+                assert_eq!('A' as u8, value.meta);
+            }
+            assert_eq!(count + 1, 30000);
+
+            assert!(iter.seek(b"a").is_none());
+            let value = iter.seek(b"keyb").unwrap();
+            assert_eq!(value.key(), b"keya9999");
+            assert_eq!(value.value().value, b"9999");
+
+            let value = iter.seek(b"keyb9999b").unwrap();
+            assert_eq!(value.key(), b"keyb9999");
+            assert_eq!(value.value().value, b"9999");
+
+            let value = iter.seek(b"keyd").unwrap();
+            assert_eq!(value.key(), b"keyc9999");
+            assert_eq!(value.value().value, b"9999");
         }
     }
 
