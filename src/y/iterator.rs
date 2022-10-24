@@ -3,6 +3,7 @@ use crate::skl::Chunk;
 use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE, VALUE_SIZE};
 use byteorder::BigEndian;
 use byteorder::{ReadBytesExt, WriteBytesExt};
+use std::cmp::Ordering;
 use std::io::{Cursor, Read, Write};
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -94,16 +95,80 @@ pub trait Iterator {
     fn close(&self);
 }
 
-
 pub trait KeyValue<V> {
     fn key(&self) -> &[u8];
     fn value(&self) -> V;
 }
 
+pub struct MergeIterator {}
+
+pub struct MergeIteratorElement<V, I: Iterator + KeyValue<V>> {
+    nice: isize,
+    itr: I,
+    reverse: bool,
+    _data: PhantomData<V>,
+}
+
+impl<V, I> PartialEq for MergeIteratorElement<V, I>
+where
+    I: Iterator + KeyValue<ValueStruct>,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.itr.key() == &other.itr.key()
+    }
+}
+
 #[test]
-fn it() {
-    let ref v = ValueStruct::new(vec![1, 2, 3, 4, 5], 1, 2, 10);
-    let buffer: Vec<u8> = v.into();
-    let got: ValueStruct = buffer.as_slice().into();
-    assert_eq!(*v, got);
+fn heap() {
+    #[derive(Default, Debug)]
+    struct Person {
+        pub id: u32,
+        pub name: String,
+        pub height: u64,
+    }
+
+    impl PartialEq for Person {
+        fn eq(&self, other: &Self) -> bool {
+            self.id == other.id
+        }
+    }
+    impl Eq for Person {}
+
+    impl PartialOrd for Person {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            self.height.partial_cmp(&self.height)
+        }
+    }
+
+    // impl Ord for Person {
+    //     fn cmp(&self, other: &Self) -> Ordering {
+    //         self.height.cmp(&other.height)
+    //     }
+    // }
+
+    let p1 = Person {
+        id: 1,
+        height: 1,
+        ..Default::default()
+    };
+    let p2 = Person {
+        id: 1,
+        height: 2,
+        ..Default::default()
+    };
+
+    let p3 = Person {
+        id: 2,
+        height: 3,
+        ..Default::default()
+    };
+
+    assert_eq!(p1, p2);
+    assert_ne!(p1, p3);
+    assert_ne!(p2, p3);
+
+    println!("{}", p1 < p2);
+    assert!(p1 < p2);
+    assert!(p2 < p3);
+    assert!(p1 < p3);
 }
