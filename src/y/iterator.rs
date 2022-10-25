@@ -1,9 +1,13 @@
 use crate::skl::BlockBytes;
 use crate::skl::Chunk;
+use crate::table::iterator::IteratorItem;
 use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE, VALUE_SIZE};
 use byteorder::BigEndian;
 use byteorder::{ReadBytesExt, WriteBytesExt};
-use std::cmp::Ordering;
+use serde_json::Value;
+use std::cell::RefCell;
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
 use std::io::{Cursor, Read, Write};
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -99,76 +103,194 @@ pub trait KeyValue<V> {
     fn key(&self) -> &[u8];
     fn value(&self) -> V;
 }
+// index: RefCell<isize>,      // Which iterator is active now. todo use usize
+// iters: Vec<Iterator<'a>>,   // Corresponds to `tables`.
+// tables: Vec<&'a TableCore>, // Disregarding `reversed`, this is in ascending order.
+// reversed: bool,
 
-pub struct MergeIterator {}
+pub struct MergeIterator<'a> {
+    // heap: BinaryHeap<MergeIteratorElement<crate::table::iterator::Iterator<'a>>>,
+    cur_key: Vec<u8>,
+    reverse: bool,
+    all: Vec<crate::table::iterator::Iterator<'a>>,
+    elements: Vec<MergeIteratorElement<crate::table::iterator::Iterator<'a>>>,
+    mbos: RefCell<isize>,
+}
 
-pub struct MergeIteratorElement<V, I: Iterator + KeyValue<V>> {
+impl<'a> MergeIterator<'a> {
+    pub fn store_key(&mut self, key: &[u8]) {
+        self.cur_key.clear();
+        self.cur_key.extend_from_slice(key);
+    }
+    // initHeap checks all iterators and initializes our heap and array of keys.
+    // Whenever we reverse direction, we need to run this.
+    fn init(&mut self) {}
+
+    fn get_or_set_iter(&self, mbos: isize) -> &crate::table::iterator::Iterator<'_> {
+        // if self.mbos.borrow()
+        todo!()
+    }
+}
+
+impl<'a> Iterator for MergeIterator<'a> {
+    type Output = IteratorItem;
+
+    fn next(&self) -> Option<Self::Output> {
+        todo!()
+    }
+
+    fn rewind(&self) -> Option<Self::Output> {
+        todo!()
+    }
+
+    fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+        let mut first: Option<IteratorItem> = None;
+        for iter in self.all.iter() {
+            if let Some(item) = iter.seek(key) {
+                if first.is_none() || first.as_ref().unwrap().key() > item.key() {
+                    first = Some(item);
+                }
+            }
+        }
+        // TODO: init
+        first
+    }
+
+    fn valid(&self) -> bool {
+        todo!()
+    }
+
+    fn close(&self) {
+        todo!()
+    }
+}
+
+#[derive(Debug)]
+pub struct MergeIteratorElement<I>
+where
+    I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>,
+{
     nice: isize,
     itr: I,
     reverse: bool,
-    _data: PhantomData<V>,
 }
 
-impl<V, I> PartialEq for MergeIteratorElement<V, I>
+impl<I> PartialEq<Self> for MergeIteratorElement<I>
 where
-    I: Iterator + KeyValue<ValueStruct>,
+    I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>,
 {
     fn eq(&self, other: &Self) -> bool {
-        self.itr.key() == &other.itr.key()
+        self.itr.key() == other.itr.key()
+    }
+}
+
+impl<I> PartialOrd<Self> for MergeIteratorElement<I>
+where
+    I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if self.itr.key() == other.itr.key() {
+            return Some(self.nice.cmp(&other.nice));
+        }
+        Some(self.itr.key().cmp(other.itr.key()))
+    }
+}
+
+impl<I> Eq for MergeIteratorElement<I> where
+    I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>
+{
+}
+
+impl<I> Ord for MergeIteratorElement<I>
+where
+    I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>,
+{
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.nice.cmp(&self.nice)
     }
 }
 
 #[test]
-fn heap() {
-    #[derive(Default, Debug)]
-    struct Person {
-        pub id: u32,
-        pub name: String,
-        pub height: u64,
+fn merge_iter_element() {
+    #[derive(Debug)]
+    struct TestIterator {
+        key: Vec<u8>,
     }
 
-    impl PartialEq for Person {
-        fn eq(&self, other: &Self) -> bool {
-            self.id == other.id
+    impl super::iterator::Iterator for TestIterator {
+        type Output = IteratorItem;
+
+        fn next(&self) -> Option<Self::Output> {
+            todo!()
+        }
+
+        fn rewind(&self) -> Option<Self::Output> {
+            todo!()
+        }
+
+        fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+            todo!()
+        }
+
+        fn valid(&self) -> bool {
+            todo!()
+        }
+
+        fn close(&self) {
+            todo!()
         }
     }
-    impl Eq for Person {}
 
-    impl PartialOrd for Person {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            self.height.partial_cmp(&self.height)
+    impl KeyValue<ValueStruct> for TestIterator {
+        fn key(&self) -> &[u8] {
+            &self.key
+        }
+
+        fn value(&self) -> ValueStruct {
+            todo!()
         }
     }
 
-    // impl Ord for Person {
-    //     fn cmp(&self, other: &Self) -> Ordering {
-    //         self.height.cmp(&other.height)
-    //     }
-    // }
-
-    let p1 = Person {
-        id: 1,
-        height: 1,
-        ..Default::default()
-    };
-    let p2 = Person {
-        id: 1,
-        height: 2,
-        ..Default::default()
+    let e1 = MergeIteratorElement {
+        nice: 1,
+        itr: TestIterator {
+            key: b"abd".to_vec(),
+        },
+        reverse: false,
     };
 
-    let p3 = Person {
-        id: 2,
-        height: 3,
-        ..Default::default()
+    let e2 = MergeIteratorElement {
+        nice: 1,
+        itr: TestIterator {
+            key: b"abc".to_vec(),
+        },
+        reverse: false,
+    };
+    let e3 = MergeIteratorElement {
+        nice: 2,
+        itr: TestIterator {
+            key: b"abc".to_vec(),
+        },
+        reverse: false,
+    };
+    let e4 = MergeIteratorElement {
+        nice: 2,
+        itr: TestIterator {
+            key: b"abc".to_vec(),
+        },
+        reverse: false,
     };
 
-    assert_eq!(p1, p2);
-    assert_ne!(p1, p3);
-    assert_ne!(p2, p3);
-
-    println!("{}", p1 < p2);
-    assert!(p1 < p2);
-    assert!(p2 < p3);
-    assert!(p1 < p3);
+    let mut e = vec![e4, e1, e2, e3];
+    e.sort();
+    println!("{:?}", e);
+    let mut heap = BinaryHeap::new();
+    for element in e {
+        heap.push(element);
+    }
+    let top = heap.pop().unwrap();
+    println!("{:?}", top);
 }
+
+#[test]
+fn heap() {}
