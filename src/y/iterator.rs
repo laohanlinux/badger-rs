@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 use std::io::{Cursor, Read, Write};
+use std::iter::Iterator as stdIterator;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
@@ -95,6 +96,9 @@ pub trait Iterator {
     fn next(&self) -> Option<Self::Output>;
     fn rewind(&self) -> Option<Self::Output>;
     fn seek(&self, key: &[u8]) -> Option<Self::Output>;
+    fn peek(&self) -> Option<Self::Output> {
+        None
+    }
     fn valid(&self) -> bool;
     fn close(&self);
 }
@@ -103,32 +107,53 @@ pub trait KeyValue<V> {
     fn key(&self) -> &[u8];
     fn value(&self) -> V;
 }
+
 // index: RefCell<isize>,      // Which iterator is active now. todo use usize
 // iters: Vec<Iterator<'a>>,   // Corresponds to `tables`.
 // tables: Vec<&'a TableCore>, // Disregarding `reversed`, this is in ascending order.
 // reversed: bool,
 
 pub struct MergeIterator<'a> {
-    // heap: BinaryHeap<MergeIteratorElement<crate::table::iterator::Iterator<'a>>>,
-    cur_key: Vec<u8>,
+    heap: RefCell<BinaryHeap<MergeIteratorElement<'a, crate::table::iterator::Iterator<'a>>>>,
+    cur_key: RefCell<Vec<u8>>,
     reverse: bool,
     all: Vec<crate::table::iterator::Iterator<'a>>,
-    elements: Vec<MergeIteratorElement<crate::table::iterator::Iterator<'a>>>,
+    elements: RefCell<Vec<MergeIteratorElement<'a, crate::table::iterator::Iterator<'a>>>>,
     mbos: RefCell<isize>,
 }
 
 impl<'a> MergeIterator<'a> {
-    pub fn store_key(&mut self, key: &[u8]) {
-        self.cur_key.clear();
-        self.cur_key.extend_from_slice(key);
-    }
     // initHeap checks all iterators and initializes our heap and array of keys.
     // Whenever we reverse direction, we need to run this.
-    fn init(&mut self) {}
+    fn init(&self) {
+        self.elements.borrow_mut().clear();
+        for (idx, iter) in self.all.iter().enumerate() {
+            if iter.peek().is_none() {
+                continue;
+            }
+            self.elements.borrow_mut().push(MergeIteratorElement {
+                nice: idx as isize,
+                itr: iter,
+                reverse: self.reverse,
+            });
+        }
+        self.elements.borrow_mut().sort();
+        if let Some(cur_itr) = self.elements.borrow().first() {
+            let cur_key = cur_itr.itr.peek();
+            self.cur_key.borrow_mut().clear();
+            self.cur_key
+                .borrow_mut()
+                .extend_from_slice(cur_key.as_ref().unwrap().key());
+        }
+    }
 
-    fn get_or_set_iter(&self, mbos: isize) -> &crate::table::iterator::Iterator<'_> {
-        // if self.mbos.borrow()
-        todo!()
+    // Returns the key associated with the current iterator
+    fn get_cur_value(&self) -> Option<IteratorItem> {
+        // todo opz
+        if let Some(itr) = self.elements.borrow().first() {
+            return itr.itr.peek();
+        }
+        None
     }
 }
 
@@ -140,6 +165,9 @@ impl<'a> Iterator for MergeIterator<'a> {
     }
 
     fn rewind(&self) -> Option<Self::Output> {
+        for itr in self.all.iter() {
+            itr.rewind();
+        }
         todo!()
     }
 
@@ -152,7 +180,7 @@ impl<'a> Iterator for MergeIterator<'a> {
                 }
             }
         }
-        // TODO: init
+        self.init();
         first
     }
 
@@ -166,16 +194,16 @@ impl<'a> Iterator for MergeIterator<'a> {
 }
 
 #[derive(Debug)]
-pub struct MergeIteratorElement<I>
+pub struct MergeIteratorElement<'a, I>
 where
     I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>,
 {
     nice: isize,
-    itr: I,
+    itr: &'a I,
     reverse: bool,
 }
 
-impl<I> PartialEq<Self> for MergeIteratorElement<I>
+impl<'a, I> PartialEq<Self> for MergeIteratorElement<'a, I>
 where
     I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>,
 {
@@ -184,7 +212,7 @@ where
     }
 }
 
-impl<I> PartialOrd<Self> for MergeIteratorElement<I>
+impl<'a, I> PartialOrd<Self> for MergeIteratorElement<'a, I>
 where
     I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>,
 {
@@ -196,12 +224,12 @@ where
     }
 }
 
-impl<I> Eq for MergeIteratorElement<I> where
+impl<'a, I> Eq for MergeIteratorElement<'a, I> where
     I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>
 {
 }
 
-impl<I> Ord for MergeIteratorElement<I>
+impl<'a, I> Ord for MergeIteratorElement<'a, I>
 where
     I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>,
 {
@@ -250,46 +278,46 @@ fn merge_iter_element() {
             todo!()
         }
     }
+    //
+    // let e1 = MergeIteratorElement {
+    //     nice: 1,
+    //     itr: TestIterator {
+    //         key: b"abd".to_vec(),
+    //     },
+    //     reverse: false,
+    // };
 
-    let e1 = MergeIteratorElement {
-        nice: 1,
-        itr: TestIterator {
-            key: b"abd".to_vec(),
-        },
-        reverse: false,
-    };
-
-    let e2 = MergeIteratorElement {
-        nice: 1,
-        itr: TestIterator {
-            key: b"abc".to_vec(),
-        },
-        reverse: false,
-    };
-    let e3 = MergeIteratorElement {
-        nice: 2,
-        itr: TestIterator {
-            key: b"abc".to_vec(),
-        },
-        reverse: false,
-    };
-    let e4 = MergeIteratorElement {
-        nice: 2,
-        itr: TestIterator {
-            key: b"abc".to_vec(),
-        },
-        reverse: false,
-    };
-
-    let mut e = vec![e4, e1, e2, e3];
-    e.sort();
-    println!("{:?}", e);
-    let mut heap = BinaryHeap::new();
-    for element in e {
-        heap.push(element);
-    }
-    let top = heap.pop().unwrap();
-    println!("{:?}", top);
+    // let e2 = MergeIteratorElement {
+    //     nice: 1,
+    //     itr: TestIterator {
+    //         key: b"abc".to_vec(),
+    //     },
+    //     reverse: false,
+    // };
+    // let e3 = MergeIteratorElement {
+    //     nice: 2,
+    //     itr: TestIterator {
+    //         key: b"abc".to_vec(),
+    //     },
+    //     reverse: false,
+    // };
+    // let e4 = MergeIteratorElement {
+    //     nice: 2,
+    //     itr: TestIterator {
+    //         key: b"abc".to_vec(),
+    //     },
+    //     reverse: false,
+    // };
+    //
+    // let mut e = vec![e4, e1, e2, e3];
+    // e.sort();
+    // println!("{:?}", e);
+    // let mut heap = BinaryHeap::new();
+    // for element in e {
+    //     heap.push(element);
+    // }
+    // let top = heap.pop().unwrap();
+    // println!("{:?}", top);
 }
 
 #[test]
