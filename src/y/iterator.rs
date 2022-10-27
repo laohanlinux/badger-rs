@@ -1,6 +1,6 @@
 use crate::skl::BlockBytes;
 use crate::skl::Chunk;
-use crate::table::iterator::IteratorItem;
+use crate::table::iterator::{IteratorImpl, IteratorItem};
 use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE, VALUE_SIZE};
 use byteorder::BigEndian;
 use byteorder::{ReadBytesExt, WriteBytesExt};
@@ -95,7 +95,17 @@ pub trait Xiterator {
     fn rewind(&self) -> Option<Self::Output>;
     fn seek(&self, key: &[u8]) -> Option<Self::Output>;
     fn peek(&self) -> Option<Self::Output> {
-        None
+        todo!()
+    }
+}
+
+pub trait Xiterator2<'x> {
+    type Output;
+    fn next(&self) -> Option<Self::Output>;
+    fn rewind(&self) -> Option<Self::Output>;
+    fn seek(&self, key: &[u8]) -> Option<Self::Output>;
+    fn peek(&self) -> Option<Self::Output> {
+        todo!()
     }
 }
 
@@ -104,18 +114,18 @@ pub trait KeyValue<V> {
     fn value(&self) -> V;
 }
 
-pub struct MergeIterator<'a> {
+pub struct MergeIterator<'remainder> {
     cur_key: RefCell<Vec<u8>>,
     reverse: bool,
-    all: Vec<crate::table::iterator::IteratorImpl<'a>>,
-    elements: RefCell<Vec<MergeIteratorElement<'a, crate::table::iterator::IteratorImpl<'a>>>>,
+    all: Vec<IteratorImpl<'remainder>>,
+    elements: RefCell<Vec<MergeIteratorElement<'remainder, IteratorImpl<'remainder>>>>,
 }
 
 impl<'remainder> MergeIterator<'remainder> {
-    fn new(
-        iters: Vec<crate::table::iterator::IteratorImpl<'remainder>>,
-        reverse: bool,
-    ) -> MergeIterator {
+    fn new<'b>(iters: Vec<IteratorImpl<'b>>, reverse: bool) -> MergeIterator<'b>
+    where
+        'b: 'remainder,
+    {
         let m = MergeIterator {
             cur_key: RefCell::new(vec![]),
             reverse,
@@ -130,25 +140,25 @@ impl<'remainder> MergeIterator<'remainder> {
     // Whenever we reverse direction, we need to run this.
     // If use 'a can not compiled, Haha
     fn init(&'remainder self) {
-        self.elements.borrow_mut().clear();
-        for (idx, iter) in self.all.iter().enumerate() {
-            if iter.peek().is_none() {
-                continue;
-            }
-            self.elements.borrow_mut().push(MergeIteratorElement {
-                nice: idx as isize,
-                itr: iter,
-                reverse: self.reverse,
-            });
-        }
-        self.elements.borrow_mut().sort();
-        if let Some(cur_itr) = self.elements.borrow().first() {
-            let cur_key = cur_itr.itr.peek();
-            self.cur_key.borrow_mut().clear();
-            self.cur_key
-                .borrow_mut()
-                .extend_from_slice(cur_key.as_ref().unwrap().key());
-        }
+        // self.elements.borrow_mut().clear();
+        // for (idx, iter) in self.all.iter().enumerate() {
+        //     if iter.peek().is_none() {
+        //         continue;
+        //     }
+        //     self.elements.borrow_mut().push(MergeIteratorElement {
+        //         nice: idx as isize,
+        //         itr: iter,
+        //         reverse: self.reverse,
+        //     });
+        // }
+        // self.elements.borrow_mut().sort();
+        // if let Some(cur_itr) = self.elements.borrow().first() {
+        //     let cur_key = cur_itr.itr.peek();
+        //     self.cur_key.borrow_mut().clear();
+        //     self.cur_key
+        //         .borrow_mut()
+        //         .extend_from_slice(cur_key.as_ref().unwrap().key());
+        // }
     }
 
     fn store_key(&self, key: &[u8]) {
@@ -157,61 +167,78 @@ impl<'remainder> MergeIterator<'remainder> {
     }
 }
 
-impl<'a> Xiterator for MergeIterator<'a> {
-    type Output = IteratorItem;
-
-    fn next(&self) -> Option<Self::Output> {
-        if self.elements.borrow().is_empty() {
-            return None;
-        }
-
-        let mut keyvalue: Option<IteratorItem> = None;
-        for (idx, tb_iter) in self.elements.borrow().iter().enumerate() {
-            if idx == 0 {
-                if let Some(item) = tb_iter.itr.next() {
-                    keyvalue = Some(item);
-                }
-            } else {
-                if let Some(item) = tb_iter.itr.next() {
-                    if item.key() == keyvalue.as_ref().unwrap().key() {
-                        continue;
-                    } else {
-                        // Because has move it pointer
-                        tb_iter.itr.prev();
-                    }
-                }
-            }
-        }
-        // self.init();
-        if let Some(ref item) = keyvalue {
-            self.store_key(item.key());
-        }
-        keyvalue
-    }
-
-    fn rewind(&self) -> Option<Self::Output> {
-        for itr in self.all.iter() {
-            itr.rewind();
-        }
-        // self.init()
-        self.peek()
-    }
-
-    fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-        for iter in self.all.iter() {
-            iter.seek(key);
-        }
-        // self.init();
-        self.peek()
-    }
-
-    fn peek(&self) -> Option<Self::Output> {
-        if let Some(itr) = self.elements.borrow().first() {
-            return itr.itr.peek();
-        }
-        None
-    }
-}
+// impl<'remainder> Xiterator2<'remainder> for MergeIterator<'remainder> {
+//     type Output = ();
+//
+//     fn next(&'remainder self) -> Option<Self::Output> {
+//         self.init();
+//         todo!()
+//     }
+//
+//     fn rewind(&'remainder self) -> Option<Self::Output> {
+//         todo!()
+//     }
+//
+//     fn seek(&'remainder self, key: &[u8]) -> Option<Self::Output> {
+//         todo!()
+//     }
+// }
+//
+// impl<'remainder> Xiterator for MergeIterator<'remainder> {
+//     type Output = IteratorItem;
+//
+//     fn next(&self) -> Option<Self::Output> {
+//         if self.elements.borrow().is_empty() {
+//             return None;
+//         }
+//
+//         let mut keyvalue: Option<IteratorItem> = None;
+//         for (idx, tb_iter) in self.elements.borrow().iter().enumerate() {
+//             if idx == 0 {
+//                 if let Some(item) = tb_iter.itr.next() {
+//                     keyvalue = Some(item);
+//                 }
+//             } else {
+//                 if let Some(item) = tb_iter.itr.next() {
+//                     if item.key() == keyvalue.as_ref().unwrap().key() {
+//                         continue;
+//                     } else {
+//                         // Because has move it pointer
+//                         tb_iter.itr.prev();
+//                     }
+//                 }
+//             }
+//         }
+//         self.init();
+//         if let Some(ref item) = keyvalue {
+//             self.store_key(item.key());
+//         }
+//         keyvalue
+//     }
+//
+//     fn rewind(&self) -> Option<Self::Output> {
+//         for itr in self.all.iter() {
+//             itr.rewind();
+//         }
+//         // self.init()
+//         self.peek()
+//     }
+//
+//     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+//         for iter in self.all.iter() {
+//             iter.seek(key);
+//         }
+//         // self.init();
+//         self.peek()
+//     }
+//
+//     fn peek(&self) -> Option<Self::Output> {
+//         if let Some(itr) = self.elements.borrow().first() {
+//             return itr.itr.peek();
+//         }
+//         None
+//     }
+// }
 
 #[derive(Debug)]
 pub struct MergeIteratorElement<'a, I>
