@@ -89,7 +89,7 @@ impl Into<Vec<u8>> for &ValueStruct {
     }
 }
 
-pub trait Iterator {
+pub trait Xiterator {
     type Output;
     fn next(&self) -> Option<Self::Output>;
     fn rewind(&self) -> Option<Self::Output>;
@@ -97,8 +97,6 @@ pub trait Iterator {
     fn peek(&self) -> Option<Self::Output> {
         None
     }
-    fn valid(&self) -> bool;
-    fn close(&self);
 }
 
 pub trait KeyValue<V> {
@@ -118,7 +116,7 @@ impl<'remainder> MergeIterator<'remainder> {
         iters: Vec<crate::table::iterator::IteratorImpl<'remainder>>,
         reverse: bool,
     ) -> MergeIterator {
-        let  m = MergeIterator {
+        let m = MergeIterator {
             cur_key: RefCell::new(vec![]),
             reverse,
             all: iters,
@@ -159,7 +157,7 @@ impl<'remainder> MergeIterator<'remainder> {
     }
 }
 
-impl<'a> Iterator for MergeIterator<'a> {
+impl<'a> Xiterator for MergeIterator<'a> {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
@@ -213,20 +211,12 @@ impl<'a> Iterator for MergeIterator<'a> {
         }
         None
     }
-
-    fn valid(&self) -> bool {
-        todo!()
-    }
-
-    fn close(&self) {
-        todo!()
-    }
 }
 
 #[derive(Debug)]
 pub struct MergeIteratorElement<'a, I>
 where
-    I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>,
+    I: Xiterator<Output = IteratorItem> + KeyValue<ValueStruct>,
 {
     nice: isize,
     itr: &'a I,
@@ -235,7 +225,7 @@ where
 
 impl<'a, I> PartialEq<Self> for MergeIteratorElement<'a, I>
 where
-    I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>,
+    I: Xiterator<Output = IteratorItem> + KeyValue<ValueStruct>,
 {
     fn eq(&self, other: &Self) -> bool {
         self.itr.key() == other.itr.key()
@@ -244,7 +234,7 @@ where
 
 impl<'a, I> PartialOrd<Self> for MergeIteratorElement<'a, I>
 where
-    I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>,
+    I: Xiterator<Output = IteratorItem> + KeyValue<ValueStruct>,
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         if self.itr.key() == other.itr.key() {
@@ -255,13 +245,13 @@ where
 }
 
 impl<'a, I> Eq for MergeIteratorElement<'a, I> where
-    I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>
+    I: Xiterator<Output = IteratorItem> + KeyValue<ValueStruct>
 {
 }
 
 impl<'a, I> Ord for MergeIteratorElement<'a, I>
 where
-    I: Iterator<Output = IteratorItem> + KeyValue<ValueStruct>,
+    I: Xiterator<Output = IteratorItem> + KeyValue<ValueStruct>,
 {
     fn cmp(&self, other: &Self) -> Ordering {
         self.nice.cmp(&self.nice)
@@ -275,7 +265,7 @@ fn merge_iter_element() {
         key: Vec<u8>,
     }
 
-    impl super::iterator::Iterator for TestIterator {
+    impl super::iterator::Xiterator for TestIterator {
         type Output = IteratorItem;
 
         fn next(&self) -> Option<Self::Output> {
@@ -287,14 +277,6 @@ fn merge_iter_element() {
         }
 
         fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-            todo!()
-        }
-
-        fn valid(&self) -> bool {
-            todo!()
-        }
-
-        fn close(&self) {
             todo!()
         }
     }

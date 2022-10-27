@@ -4,7 +4,7 @@ mod utils {
     use crate::table::builder::Builder;
     use crate::table::iterator::{BlockIterator, ConcatIterator};
     use crate::table::table::{Table, TableCore, FILE_SUFFIX};
-    use crate::y::iterator::Iterator;
+    use crate::y::iterator::Xiterator;
     use crate::y::{open_synced_file, read_at, ValueStruct};
     use memmap::MmapOptions;
     use rand::random;

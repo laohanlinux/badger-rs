@@ -18,7 +18,7 @@ use std::{fmt, io};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::FileExt;
 
-use crate::y::iterator::Iterator;
+use crate::y::iterator::Xiterator;
 use serde_json::to_vec;
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::FileExt;

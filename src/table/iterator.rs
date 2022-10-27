@@ -1,6 +1,6 @@
 use crate::table::builder::Header;
 use crate::table::table::{Block, Table, TableCore};
-use crate::y::iterator::KeyValue;
+use crate::y::iterator::{KeyValue, Xiterator};
 use crate::y::{Result, ValueStruct};
 use crate::{y, Error};
 use std::borrow::{Borrow, BorrowMut};
@@ -256,7 +256,7 @@ impl<'a> fmt::Display for IteratorImpl<'a> {
     }
 }
 
-impl<'a> y::iterator::Iterator for IteratorImpl<'a> {
+impl<'a> Xiterator for IteratorImpl<'a> {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
@@ -281,14 +281,6 @@ impl<'a> y::iterator::Iterator for IteratorImpl<'a> {
         } else {
             self.seek_for_prev(key)
         }
-    }
-
-    fn valid(&self) -> bool {
-        todo!()
-    }
-
-    fn close(&self) {
-        todo!()
     }
 }
 
@@ -515,9 +507,9 @@ impl<'a> From<BlockIteratorItem<'a>> for IteratorItem {
 /// concatenates the sequences defined by several iterators.  (It only works with
 /// TableIterators, probably just because it's faster to not be so generic.)
 pub struct ConcatIterator<'a> {
-    index: RefCell<isize>,      // Which iterator is active now. todo use usize
-    iters: Vec<IteratorImpl<'a>>,   // Corresponds to `tables`.
-    tables: Vec<&'a TableCore>, // Disregarding `reversed`, this is in ascending order.
+    index: RefCell<isize>,        // Which iterator is active now. todo use usize
+    iters: Vec<IteratorImpl<'a>>, // Corresponds to `tables`.
+    tables: Vec<&'a TableCore>,   // Disregarding `reversed`, this is in ascending order.
     reversed: bool,
 }
 
@@ -553,7 +545,7 @@ impl<'a> ConcatIterator<'a> {
     }
 }
 
-impl<'a> y::iterator::Iterator for ConcatIterator<'a> {
+impl<'a> Xiterator for ConcatIterator<'a> {
     type Output = IteratorItem;
 
     /// advances our concat iterator.
@@ -627,14 +619,6 @@ impl<'a> y::iterator::Iterator for ConcatIterator<'a> {
             self.set_idx((idx - 1) as isize);
             self.get_cur().unwrap().seek_for_prev(key)
         }
-    }
-
-    fn valid(&self) -> bool {
-        todo!()
-    }
-
-    fn close(&self) {
-        todo!()
     }
 }
 

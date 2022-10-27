@@ -1,5 +1,5 @@
 use crate::skl::{node::Node, skip::SkipList, Chunk};
-use crate::y::iterator::KeyValue;
+use crate::y::iterator::{KeyValue, Xiterator};
 use crate::y::ValueStruct;
 use serde_json::Value;
 use std::cell::RefCell;
@@ -99,7 +99,7 @@ pub struct CursorReverse<'a> {
     reversed: RefCell<bool>,
 }
 
-impl<'a> crate::y::iterator::Iterator for CursorReverse<'a> {
+impl<'a> Xiterator for CursorReverse<'a> {
     type Output = &'a Node;
     fn next(&self) -> Option<Self::Output> {
         if !*self.reversed.borrow() {
@@ -123,14 +123,6 @@ impl<'a> crate::y::iterator::Iterator for CursorReverse<'a> {
         } else {
             self.iter.seek_for_prev(key)
         }
-    }
-
-    fn valid(&self) -> bool {
-        self.iter.valid()
-    }
-
-    fn close(&self) {
-        self.iter.close();
     }
 }
 
