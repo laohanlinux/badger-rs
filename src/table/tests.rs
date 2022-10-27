@@ -50,7 +50,7 @@ mod utils {
         for n in vec![101, 199, 200, 250, 9999, 10000] {
             let (mut fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
-            let iter = crate::table::iterator::Iterator::new(&table, false);
+            let iter = crate::table::iterator::IteratorImpl::new(&table, false);
             let value = iter.seek_to_last();
             assert!(value.is_some());
             let v = value.as_ref().unwrap().value();
@@ -71,7 +71,7 @@ mod utils {
         let (mut fp, path) = build_test_table("k", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
 
-        let iter = crate::table::iterator::Iterator::new(&table, false);
+        let iter = crate::table::iterator::IteratorImpl::new(&table, false);
 
         let data = vec![
             ("abc", true, "k0000"),
@@ -97,7 +97,7 @@ mod utils {
         let (mut fp, path) = build_test_table("k", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
 
-        let iter = crate::table::iterator::Iterator::new(&table, false);
+        let iter = crate::table::iterator::IteratorImpl::new(&table, false);
         let data = vec![
             ("abc", false, ""),
             ("k0100", true, "k0100"),
@@ -122,7 +122,7 @@ mod utils {
         for n in vec![101, 199, 200, 250, 9999, 10000] {
             let (mut fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
-            let iter = crate::table::iterator::Iterator::new(&table, false);
+            let iter = crate::table::iterator::IteratorImpl::new(&table, false);
             iter.reset();
             let mut count = 0;
             let value = iter.seek(b"");
@@ -146,7 +146,7 @@ mod utils {
         for n in vec![101, 199, 200, 250, 9999, 10000] {
             let (mut fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
-            let iter = crate::table::iterator::Iterator::new(&table, false);
+            let iter = crate::table::iterator::IteratorImpl::new(&table, false);
             iter.reset();
             let value = iter.seek(b"zzzzzz");
             assert!(value.is_none());
@@ -169,7 +169,7 @@ mod utils {
     fn table() {
         let (fp, path) = build_test_table("key", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
-        let iter = crate::table::iterator::Iterator::new(&table, false);
+        let iter = crate::table::iterator::IteratorImpl::new(&table, false);
         let mut kid = 1010;
         let seek = key("key", kid);
         iter.seek(seek.as_bytes());
@@ -193,7 +193,7 @@ mod utils {
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
 
         let seek = key("key", 1010);
-        let iter = crate::table::iterator::Iterator::new(&table, false);
+        let iter = crate::table::iterator::IteratorImpl::new(&table, false);
         let item = iter.seek(seek.as_bytes());
         assert!(item.is_some());
         assert_eq!(item.as_ref().unwrap().key(), seek.as_bytes().to_vec());
@@ -231,7 +231,7 @@ mod utils {
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
 
         {
-            let iter = crate::table::iterator::Iterator::new(&table, false);
+            let iter = crate::table::iterator::IteratorImpl::new(&table, false);
             iter.rewind();
             let mut count = 0;
             while let Some(item) = iter.next() {
@@ -245,7 +245,7 @@ mod utils {
         }
 
         {
-            let iter = crate::table::iterator::Iterator::new(&table, true);
+            let iter = crate::table::iterator::IteratorImpl::new(&table, true);
             iter.rewind();
             let mut count = 0;
             while let Some(item) = iter.next() {
@@ -347,7 +347,7 @@ mod utils {
     fn build_table(mut key_value: Vec<(Vec<u8>, Vec<u8>)>) -> (File, String) {
         let mut builder = Builder::default();
         let file_name = format!(
-            "{}{}{}",
+            "{}/{}{}",
             temp_dir().to_str().unwrap(),
             random::<u64>(),
             FILE_SUFFIX

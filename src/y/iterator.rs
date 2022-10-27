@@ -55,7 +55,6 @@ impl ValueStruct {
 
     pub(crate) fn read_data(&mut self, buffer: &[u8]) {
         use std::io::Read;
-        // println!("{:?}", buffer);
         let mut cursor = Cursor::new(buffer);
         self.meta = cursor.read_u8().unwrap();
         self.user_meta = cursor.read_u8().unwrap();
@@ -86,7 +85,6 @@ impl Into<Vec<u8>> for &ValueStruct {
     fn into(self) -> Vec<u8> {
         let mut buffer = vec![0; self.size()];
         self.write_data(&mut buffer);
-        // println!("{:?}", buffer);
         buffer
     }
 }
@@ -108,24 +106,32 @@ pub trait KeyValue<V> {
     fn value(&self) -> V;
 }
 
-// index: RefCell<isize>,      // Which iterator is active now. todo use usize
-// iters: Vec<Iterator<'a>>,   // Corresponds to `tables`.
-// tables: Vec<&'a TableCore>, // Disregarding `reversed`, this is in ascending order.
-// reversed: bool,
-
 pub struct MergeIterator<'a> {
-    heap: RefCell<BinaryHeap<MergeIteratorElement<'a, crate::table::iterator::Iterator<'a>>>>,
     cur_key: RefCell<Vec<u8>>,
     reverse: bool,
-    all: Vec<crate::table::iterator::Iterator<'a>>,
-    elements: RefCell<Vec<MergeIteratorElement<'a, crate::table::iterator::Iterator<'a>>>>,
-    mbos: RefCell<isize>,
+    all: Vec<crate::table::iterator::IteratorImpl<'a>>,
+    elements: RefCell<Vec<MergeIteratorElement<'a, crate::table::iterator::IteratorImpl<'a>>>>,
 }
 
-impl<'a> MergeIterator<'a> {
+impl<'remainder> MergeIterator<'remainder> {
+    fn new(
+        iters: Vec<crate::table::iterator::IteratorImpl<'remainder>>,
+        reverse: bool,
+    ) -> MergeIterator {
+        let  m = MergeIterator {
+            cur_key: RefCell::new(vec![]),
+            reverse,
+            all: iters,
+            elements: RefCell::default(),
+        };
+        // m.init();
+        m
+    }
+
     // initHeap checks all iterators and initializes our heap and array of keys.
     // Whenever we reverse direction, we need to run this.
-    fn init(&self) {
+    // If use 'a can not compiled, Haha
+    fn init(&'remainder self) {
         self.elements.borrow_mut().clear();
         for (idx, iter) in self.all.iter().enumerate() {
             if iter.peek().is_none() {
@@ -147,13 +153,9 @@ impl<'a> MergeIterator<'a> {
         }
     }
 
-    // Returns the key associated with the current iterator
-    fn get_cur_value(&self) -> Option<IteratorItem> {
-        // todo opz
-        if let Some(itr) = self.elements.borrow().first() {
-            return itr.itr.peek();
-        }
-        None
+    fn store_key(&self, key: &[u8]) {
+        self.cur_key.borrow_mut().clear();
+        self.cur_key.borrow_mut().extend_from_slice(key);
     }
 }
 
@@ -161,27 +163,55 @@ impl<'a> Iterator for MergeIterator<'a> {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
-        todo!()
+        if self.elements.borrow().is_empty() {
+            return None;
+        }
+
+        let mut keyvalue: Option<IteratorItem> = None;
+        for (idx, tb_iter) in self.elements.borrow().iter().enumerate() {
+            if idx == 0 {
+                if let Some(item) = tb_iter.itr.next() {
+                    keyvalue = Some(item);
+                }
+            } else {
+                if let Some(item) = tb_iter.itr.next() {
+                    if item.key() == keyvalue.as_ref().unwrap().key() {
+                        continue;
+                    } else {
+                        // Because has move it pointer
+                        tb_iter.itr.prev();
+                    }
+                }
+            }
+        }
+        // self.init();
+        if let Some(ref item) = keyvalue {
+            self.store_key(item.key());
+        }
+        keyvalue
     }
 
     fn rewind(&self) -> Option<Self::Output> {
         for itr in self.all.iter() {
             itr.rewind();
         }
-        todo!()
+        // self.init()
+        self.peek()
     }
 
     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-        let mut first: Option<IteratorItem> = None;
         for iter in self.all.iter() {
-            if let Some(item) = iter.seek(key) {
-                if first.is_none() || first.as_ref().unwrap().key() > item.key() {
-                    first = Some(item);
-                }
-            }
+            iter.seek(key);
         }
-        self.init();
-        first
+        // self.init();
+        self.peek()
+    }
+
+    fn peek(&self) -> Option<Self::Output> {
+        if let Some(itr) = self.elements.borrow().first() {
+            return itr.itr.peek();
+        }
+        None
     }
 
     fn valid(&self) -> bool {

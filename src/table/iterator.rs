@@ -212,7 +212,7 @@ impl IteratorItem {
 }
 
 /// An iterator for a table.
-pub struct Iterator<'a> {
+pub struct IteratorImpl<'a> {
     table: &'a TableCore,
     bpos: RefCell<usize>, // start 0 to block.len() - 1
     bi: RefCell<Option<BlockIterator>>,
@@ -221,7 +221,7 @@ pub struct Iterator<'a> {
     reversed: bool,
 }
 
-impl<'a> KeyValue<ValueStruct> for Iterator<'a> {
+impl<'a> KeyValue<ValueStruct> for IteratorImpl<'a> {
     fn key(&self) -> &[u8] {
         todo!()
     }
@@ -231,7 +231,7 @@ impl<'a> KeyValue<ValueStruct> for Iterator<'a> {
     }
 }
 
-impl<'a> std::iter::Iterator for Iterator<'a> {
+impl<'a> std::iter::Iterator for IteratorImpl<'a> {
     type Item = IteratorItem;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -243,7 +243,7 @@ impl<'a> std::iter::Iterator for Iterator<'a> {
     }
 }
 
-impl<'a> fmt::Display for Iterator<'a> {
+impl<'a> fmt::Display for IteratorImpl<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let bi = self.bi.borrow().as_ref().map(|b| format!("{}", b)).unwrap();
         write!(
@@ -256,7 +256,7 @@ impl<'a> fmt::Display for Iterator<'a> {
     }
 }
 
-impl<'a> y::iterator::Iterator for Iterator<'a> {
+impl<'a> y::iterator::Iterator for IteratorImpl<'a> {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
@@ -292,9 +292,9 @@ impl<'a> y::iterator::Iterator for Iterator<'a> {
     }
 }
 
-impl<'a> Iterator<'a> {
-    pub fn new(table: &'a TableCore, reversed: bool) -> Iterator<'a> {
-        Iterator {
+impl<'a> IteratorImpl<'a> {
+    pub fn new(table: &'a TableCore, reversed: bool) -> IteratorImpl<'a> {
+        IteratorImpl {
             table,
             bpos: RefCell::new(0),
             bi: RefCell::new(None),
@@ -516,7 +516,7 @@ impl<'a> From<BlockIteratorItem<'a>> for IteratorItem {
 /// TableIterators, probably just because it's faster to not be so generic.)
 pub struct ConcatIterator<'a> {
     index: RefCell<isize>,      // Which iterator is active now. todo use usize
-    iters: Vec<Iterator<'a>>,   // Corresponds to `tables`.
+    iters: Vec<IteratorImpl<'a>>,   // Corresponds to `tables`.
     tables: Vec<&'a TableCore>, // Disregarding `reversed`, this is in ascending order.
     reversed: bool,
 }
@@ -525,7 +525,7 @@ impl<'a> ConcatIterator<'a> {
     pub fn new(tables: Vec<&'a TableCore>, reversed: bool) -> Self {
         let iters = tables
             .iter()
-            .map(|tb| Iterator::new(tb, reversed))
+            .map(|tb| IteratorImpl::new(tb, reversed))
             .collect::<Vec<_>>();
         Self {
             index: RefCell::new(-1),
@@ -543,7 +543,7 @@ impl<'a> ConcatIterator<'a> {
         }
     }
 
-    fn get_cur(&self) -> Option<&Iterator> {
+    fn get_cur(&self) -> Option<&IteratorImpl> {
         if *self.index.borrow() < 0 {
             return None;
         }

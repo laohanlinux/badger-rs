@@ -95,7 +95,7 @@ impl TableCore {
 
         table.read_index()?;
         let biggest = {
-            let iter1 = super::iterator::Iterator::new(&table, true);
+            let iter1 = super::iterator::IteratorImpl::new(&table, true);
             iter1
                 .rewind()
                 .map(|item| item.key().to_vec())
@@ -104,7 +104,7 @@ impl TableCore {
         .unwrap();
 
         let smallest = {
-            let iter1 = super::iterator::Iterator::new(&table, false);
+            let iter1 = super::iterator::IteratorImpl::new(&table, false);
             iter1
                 .rewind()
                 .map(|item| item.key().to_vec())
