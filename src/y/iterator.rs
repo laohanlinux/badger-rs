@@ -214,7 +214,7 @@ impl<'remainder> Xiterator for MergeIterator<'remainder> {
 #[derive(Debug)]
 pub struct MergeIteratorElement<I>
 where
-    I: Xiterator<Output = IteratorItem> + KeyValue<ValueStruct>,
+    I: Xiterator<Output = IteratorItem>,
 {
     nice: isize,
     itr: *const I, // todo maybe use Rc<RefCell> advoid pointer (self reference, lifetime, trait lifetime)
@@ -223,7 +223,7 @@ where
 
 impl<I> fmt::Display for MergeIteratorElement<I>
 where
-    I: Xiterator<Output = IteratorItem> + KeyValue<ValueStruct> + fmt::Display,
+    I: Xiterator<Output = IteratorItem> + fmt::Display,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         unsafe {
@@ -240,7 +240,7 @@ where
 
 impl<I> MergeIteratorElement<I>
 where
-    I: Xiterator<Output = IteratorItem> + KeyValue<ValueStruct>,
+    I: Xiterator<Output = IteratorItem>,
 {
     fn get_itr(&self) -> &I {
         unsafe { &*self.itr }
@@ -249,33 +249,30 @@ where
 
 impl<I> PartialEq<Self> for MergeIteratorElement<I>
 where
-    I: Xiterator<Output = IteratorItem> + KeyValue<ValueStruct>,
+    I: Xiterator<Output = IteratorItem>,
 {
     fn eq(&self, other: &Self) -> bool {
-        self.get_itr().key() == other.get_itr().key()
+        self.get_itr().peek().unwrap().key() == other.get_itr().peek().unwrap().key()
     }
 }
 
 impl<I> PartialOrd<Self> for MergeIteratorElement<I>
 where
-    I: Xiterator<Output = IteratorItem> + KeyValue<ValueStruct>,
+    I: Xiterator<Output = IteratorItem>,
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        if self.get_itr().key() == other.get_itr().key() {
+        if self.get_itr().peek().unwrap().key() == other.get_itr().peek().unwrap().key() {
             return Some(self.nice.cmp(&other.nice));
         }
-        Some(self.get_itr().key().cmp(other.get_itr().key()))
+        Some(self.get_itr().peek().unwrap().key().cmp(other.get_itr().peek().unwrap().key()))
     }
 }
 
-impl<I> Eq for MergeIteratorElement<I> where
-    I: Xiterator<Output = IteratorItem> + KeyValue<ValueStruct>
-{
-}
+impl<I> Eq for MergeIteratorElement<I> where I: Xiterator<Output = IteratorItem> {}
 
 impl<I> Ord for MergeIteratorElement<I>
 where
-    I: Xiterator<Output = IteratorItem> + KeyValue<ValueStruct>,
+    I: Xiterator<Output = IteratorItem>,
 {
     fn cmp(&self, other: &Self) -> Ordering {
         self.nice.cmp(&other.nice)
