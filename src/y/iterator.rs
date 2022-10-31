@@ -19,6 +19,7 @@ use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
 use std::rc::Rc;
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
 use std::sync::Arc;
+use crate::options::FileLoadingMode;
 
 /// ValueStruct represents the value info that can be associated with a key, but also the internal
 /// Meta field.
@@ -113,34 +114,35 @@ pub trait KeyValue<V> {
 }
 
 ///  merges multiple iterators.
-pub struct MergeIterator<'a> {
+pub struct MergeIterator {
     cur_key: RefCell<Vec<u8>>,
     reverse: bool,
-    all: Vec<Arc<Box<dyn Xiterator<Output = IteratorItem> + 'a>>>,
+    all: Vec<Arc<Box<dyn Xiterator<Output = IteratorItem>>>>,
     elements: RefCell<Vec<MergeIteratorElement>>,
 }
 
-impl <'a> MergeIterator<'a> {
+impl MergeIterator {
     pub fn new(
-        iters: Vec<Arc<Box<dyn Xiterator<Output = IteratorItem> + 'a>>>,
+        iters: Vec<Arc<Box<dyn Xiterator<Output = IteratorItem>>>>,
         reverse: bool,
     ) -> MergeIterator {
         let mut elements = vec![];
-        for (idx, el) in iters.clone().into_iter().enumerate() {
+        for (idx, el) in iters.iter().enumerate() {
             elements.push(MergeIteratorElement {
                 nice: idx as isize,
                 reverse: reverse,
-                itr: el,
+                itr: el.clone(),
             });
         }
-        let m = MergeIterator {
-            cur_key: RefCell::new(vec![]),
-            reverse,
-            all: iters,
-            elements: RefCell::new(elements),
-        };
-        m.init();
-        m
+        // let m = MergeIterator {
+        //     cur_key: RefCell::new(vec![]),
+        //     reverse,
+        //     all: iters,
+        //     elements: RefCell::new(elements),
+        // };
+        // m.init();
+        // m
+        todo!()
     }
 
     // initHeap checks all iterators and initializes our heap and array of keys.
@@ -179,7 +181,7 @@ impl <'a> MergeIterator<'a> {
     }
 }
 
-impl <'a> Xiterator for MergeIterator<'a> {
+impl Xiterator for MergeIterator {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
@@ -378,4 +380,10 @@ fn merge_iter_element() {
     e.iter().for_each(|e| {
         println!("{}", e);
     });
+}
+
+
+#[test]
+fn merge_iter_e() {
+
 }

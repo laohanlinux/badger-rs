@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod utils {
+    use std::cell::RefCell;
     use crate::options::FileLoadingMode;
     use crate::table::builder::Builder;
     use crate::table::iterator::{BlockIterator, ConcatIterator, IteratorImpl, IteratorItem};
@@ -339,16 +340,84 @@ mod utils {
                 (b"k2".to_vec(), b"b2".to_vec()),
             ])
             .build();
-        let f1: & TableCore = &f1;
+        let f1: &TableCore = &f1;
 
-        let itr = Box::new(IteratorImpl::new(f1, false)) as Box<dyn Xiterator<Output = IteratorItem>>;
+        let itr = Box::new(IteratorImpl::new(f1, false)) as Box<dyn Xiterator<Output=IteratorItem>>;
         let iter1 =
-            Box::new(IteratorImpl::new(f1, false)) as Box<dyn Xiterator<Output = IteratorItem>>;
+            Box::new(IteratorImpl::new(f1, false)) as Box<dyn Xiterator<Output=IteratorItem>>;
         let iter2 = Box::new(ConcatIterator::new(vec![&f2], false))
-            as Box<dyn Xiterator<Output = IteratorItem>>;
+            as Box<dyn Xiterator<Output=IteratorItem>>;
         let iter3 = vec![Arc::new(iter1), Arc::new(iter2)];
-        let iter = MergeIterator::new(iter3, false);
-        drop(iter);
+        // let iter = MergeIterator::new(iter3, false);
+        // drop(iter);
+    }
+
+
+    pub struct MergeIterOverXiterator<'a> {
+        all: Vec<IterOverXiterator<'a>>,
+        elements: RefCell<Vec<IterOverXiterator<'a>>>,
+    }
+
+    #[derive(Default)]
+    struct MergeIterOverBuilder<'a> {
+        all: Vec<&'a dyn Xiterator<Output=IteratorItem>>,
+    }
+
+    impl<'a> MergeIterOverBuilder<'a> {
+        fn add(mut self, x: &'a dyn Xiterator<Output=IteratorItem>) -> MergeIterOverBuilder<'_> {
+            self.all.push(x);
+            self
+        }
+
+        fn build(mut self) -> MergeIterOverXiterator<'a> {
+            let mut all = vec![];
+            let mut elements = vec![];
+            for e in self.all.iter() {
+                all.push(e.get_iter());
+                elements.push(e.get_iter());
+            }
+            MergeIterOverXiterator {
+                all,
+                elements: RefCell::new(elements),
+            }
+        }
+    }
+
+    impl<'a> MergeIterOverXiterator<'a> {
+        fn new(all: Vec<IterOverXiterator<'a>>, elements: Vec<IterOverXiterator<'a>>) -> Self {
+            MergeIterOverXiterator { all, elements: RefCell::new(elements) }
+        }
+    }
+
+    pub struct IterOverXiterator<'a> {
+        m: &'a dyn Xiterator<Output=IteratorItem>,
+    }
+
+    impl<'a> IterOverXiterator<'a> {
+        fn new(m: &'a dyn Xiterator<Output=IteratorItem>) -> Self {
+            Self { m }
+        }
+    }
+
+    impl dyn Xiterator<Output=IteratorItem> + '_ {
+        fn get_iter<'a>(&'a self) -> IterOverXiterator<'a> {
+            IterOverXiterator::new(self)
+        }
+    }
+
+    #[test]
+    fn iter() {
+        let f1 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .key_value(vec![
+                (b"k1".to_vec(), b"a1".to_vec()),
+                (b"k2".to_vec(), b"a2".to_vec()),
+            ])
+            .build();
+        let itr = IteratorImpl::new(&f1, false);
+        let builder = MergeIterOverBuilder::default().add(&itr).build();
+        let s = builder.elements.borrow().first().unwrap().m.next().unwrap();
+        println!("{:?}", s.key());
     }
 
     #[test]
