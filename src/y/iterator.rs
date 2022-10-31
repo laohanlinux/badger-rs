@@ -115,7 +115,7 @@ pub struct MergeIterator<'a> {
 }
 
 impl<'a> MergeIterator<'a> {
-    fn new(iters: Vec<IteratorImpl<'a>>, reverse: bool) -> MergeIterator<'a> {
+    pub fn new(iters: Vec<IteratorImpl<'a>>, reverse: bool) -> MergeIterator<'a> {
         let m = MergeIterator {
             cur_key: RefCell::new(vec![]),
             reverse,
@@ -361,6 +361,3 @@ fn merge_iter_element() {
         println!("{}", e);
     });
 }
-
-#[test]
-fn heap() {}

@@ -2,9 +2,9 @@
 mod utils {
     use crate::options::FileLoadingMode;
     use crate::table::builder::Builder;
-    use crate::table::iterator::{BlockIterator, ConcatIterator};
+    use crate::table::iterator::{BlockIterator, ConcatIterator, IteratorImpl};
     use crate::table::table::{Table, TableCore, FILE_SUFFIX};
-    use crate::y::iterator::Xiterator;
+    use crate::y::iterator::{MergeIterator, Xiterator};
     use crate::y::{open_synced_file, read_at, ValueStruct};
     use memmap::MmapOptions;
     use rand::random;
@@ -320,6 +320,28 @@ mod utils {
             let iter = ConcatIterator::new(vec![&f1, &f2, &f3], true);
             assert!(iter.rewind().is_some());
         }
+    }
+
+    #[test]
+    fn merge_iterator() {
+        let f1 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .key_value(vec![
+                (b"k1".to_vec(), b"a1".to_vec()),
+                (b"k2".to_vec(), b"a2".to_vec()),
+            ])
+            .build();
+        let f2 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .key_value(vec![
+                (b"k1".to_vec(), b"b1".to_vec()),
+                (b"k2".to_vec(), b"b2".to_vec()),
+            ])
+            .build();
+
+        let iter1 = IteratorImpl::new(&f1, false);
+        let iter2 = ConcatIterator::new(vec![&f2], false);
+        // let iter = MergeIterator::new(vec![iter1, iter2], false);
     }
 
     #[test]
