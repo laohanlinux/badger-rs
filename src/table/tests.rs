@@ -2,7 +2,7 @@
 mod utils {
     use crate::options::FileLoadingMode;
     use crate::table::builder::Builder;
-    use crate::table::iterator::{BlockIterator, ConcatIterator, IteratorImpl};
+    use crate::table::iterator::{BlockIterator, ConcatIterator, IteratorImpl, IteratorItem};
     use crate::table::table::{Table, TableCore, FILE_SUFFIX};
     use crate::y::iterator::{MergeIterator, Xiterator};
     use crate::y::{open_synced_file, read_at, ValueStruct};
@@ -12,6 +12,7 @@ mod utils {
     use std::fmt::format;
     use std::fs::File;
     use std::io::{Cursor, Seek, SeekFrom, Write};
+    use std::process::Output;
     use std::sync::Arc;
     use std::thread::spawn;
     use tokio::io::AsyncSeekExt;
@@ -323,7 +324,7 @@ mod utils {
     }
 
     #[test]
-    fn merge_iterator() {
+    fn merge_iterator<'a>() {
         let f1 = TableBuilder::new()
             .mode(FileLoadingMode::MemoryMap)
             .key_value(vec![
@@ -338,10 +339,16 @@ mod utils {
                 (b"k2".to_vec(), b"b2".to_vec()),
             ])
             .build();
+        let f1: & TableCore = &f1;
 
-        let iter1 = IteratorImpl::new(&f1, false);
-        let iter2 = ConcatIterator::new(vec![&f2], false);
-        // let iter = MergeIterator::new(vec![iter1, iter2], false);
+        let itr = Box::new(IteratorImpl::new(f1, false)) as Box<dyn Xiterator<Output = IteratorItem>>;
+        let iter1 =
+            Box::new(IteratorImpl::new(f1, false)) as Box<dyn Xiterator<Output = IteratorItem>>;
+        let iter2 = Box::new(ConcatIterator::new(vec![&f2], false))
+            as Box<dyn Xiterator<Output = IteratorItem>>;
+        let iter3 = vec![Arc::new(iter1), Arc::new(iter2)];
+        let iter = MergeIterator::new(iter3, false);
+        drop(iter);
     }
 
     #[test]

@@ -203,6 +203,10 @@ pub struct IteratorItem {
 }
 
 impl IteratorItem {
+    pub fn new(key: Vec<u8>, value: ValueStruct) -> IteratorItem {
+        IteratorItem { key, value }
+    }
+
     pub fn key(&self) -> &[u8] {
         &self.key
     }
@@ -514,7 +518,7 @@ pub struct ConcatIterator<'a> {
 }
 
 impl<'a> ConcatIterator<'a> {
-    pub fn new(tables: Vec<&'a TableCore>, reversed: bool) -> Self {
+    pub fn new(tables: Vec<&'a TableCore>, reversed: bool) -> ConcatIterator<'a> {
         let iters = tables
             .iter()
             .map(|tb| IteratorImpl::new(tb, reversed))

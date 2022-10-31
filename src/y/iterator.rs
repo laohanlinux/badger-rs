@@ -1,12 +1,12 @@
 use crate::skl::BlockBytes;
 use crate::skl::Chunk;
-use crate::table::iterator::{IteratorImpl, IteratorItem};
+use crate::table::iterator::{BlockIteratorItem, IteratorImpl, IteratorItem};
 use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE, VALUE_SIZE};
 use byteorder::BigEndian;
 use byteorder::{ReadBytesExt, WriteBytesExt};
 use serde_json::Value;
-use std::borrow::Borrow;
-use std::cell::{RefCell, RefMut};
+use std::borrow::{Borrow, Cow};
+use std::cell::{Cell, RefCell, RefMut};
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 use std::fmt;
@@ -16,7 +16,9 @@ use std::iter::Iterator as stdIterator;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
+use std::rc::Rc;
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
+use std::sync::Arc;
 
 /// ValueStruct represents the value info that can be associated with a key, but also the internal
 /// Meta field.
@@ -100,6 +102,9 @@ pub trait Xiterator {
     fn peek(&self) -> Option<Self::Output> {
         todo!()
     }
+    fn prev(&self) -> Option<Self::Output> {
+        todo!()
+    }
 }
 
 pub trait KeyValue<V> {
@@ -107,20 +112,32 @@ pub trait KeyValue<V> {
     fn value(&self) -> V;
 }
 
+///  merges multiple iterators.
 pub struct MergeIterator<'a> {
     cur_key: RefCell<Vec<u8>>,
     reverse: bool,
-    all: Vec<IteratorImpl<'a>>,
-    elements: RefCell<Vec<MergeIteratorElement<IteratorImpl<'a>>>>,
+    all: Vec<Arc<Box<dyn Xiterator<Output = IteratorItem> + 'a>>>,
+    elements: RefCell<Vec<MergeIteratorElement>>,
 }
 
-impl<'a> MergeIterator<'a> {
-    pub fn new(iters: Vec<IteratorImpl<'a>>, reverse: bool) -> MergeIterator<'a> {
+impl <'a> MergeIterator<'a> {
+    pub fn new(
+        iters: Vec<Arc<Box<dyn Xiterator<Output = IteratorItem> + 'a>>>,
+        reverse: bool,
+    ) -> MergeIterator {
+        let mut elements = vec![];
+        for (idx, el) in iters.clone().into_iter().enumerate() {
+            elements.push(MergeIteratorElement {
+                nice: idx as isize,
+                reverse: reverse,
+                itr: el,
+            });
+        }
         let m = MergeIterator {
             cur_key: RefCell::new(vec![]),
             reverse,
             all: iters,
-            elements: RefCell::default(),
+            elements: RefCell::new(elements),
         };
         m.init();
         m
@@ -137,15 +154,23 @@ impl<'a> MergeIterator<'a> {
             }
             self.elements.borrow_mut().push(MergeIteratorElement {
                 nice: idx as isize,
-                itr: iter,
+                itr: iter.clone(),
                 reverse: self.reverse,
             });
         }
-        self.elements.borrow_mut().sort();
-        if let Some(cur_itr) = self.elements.borrow().first() {
+        // self.elements.borrow_mut().sort();
+        if let Some(cur_itr) = self.get_first_element() {
             let cur_key = cur_itr.get_itr().peek();
-            self.store_key(cur_key.as_ref().unwrap().key());
+            self.store_key(cur_key.unwrap().key());
         }
+    }
+
+    fn get_first_element(&self) -> Option<&MergeIteratorElement> {
+        if self.elements.borrow().is_empty() {
+            return None;
+        }
+        let el = unsafe { &*self.elements.borrow().as_ptr() };
+        Some(el)
     }
 
     fn store_key(&self, key: &[u8]) {
@@ -154,7 +179,7 @@ impl<'a> MergeIterator<'a> {
     }
 }
 
-impl<'remainder> Xiterator for MergeIterator<'remainder> {
+impl <'a> Xiterator for MergeIterator<'a> {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
@@ -205,75 +230,67 @@ impl<'remainder> Xiterator for MergeIterator<'remainder> {
 
     fn peek(&self) -> Option<Self::Output> {
         if let Some(itr) = self.elements.borrow().first() {
-            return itr.get_itr().peek();
+            return itr.borrow().get_itr().peek();
         }
         None
     }
 }
 
-#[derive(Debug)]
-pub struct MergeIteratorElement<I>
-where
-    I: Xiterator<Output = IteratorItem>,
-{
+pub struct MergeIteratorElement {
     nice: isize,
-    itr: *const I, // todo maybe use Rc<RefCell> advoid pointer (self reference, lifetime, trait lifetime)
     reverse: bool,
+    itr: IElement,
 }
 
-impl<I> fmt::Display for MergeIteratorElement<I>
-where
-    I: Xiterator<Output = IteratorItem> + fmt::Display,
-{
+type IElement = Arc<Box<dyn Xiterator<Output = IteratorItem>>>;
+
+impl fmt::Display for MergeIteratorElement {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        unsafe {
-            write!(
-                f,
-                "nice:{}, reverse: {}, key: {}",
-                self.nice,
-                self.reverse,
-                self.itr.as_ref().unwrap()
-            )
-        }
+        let key = unsafe {
+            self.itr
+                .peek()
+                .map(|item| String::from_utf8_unchecked(item.key().to_vec()))
+                .or_else(|| Some("".to_string()))
+                .unwrap()
+        };
+        write!(
+            f,
+            "nice:{}, reverse: {}, key: {:?}",
+            self.nice, self.reverse, key,
+        )
     }
 }
 
-impl<I> MergeIteratorElement<I>
-where
-    I: Xiterator<Output = IteratorItem>,
-{
-    fn get_itr(&self) -> &I {
-        unsafe { &*self.itr }
+impl MergeIteratorElement {
+    fn get_itr(&self) -> IElement {
+        self.itr.clone()
     }
 }
 
-impl<I> PartialEq<Self> for MergeIteratorElement<I>
-where
-    I: Xiterator<Output = IteratorItem>,
-{
+impl PartialEq<Self> for MergeIteratorElement {
     fn eq(&self, other: &Self) -> bool {
         self.get_itr().peek().unwrap().key() == other.get_itr().peek().unwrap().key()
     }
 }
 
-impl<I> PartialOrd<Self> for MergeIteratorElement<I>
-where
-    I: Xiterator<Output = IteratorItem>,
-{
+impl PartialOrd<Self> for MergeIteratorElement {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         if self.get_itr().peek().unwrap().key() == other.get_itr().peek().unwrap().key() {
             return Some(self.nice.cmp(&other.nice));
         }
-        Some(self.get_itr().peek().unwrap().key().cmp(other.get_itr().peek().unwrap().key()))
+        Some(
+            self.get_itr()
+                .peek()
+                .unwrap()
+                .key()
+                .cmp(other.get_itr().peek().unwrap().key()),
+        )
     }
 }
 
-impl<I> Eq for MergeIteratorElement<I> where I: Xiterator<Output = IteratorItem> {}
+impl Eq for MergeIteratorElement {}
 
-impl<I> Ord for MergeIteratorElement<I>
-where
-    I: Xiterator<Output = IteratorItem>,
-{
+impl Ord for MergeIteratorElement {
     fn cmp(&self, other: &Self) -> Ordering {
         self.nice.cmp(&other.nice)
     }
@@ -306,6 +323,10 @@ fn merge_iter_element() {
         fn seek(&self, key: &[u8]) -> Option<Self::Output> {
             todo!()
         }
+
+        fn peek(&self) -> Option<Self::Output> {
+            Some(IteratorItem::new(self.key.clone(), ValueStruct::default()))
+        }
     }
 
     impl KeyValue<ValueStruct> for TestIterator {
@@ -318,37 +339,37 @@ fn merge_iter_element() {
         }
     }
 
-    let t1 = &TestIterator {
+    let t1 = TestIterator {
         key: b"abd".to_vec(),
     };
-    let t2 = &TestIterator {
+    let t2 = TestIterator {
         key: b"abc".to_vec(),
     };
-    let t3 = &TestIterator {
+    let t3 = TestIterator {
         key: b"abc".to_vec(),
     };
-    let t4 = &TestIterator {
+    let t4 = TestIterator {
         key: b"abc".to_vec(),
     };
     let e1 = MergeIteratorElement {
         nice: 1,
-        itr: t1 as *const TestIterator,
+        itr: Arc::new(Box::new(t1)),
         reverse: false,
     };
 
     let e2 = MergeIteratorElement {
         nice: 1,
-        itr: t2 as *const TestIterator,
+        itr: Arc::new(Box::new(t2)),
         reverse: false,
     };
     let e3 = MergeIteratorElement {
         nice: 2,
-        itr: t3 as *const TestIterator,
+        itr: Arc::new(Box::new(t3)),
         reverse: false,
     };
     let e4 = MergeIteratorElement {
         nice: 2,
-        itr: t4 as *const TestIterator,
+        itr: Arc::new(Box::new(t4)),
         reverse: false,
     };
     //
