@@ -6,6 +6,7 @@
 #![feature(atomic_from_mut)]
 #![feature(cursor_remaining)]
 #![feature(pattern)]
+#![feature(cell_leak)]
 
 extern crate core;
 

@@ -345,11 +345,11 @@ mod utils {
         let f1: &TableCore = &f1;
 
         let itr =
-            Box::new(IteratorImpl::new(f1, false)) as Box<dyn Xiterator<Output = IteratorItem>>;
+            Box::new(IteratorImpl::new(f1, false)) as Box<dyn Xiterator<Output=IteratorItem>>;
         let iter1 =
-            Box::new(IteratorImpl::new(f1, false)) as Box<dyn Xiterator<Output = IteratorItem>>;
+            Box::new(IteratorImpl::new(f1, false)) as Box<dyn Xiterator<Output=IteratorItem>>;
         let iter2 = Box::new(ConcatIterator::new(vec![&f2], false))
-            as Box<dyn Xiterator<Output = IteratorItem>>;
+            as Box<dyn Xiterator<Output=IteratorItem>>;
         let iter3 = vec![Arc::new(iter1), Arc::new(iter2)];
         // let iter = MergeIterator::new(iter3, false);
         // drop(iter);
@@ -365,13 +365,10 @@ mod utils {
             ])
             .build();
         let itr = IteratorImpl::new(&f1, false);
-        assert_eq!(itr.next().unwrap().key(), b"k1");
-        assert_eq!(itr.next().unwrap().key(), b"k2");
-        itr.reset();
-
         let mitr = MergeIterOverBuilder::default().add(&itr).build();
         assert_eq!(mitr.next().unwrap().key(), b"k1");
-        // assert_eq!(mitr.elements.borrow()[0].m.next().unwrap().key(), b"k2");
+        assert_eq!(mitr.next().unwrap().key(), b"k2");
+        assert!(mitr.next().is_none());
     }
 
     #[test]
