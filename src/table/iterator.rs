@@ -10,7 +10,7 @@ use std::cmp::Ordering::{Equal, Less};
 use std::fmt::Formatter;
 use std::ops::Deref;
 use std::process::id;
-use std::ptr::NonNull;
+use std::ptr::{slice_from_raw_parts, NonNull};
 use std::{cmp, fmt, io};
 
 pub enum IteratorSeek {
@@ -24,6 +24,28 @@ pub struct BlockIterator {
     pos: RefCell<u32>,
     base_key: RefCell<Vec<u8>>,
     last_header: RefCell<Option<Header>>,
+    last_block: RefCell<Option<BlockSlice>>,
+}
+
+pub struct BlockSlice {
+    key: Vec<u8>, // todo: use zero copy
+    data: *const u8,
+    len: usize,
+}
+
+impl BlockSlice {
+    fn new(key: Vec<u8>, data: &[u8]) -> BlockSlice {
+        let ptr = data.as_ptr();
+        BlockSlice {
+            key,
+            data: ptr,
+            len: data.len(),
+        }
+    }
+
+    fn data(&self) -> &[u8] {
+        unsafe { &*slice_from_raw_parts(self.data, self.len) }
+    }
 }
 
 impl fmt::Display for BlockIterator {
@@ -69,6 +91,7 @@ impl BlockIterator {
             pos: RefCell::new(0),
             base_key: RefCell::new(vec![]),
             last_header: RefCell::new(None),
+            last_block: RefCell::new(None),
         }
     }
 
@@ -144,8 +167,21 @@ impl BlockIterator {
         }
         // drop pos advoid to borrow twice
         drop(pos);
-        let (key, value) = self.parse_kv(&h);
+        let (key, mut value) = self.parse_kv(&h);
         Some(BlockIteratorItem { key, value })
+    }
+
+    // If not init(next), peek will be return `None`
+    pub(crate) fn peek(&self) -> Option<BlockIteratorItem<'_>> {
+        // if self.last_header.borrow().is_none() {
+        //     return None;
+        // }
+        // if self.last_header.borrow().as_ref().unwrap().is_dummy() {
+        //     return None;
+        // }
+        // let last_block = self.last_block.borrow().as_ref().unwrap();
+        // Some(BlockIteratorItem { key: last_block.key.clone(),  value: last_block.data()})
+        // todo!()
     }
 
     fn prev(&self) -> Option<BlockIteratorItem> {
@@ -193,13 +229,22 @@ impl BlockIterator {
 
         let value = &self.data[*pos as usize..*pos as usize + h.v_len as usize];
         *pos += h.v_len as u32;
+        self.last_block.borrow_mut().replace(BlockSlice::new(key.clone(),value));
         (key, value)
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct IteratorItem {
     key: Vec<u8>,
     value: ValueStruct,
+}
+
+impl fmt::Display for IteratorItem {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        // write!(f, "key: {}, value: {:?}", String::from_utf8_lossy(self.key.as_slice()), self.value())
+        write!(f, "key: {:?}, value: {:?}", self.key, self.value())
+    }
 }
 
 impl IteratorItem {
@@ -284,6 +329,19 @@ impl<'a> Xiterator for IteratorImpl<'a> {
             self._seek(key)
         } else {
             self.seek_for_prev(key)
+        }
+    }
+
+    fn peek(&self) -> Option<Self::Output> {
+        if self.bi.borrow().is_none() {
+            return None;
+        }
+
+        let bi = self.bi.borrow();
+        if let Some(itr) = bi.as_ref() {
+            itr.peek().map(|block| block.into())
+        } else {
+            None
         }
     }
 }

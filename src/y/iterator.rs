@@ -1,3 +1,4 @@
+use crate::options::FileLoadingMode;
 use crate::skl::BlockBytes;
 use crate::skl::Chunk;
 use crate::table::iterator::{BlockIteratorItem, IteratorImpl, IteratorItem};
@@ -15,16 +16,16 @@ use std::io::{Cursor, Read, Write};
 use std::iter::Iterator as stdIterator;
 use std::marker::PhantomData;
 use std::mem::size_of;
+use std::process::id;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
 use std::rc::Rc;
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
 use std::sync::Arc;
-use crate::options::FileLoadingMode;
 
 /// ValueStruct represents the value info that can be associated with a key, but also the internal
 /// Meta field.
 /// |meta|user_meta|cas_counter|value_size|value|
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 #[repr(C)]
 pub struct ValueStruct {
     pub(crate) meta: u8,
@@ -113,75 +114,15 @@ pub trait KeyValue<V> {
     fn value(&self) -> V;
 }
 
-///  merges multiple iterators.
-pub struct MergeIterator {
+#[derive(Default)]
+pub struct MergeIterOverIterator<'a> {
     cur_key: RefCell<Vec<u8>>,
     reverse: bool,
-    all: Vec<Arc<Box<dyn Xiterator<Output = IteratorItem>>>>,
-    elements: RefCell<Vec<MergeIteratorElement>>,
+    pub(crate) all: Vec<IterOverXIterator<'a>>,
+    pub(crate) elements: RefCell<Vec<IterOverXIterator<'a>>>,
 }
 
-impl MergeIterator {
-    pub fn new(
-        iters: Vec<Arc<Box<dyn Xiterator<Output = IteratorItem>>>>,
-        reverse: bool,
-    ) -> MergeIterator {
-        let mut elements = vec![];
-        for (idx, el) in iters.iter().enumerate() {
-            elements.push(MergeIteratorElement {
-                nice: idx as isize,
-                reverse: reverse,
-                itr: el.clone(),
-            });
-        }
-        // let m = MergeIterator {
-        //     cur_key: RefCell::new(vec![]),
-        //     reverse,
-        //     all: iters,
-        //     elements: RefCell::new(elements),
-        // };
-        // m.init();
-        // m
-        todo!()
-    }
-
-    // initHeap checks all iterators and initializes our heap and array of keys.
-    // Whenever we reverse direction, we need to run this.
-    // If use 'a can not compiled, Haha
-    fn init(&self) {
-        self.elements.borrow_mut().clear();
-        for (idx, iter) in self.all.iter().enumerate() {
-            if iter.peek().is_none() {
-                continue;
-            }
-            self.elements.borrow_mut().push(MergeIteratorElement {
-                nice: idx as isize,
-                itr: iter.clone(),
-                reverse: self.reverse,
-            });
-        }
-        // self.elements.borrow_mut().sort();
-        if let Some(cur_itr) = self.get_first_element() {
-            let cur_key = cur_itr.get_itr().peek();
-            self.store_key(cur_key.unwrap().key());
-        }
-    }
-
-    fn get_first_element(&self) -> Option<&MergeIteratorElement> {
-        if self.elements.borrow().is_empty() {
-            return None;
-        }
-        let el = unsafe { &*self.elements.borrow().as_ptr() };
-        Some(el)
-    }
-
-    fn store_key(&self, key: &[u8]) {
-        self.cur_key.borrow_mut().clear();
-        self.cur_key.borrow_mut().extend_from_slice(key);
-    }
-}
-
-impl Xiterator for MergeIterator {
+impl Xiterator for MergeIterOverIterator<'_> {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
@@ -191,110 +132,179 @@ impl Xiterator for MergeIterator {
 
         let mut keyvalue: Option<IteratorItem> = None;
         for (idx, tb_iter) in self.elements.borrow().iter().enumerate() {
-            if idx == 0 {
-                if let Some(item) = tb_iter.get_itr().next() {
-                    keyvalue = Some(item);
-                }
-            } else {
-                if let Some(item) = tb_iter.get_itr().next() {
-                    if item.key() == keyvalue.as_ref().unwrap().key() {
-                        continue;
-                    } else {
-                        // Because has moved it pointer
-                        tb_iter.get_itr().prev();
-                    }
-                }
+            let item = tb_iter.m.peek();
+            if item.is_none() {
+                continue;
             }
+            println!("preview");
+            let item = item.unwrap();
+
+            if keyvalue.is_none() {
+                keyvalue = Some(item.clone());
+            }
+
+            // continue proboe
+            if keyvalue.as_ref().unwrap().key() == item.key() {
+                tb_iter.m.next(); // Move
+                continue;
+            }
+            break;
         }
-        self.init();
+        self.reset();
         if let Some(ref item) = keyvalue {
             self.store_key(item.key());
         }
-
         keyvalue
     }
 
     fn rewind(&self) -> Option<Self::Output> {
         for itr in self.all.iter() {
-            itr.rewind();
+            itr.m.rewind();
         }
-        self.init();
+        self.reset();
         self.peek()
     }
 
     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
         for iter in self.all.iter() {
-            iter.seek(key);
+            iter.m.seek(key);
         }
-        self.init();
+        self.reset();
         self.peek()
     }
 
     fn peek(&self) -> Option<Self::Output> {
         if let Some(itr) = self.elements.borrow().first() {
-            return itr.borrow().get_itr().peek();
+            return itr.m.peek();
         }
         None
     }
 }
 
-pub struct MergeIteratorElement {
-    nice: isize,
+impl MergeIterOverIterator<'_> {
+    // todo: reset all iterator index?
+    fn reset(&self) {
+        let elements = self
+            .all
+            .iter()
+            .filter(|x| x.m.peek().is_some())
+            .map(|x| x.m.get_iter())
+            .collect::<Vec<_>>();
+
+        println!("new elements: {}, {}", self.all.len(), elements.len());
+        *self.elements.borrow_mut() = elements;
+        self.elements.borrow_mut().sort();
+        if let Some(cur_itr) = self.elements.borrow().first() {
+            if let Some(cur_key) = cur_itr.m.peek() {
+                self.store_key(cur_key.key());
+            } else {
+                self.store_key(b"");
+            }
+        }
+    }
+
+    fn store_key(&self, key: &[u8]) {
+        self.cur_key.borrow_mut().clear();
+        self.cur_key.borrow_mut().extend_from_slice(key);
+        println!(
+            "new cur key: {}",
+            String::from_utf8_lossy(self.cur_key.borrow().as_slice())
+        );
+    }
+}
+
+#[derive(Default)]
+pub struct MergeIterOverBuilder<'a> {
+    all: Vec<&'a dyn Xiterator<Output = IteratorItem>>,
     reverse: bool,
-    itr: IElement,
 }
 
-type IElement = Arc<Box<dyn Xiterator<Output = IteratorItem>>>;
+impl<'a> MergeIterOverBuilder<'a> {
+    pub fn add(mut self, x: &'a dyn Xiterator<Output = IteratorItem>) -> MergeIterOverBuilder<'_> {
+        self.all.push(x);
+        self
+    }
 
-impl fmt::Display for MergeIteratorElement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let key = unsafe {
-            self.itr
-                .peek()
-                .map(|item| String::from_utf8_unchecked(item.key().to_vec()))
-                .or_else(|| Some("".to_string()))
-                .unwrap()
+    pub fn add_batch(
+        mut self,
+        iters: Vec<&'a dyn Xiterator<Output = IteratorItem>>,
+    ) -> MergeIterOverBuilder {
+        self.all.extend_from_slice(&iters);
+        self
+    }
+
+    pub fn build(mut self) -> MergeIterOverIterator<'a> {
+        let mut all = vec![];
+        for (index, e) in self.all.iter().enumerate() {
+            e.next(); // Note: move it to first item, very import, maybe peek check
+            let mut itr = e.get_iter();
+            itr.nice = index as isize + 1;
+            all.push(itr);
+        }
+        let m = MergeIterOverIterator {
+            all,
+            reverse: self.reverse,
+            ..Default::default()
         };
-        write!(
-            f,
-            "nice:{}, reverse: {}, key: {:?}",
-            self.nice, self.reverse, key,
-        )
+        // do some
+        m.reset();
+        m
     }
 }
 
-impl MergeIteratorElement {
-    fn get_itr(&self) -> IElement {
-        self.itr.clone()
+impl<'a> MergeIterOverIterator<'a> {
+    fn new(all: Vec<IterOverXIterator<'a>>, elements: Vec<IterOverXIterator<'a>>) -> Self {
+        MergeIterOverIterator {
+            all,
+            elements: RefCell::new(elements),
+            ..Default::default()
+        }
     }
 }
 
-impl PartialEq<Self> for MergeIteratorElement {
+pub struct IterOverXIterator<'a> {
+    nice: isize,
+    pub(crate) m: &'a dyn Xiterator<Output = IteratorItem>,
+}
+
+impl PartialEq<Self> for IterOverXIterator<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.get_itr().peek().unwrap().key() == other.get_itr().peek().unwrap().key()
+        self.m.peek().unwrap().key() == other.m.peek().unwrap().key()
     }
 }
 
-impl PartialOrd<Self> for MergeIteratorElement {
+impl PartialOrd<Self> for IterOverXIterator<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        if self.get_itr().peek().unwrap().key() == other.get_itr().peek().unwrap().key() {
+        if self.m.peek().unwrap().key() == other.m.peek().unwrap().key() {
             return Some(self.nice.cmp(&other.nice));
         }
         Some(
-            self.get_itr()
+            self.m
                 .peek()
                 .unwrap()
                 .key()
-                .cmp(other.get_itr().peek().unwrap().key()),
+                .cmp(other.m.peek().unwrap().key()),
         )
     }
 }
 
-impl Eq for MergeIteratorElement {}
+impl Eq for IterOverXIterator<'_> {}
 
-impl Ord for MergeIteratorElement {
+impl Ord for IterOverXIterator<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.nice.cmp(&other.nice)
+    }
+}
+
+impl<'a> IterOverXIterator<'a> {
+    fn new(m: &'a dyn Xiterator<Output = IteratorItem>) -> Self {
+        Self { m, nice: 0 }
+    }
+}
+
+impl dyn Xiterator<Output = IteratorItem> + '_ {
+    fn get_iter<'a>(&'a self) -> IterOverXIterator<'a> {
+        IterOverXIterator::new(self)
     }
 }
 
@@ -353,37 +363,18 @@ fn merge_iter_element() {
     let t4 = TestIterator {
         key: b"abc".to_vec(),
     };
-    let e1 = MergeIteratorElement {
-        nice: 1,
-        itr: Arc::new(Box::new(t1)),
-        reverse: false,
-    };
 
-    let e2 = MergeIteratorElement {
-        nice: 1,
-        itr: Arc::new(Box::new(t2)),
-        reverse: false,
-    };
-    let e3 = MergeIteratorElement {
-        nice: 2,
-        itr: Arc::new(Box::new(t3)),
-        reverse: false,
-    };
-    let e4 = MergeIteratorElement {
-        nice: 2,
-        itr: Arc::new(Box::new(t4)),
-        reverse: false,
-    };
-    //
-    let mut e = vec![e4, e1, e2, e3];
-    e.sort();
-    e.iter().for_each(|e| {
-        println!("{}", e);
+    let builder = MergeIterOverBuilder::default().add_batch(vec![&t3, &t1, &t4, &t2]);
+    let miter = builder.build();
+    miter.elements.borrow_mut().sort();
+    miter.elements.borrow().iter().for_each(|e| {
+        println!(
+            "{}, {:?}",
+            e.nice,
+            String::from_utf8_lossy(e.m.peek().unwrap().key())
+        );
     });
 }
 
-
 #[test]
-fn merge_iter_e() {
-
-}
+fn merge_iter_e() {}
