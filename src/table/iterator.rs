@@ -1,6 +1,6 @@
 use crate::table::builder::Header;
 use crate::table::table::{Block, Table, TableCore};
-use crate::y::iterator::KeyValue;
+use crate::y::iterator::{KeyValue, Xiterator};
 use crate::y::{Result, ValueStruct};
 use crate::{y, Error};
 use std::borrow::{Borrow, BorrowMut};
@@ -10,7 +10,7 @@ use std::cmp::Ordering::{Equal, Less};
 use std::fmt::Formatter;
 use std::ops::Deref;
 use std::process::id;
-use std::ptr::NonNull;
+use std::ptr::{slice_from_raw_parts, NonNull};
 use std::{cmp, fmt, io};
 
 pub enum IteratorSeek {
@@ -24,6 +24,29 @@ pub struct BlockIterator {
     pos: RefCell<u32>,
     base_key: RefCell<Vec<u8>>,
     last_header: RefCell<Option<Header>>,
+    last_block: RefCell<Option<BlockSlice>>,
+}
+
+pub struct BlockSlice {
+    key: Vec<u8>,
+    // todo: use zero copy
+    data: *const u8,
+    len: usize,
+}
+
+impl BlockSlice {
+    fn new(key: Vec<u8>, data: &[u8]) -> BlockSlice {
+        let ptr = data.as_ptr();
+        BlockSlice {
+            key,
+            data: ptr,
+            len: data.len(),
+        }
+    }
+
+    fn data(&self) -> &[u8] {
+        unsafe { &*slice_from_raw_parts(self.data, self.len) }
+    }
 }
 
 impl fmt::Display for BlockIterator {
@@ -69,6 +92,7 @@ impl BlockIterator {
             pos: RefCell::new(0),
             base_key: RefCell::new(vec![]),
             last_header: RefCell::new(None),
+            last_block: RefCell::new(None),
         }
     }
 
@@ -116,6 +140,7 @@ impl BlockIterator {
         *self.pos.borrow_mut() = 0;
         self.base_key.borrow_mut().clear();
         self.last_header.borrow_mut().take();
+        self.last_block.borrow_mut().take();
     }
 
     pub(crate) fn next(&self) -> Option<BlockIteratorItem> {
@@ -144,8 +169,24 @@ impl BlockIterator {
         }
         // drop pos advoid to borrow twice
         drop(pos);
-        let (key, value) = self.parse_kv(&h);
+        let (key, mut value) = self.parse_kv(&h);
         Some(BlockIteratorItem { key, value })
+    }
+
+    // If not init(next), peek will be return `None`
+    pub(crate) fn peek(&self) -> Option<BlockIteratorItem> {
+        if self.last_header.borrow().is_none() {
+            return None;
+        }
+        if self.last_header.borrow().as_ref().unwrap().is_dummy() {
+            return None;
+        }
+        // todo advoid use unsafe code
+        let b = unsafe { self.last_block.as_ptr().as_ref().unwrap().as_ref().unwrap() };
+        Some(BlockIteratorItem {
+            key: b.key.clone(),
+            value: b.data(),
+        })
     }
 
     fn prev(&self) -> Option<BlockIteratorItem> {
@@ -157,6 +198,8 @@ impl BlockIterator {
         if self.last_header.borrow().as_ref().unwrap().prev == u32::MAX {
             // This is the first element of the block!
             *self.pos.borrow_mut() = 0;
+            self.last_header.borrow_mut().take();
+            self.last_block.borrow_mut().take();
             return None;
         }
         // Move back using current header's prev.
@@ -193,16 +236,31 @@ impl BlockIterator {
 
         let value = &self.data[*pos as usize..*pos as usize + h.v_len as usize];
         *pos += h.v_len as u32;
+        self.last_block
+            .borrow_mut()
+            .replace(BlockSlice::new(key.clone(), value));
         (key, value)
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct IteratorItem {
     key: Vec<u8>,
     value: ValueStruct,
 }
 
+impl fmt::Display for IteratorItem {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        // write!(f, "key: {}, value: {:?}", String::from_utf8_lossy(self.key.as_slice()), self.value())
+        write!(f, "key: {:?}, value: {:?}", self.key, self.value())
+    }
+}
+
 impl IteratorItem {
+    pub fn new(key: Vec<u8>, value: ValueStruct) -> IteratorItem {
+        IteratorItem { key, value }
+    }
+
     pub fn key(&self) -> &[u8] {
         &self.key
     }
@@ -212,16 +270,17 @@ impl IteratorItem {
 }
 
 /// An iterator for a table.
-pub struct Iterator<'a> {
+pub struct IteratorImpl<'a> {
     table: &'a TableCore,
-    bpos: RefCell<usize>, // start 0 to block.len() - 1
+    bpos: RefCell<usize>, // block chunk index
+    // start 0 to block.len() - 1
     bi: RefCell<Option<BlockIterator>>,
     // Internally, Iterator is bidirectional. However, we only expose the
     // unidirectional functionality for now.
     reversed: bool,
 }
 
-impl<'a> std::iter::Iterator for Iterator<'a> {
+impl<'a> std::iter::Iterator for IteratorImpl<'a> {
     type Item = IteratorItem;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -233,7 +292,7 @@ impl<'a> std::iter::Iterator for Iterator<'a> {
     }
 }
 
-impl<'a> fmt::Display for Iterator<'a> {
+impl<'a> fmt::Display for IteratorImpl<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let bi = self.bi.borrow().as_ref().map(|b| format!("{}", b)).unwrap();
         write!(
@@ -246,7 +305,7 @@ impl<'a> fmt::Display for Iterator<'a> {
     }
 }
 
-impl<'a> y::iterator::Iterator for Iterator<'a> {
+impl<'a> Xiterator for IteratorImpl<'a> {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
@@ -273,18 +332,22 @@ impl<'a> y::iterator::Iterator for Iterator<'a> {
         }
     }
 
-    fn valid(&self) -> bool {
-        todo!()
-    }
-
-    fn close(&self) {
-        todo!()
+    fn peek(&self) -> Option<Self::Output> {
+        if self.bi.borrow().is_none() {
+            return None;
+        }
+        let bi = self.bi.borrow();
+        if let Some(itr) = bi.as_ref() {
+            itr.peek().map(|block| block.into())
+        } else {
+            None
+        }
     }
 }
 
-impl<'a> Iterator<'a> {
-    pub fn new(table: &'a TableCore, reversed: bool) -> Iterator<'a> {
-        Iterator {
+impl<'a> IteratorImpl<'a> {
+    pub fn new(table: &'a TableCore, reversed: bool) -> IteratorImpl<'a> {
+        IteratorImpl {
             table,
             bpos: RefCell::new(0),
             bi: RefCell::new(None),
@@ -386,16 +449,16 @@ impl<'a> Iterator<'a> {
     // will reset iterator and seek to <= key.
     pub(crate) fn seek_for_prev(&self, key: &[u8]) -> Option<IteratorItem> {
         // TODO: Optimize this. We shouldn't have to take a Prev step.
-        if let Some(item) = self.seek_from(key, IteratorSeek::Origin) {
+        return if let Some(item) = self.seek_from(key, IteratorSeek::Origin) {
             // >= key
             if item.key == key {
                 // == key
                 return Some(item);
             }
-            return self.prev(); // > key
+            self.prev() // > key
         } else {
-            return self.prev(); // Just move it front one
-        }
+            self.prev() // Just move it front one
+        };
     }
 
     pub(crate) fn prev(&self) -> Option<IteratorItem> {
@@ -442,6 +505,7 @@ impl<'a> Iterator<'a> {
         self._next()
     }
 
+    /// Note: Reset will move to first item.
     pub(crate) fn reset(&self) {
         *self.bpos.borrow_mut() = 0;
         self.bi.borrow_mut().take();
@@ -470,6 +534,7 @@ impl<'a> Iterator<'a> {
         if self.bi.borrow().is_none() {
             return &None;
         }
+        // todo advoid use unsafe code
         let bi = self.bi.as_ptr() as *const Option<&BlockIterator>;
         unsafe { &*bi }
     }
@@ -505,17 +570,21 @@ impl<'a> From<BlockIteratorItem<'a>> for IteratorItem {
 /// concatenates the sequences defined by several iterators.  (It only works with
 /// TableIterators, probably just because it's faster to not be so generic.)
 pub struct ConcatIterator<'a> {
-    index: RefCell<isize>,      // Which iterator is active now. todo use usize
-    iters: Vec<Iterator<'a>>,   // Corresponds to `tables`.
-    tables: Vec<&'a TableCore>, // Disregarding `reversed`, this is in ascending order.
+    index: RefCell<isize>,
+    // Which iterator is active now. todo use usize
+    iters: Vec<IteratorImpl<'a>>,
+    // Corresponds to `tables`.
+    tables: Vec<&'a TableCore>,
+    // Disregarding `reversed`, this is in ascending order.
     reversed: bool,
 }
 
 impl<'a> ConcatIterator<'a> {
-    pub fn new(tables: Vec<&'a TableCore>, reversed: bool) -> Self {
+    /// Note: new ConcatIterator is invalid(Not pointer first element)
+    pub fn new(tables: Vec<&'a TableCore>, reversed: bool) -> ConcatIterator<'a> {
         let iters = tables
             .iter()
-            .map(|tb| Iterator::new(tb, reversed))
+            .map(|tb| IteratorImpl::new(tb, reversed))
             .collect::<Vec<_>>();
         Self {
             index: RefCell::new(-1),
@@ -533,7 +602,7 @@ impl<'a> ConcatIterator<'a> {
         }
     }
 
-    fn get_cur(&self) -> Option<&Iterator> {
+    fn get_cur(&self) -> Option<&IteratorImpl> {
         if *self.index.borrow() < 0 {
             return None;
         }
@@ -543,13 +612,16 @@ impl<'a> ConcatIterator<'a> {
     }
 }
 
-impl<'a> y::iterator::Iterator for ConcatIterator<'a> {
+impl<'a> Xiterator for ConcatIterator<'a> {
     type Output = IteratorItem;
 
     /// advances our concat iterator.
     fn next(&self) -> Option<Self::Output> {
-        let cur_iter = self.get_cur().unwrap();
-        let item = cur_iter.next();
+        let cur_iter = self.get_cur();
+        if cur_iter.is_none() {
+            return None;
+        }
+        let item = cur_iter.as_ref().unwrap().next();
         if item.is_some() {
             return item;
         }
@@ -619,12 +691,12 @@ impl<'a> y::iterator::Iterator for ConcatIterator<'a> {
         }
     }
 
-    fn valid(&self) -> bool {
-        todo!()
-    }
-
-    fn close(&self) {
-        todo!()
+    fn peek(&self) -> Option<Self::Output> {
+        let cur = self.get_cur();
+        if cur.is_none() {
+            return None;
+        }
+        cur.as_ref().unwrap().peek()
     }
 }
 

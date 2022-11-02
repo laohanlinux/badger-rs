@@ -122,7 +122,7 @@ pub fn open_synced_file(file_name: &str, sync: bool) -> Result<File> {
     Ok(file)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn read_at(fp: &File, buffer: &mut [u8], offset: u64) -> Result<usize> {
     use std::os::unix::fs::FileExt;
     fp.read_at(buffer, offset).map_err(|err| err.into())

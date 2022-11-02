@@ -2,16 +2,20 @@
 mod utils {
     use crate::options::FileLoadingMode;
     use crate::table::builder::Builder;
-    use crate::table::iterator::{BlockIterator, ConcatIterator};
+    use crate::table::iterator::{BlockIterator, ConcatIterator, IteratorImpl, IteratorItem};
     use crate::table::table::{Table, TableCore, FILE_SUFFIX};
-    use crate::y::iterator::Iterator;
+    use crate::y::iterator::{MergeIterOverBuilder, MergeIterOverIterator, Xiterator};
     use crate::y::{open_synced_file, read_at, ValueStruct};
     use memmap::MmapOptions;
     use rand::random;
+    use std::borrow::Borrow;
+    use std::cell::RefCell;
+    use std::cmp::Ordering;
     use std::env::temp_dir;
     use std::fmt::format;
     use std::fs::File;
     use std::io::{Cursor, Seek, SeekFrom, Write};
+    use std::process::Output;
     use std::sync::Arc;
     use std::thread::spawn;
     use tokio::io::AsyncSeekExt;
@@ -50,7 +54,7 @@ mod utils {
         for n in vec![101, 199, 200, 250, 9999, 10000] {
             let (mut fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
-            let iter = crate::table::iterator::Iterator::new(&table, false);
+            let iter = crate::table::iterator::IteratorImpl::new(&table, false);
             let value = iter.seek_to_last();
             assert!(value.is_some());
             let v = value.as_ref().unwrap().value();
@@ -71,7 +75,7 @@ mod utils {
         let (mut fp, path) = build_test_table("k", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
 
-        let iter = crate::table::iterator::Iterator::new(&table, false);
+        let iter = crate::table::iterator::IteratorImpl::new(&table, false);
 
         let data = vec![
             ("abc", true, "k0000"),
@@ -97,7 +101,7 @@ mod utils {
         let (mut fp, path) = build_test_table("k", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
 
-        let iter = crate::table::iterator::Iterator::new(&table, false);
+        let iter = crate::table::iterator::IteratorImpl::new(&table, false);
         let data = vec![
             ("abc", false, ""),
             ("k0100", true, "k0100"),
@@ -122,7 +126,7 @@ mod utils {
         for n in vec![101, 199, 200, 250, 9999, 10000] {
             let (mut fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
-            let iter = crate::table::iterator::Iterator::new(&table, false);
+            let iter = crate::table::iterator::IteratorImpl::new(&table, false);
             iter.reset();
             let mut count = 0;
             let value = iter.seek(b"");
@@ -146,7 +150,7 @@ mod utils {
         for n in vec![101, 199, 200, 250, 9999, 10000] {
             let (mut fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
-            let iter = crate::table::iterator::Iterator::new(&table, false);
+            let iter = crate::table::iterator::IteratorImpl::new(&table, false);
             iter.reset();
             let value = iter.seek(b"zzzzzz");
             assert!(value.is_none());
@@ -169,7 +173,7 @@ mod utils {
     fn table() {
         let (fp, path) = build_test_table("key", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
-        let iter = crate::table::iterator::Iterator::new(&table, false);
+        let iter = crate::table::iterator::IteratorImpl::new(&table, false);
         let mut kid = 1010;
         let seek = key("key", kid);
         iter.seek(seek.as_bytes());
@@ -193,7 +197,7 @@ mod utils {
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
 
         let seek = key("key", 1010);
-        let iter = crate::table::iterator::Iterator::new(&table, false);
+        let iter = crate::table::iterator::IteratorImpl::new(&table, false);
         let item = iter.seek(seek.as_bytes());
         assert!(item.is_some());
         assert_eq!(item.as_ref().unwrap().key(), seek.as_bytes().to_vec());
@@ -231,7 +235,7 @@ mod utils {
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
 
         {
-            let iter = crate::table::iterator::Iterator::new(&table, false);
+            let iter = crate::table::iterator::IteratorImpl::new(&table, false);
             iter.rewind();
             let mut count = 0;
             while let Some(item) = iter.next() {
@@ -245,7 +249,7 @@ mod utils {
         }
 
         {
-            let iter = crate::table::iterator::Iterator::new(&table, true);
+            let iter = crate::table::iterator::IteratorImpl::new(&table, true);
             iter.rewind();
             let mut count = 0;
             while let Some(item) = iter.next() {
@@ -323,6 +327,155 @@ mod utils {
     }
 
     #[test]
+    fn merge_iterator() {
+        let f1 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .key_value(vec![
+                (b"k1".to_vec(), b"a1".to_vec()),
+                (b"k2".to_vec(), b"a2".to_vec()),
+            ])
+            .build();
+        let f2 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .key_value(vec![
+                (b"k1".to_vec(), b"b1".to_vec()),
+                (b"k2".to_vec(), b"b2".to_vec()),
+            ])
+            .build();
+
+        let itr1 = &IteratorImpl::new(&f1, false);
+        let itr2 = &ConcatIterator::new(vec![&f2], false);
+        let mut miter = MergeIterOverBuilder::default()
+            .add_batch(vec![itr1, itr2])
+            .build();
+        let item = miter.next().unwrap();
+        assert_eq!(item.key(), b"k1");
+        let item = miter.next().unwrap();
+        assert_eq!(item.key(), b"k2");
+        let item = miter.next();
+        assert!(item.is_none());
+        let item = miter.rewind().unwrap();
+        assert_eq!(item.key(), b"k1");
+        let item = miter.peek().unwrap();
+        assert_eq!(item.key(), b"k1");
+        assert_eq!(item.value().value, b"a1");
+        let item = miter.next().unwrap();
+        assert_eq!(item.key(), b"k2");
+        assert_eq!(item.value().value, b"a2");
+        assert!(miter.next().is_none());
+    }
+
+    #[test]
+    fn merge_iterator_reversed() {
+        let f1 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .key_value(vec![
+                (b"k1".to_vec(), b"a1".to_vec()),
+                (b"k2".to_vec(), b"a2".to_vec()),
+            ])
+            .build();
+        let f2 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .key_value(vec![
+                (b"k1".to_vec(), b"b1".to_vec()),
+                (b"k2".to_vec(), b"b2".to_vec()),
+            ])
+            .build();
+
+        let itr1 = &IteratorImpl::new(&f1, true);
+        let itr2 = &ConcatIterator::new(vec![&f2], true);
+        let mut miter = MergeIterOverBuilder::default()
+            .add_batch(vec![itr1, itr2])
+            .build();
+        let item = miter.rewind().unwrap();
+        assert_eq!(item.key(), b"k2");
+        assert_eq!(item.value().value, b"a2");
+        assert_eq!(item.value().meta, 'A' as u8);
+        let item = miter.next().unwrap();
+        assert_eq!(item.key(), b"k1");
+        assert_eq!(item.value().value, b"a1");
+        assert_eq!(item.value().meta, 'A' as u8);
+        assert!(miter.next().is_none());
+    }
+
+    #[test]
+    fn merge_iterator_reversed_take_one() {
+        let f1 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .key_value(vec![
+                (b"k1".to_vec(), b"a1".to_vec()),
+                (b"k2".to_vec(), b"a2".to_vec()),
+            ])
+            .build();
+        let f2 = TableBuilder::new().mode(FileLoadingMode::MemoryMap).build();
+
+        let itr1 = &ConcatIterator::new(vec![&f1], false);
+        let itr2 = &ConcatIterator::new(vec![&f2], false);
+        let mut miter = MergeIterOverBuilder::default()
+            .add_batch(vec![itr1, itr2])
+            .build();
+
+        let item = miter.rewind().unwrap();
+        assert_eq!(item.key(), b"k1");
+        assert_eq!(item.value().value, b"a1");
+        assert_eq!(item.value().meta, 'A' as u8);
+
+        let item = miter.next().unwrap();
+        assert_eq!(item.key(), b"k2");
+        assert_eq!(item.value().value, b"a2");
+        assert_eq!(item.value().meta, 'A' as u8);
+
+        assert!(miter.next().is_none());
+        assert!(miter.peek().is_none());
+    }
+
+    #[test]
+    fn merge_iterator_reversed_take_two() {
+        let f1 = TableBuilder::new().mode(FileLoadingMode::MemoryMap).build();
+        let f2 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .key_value(vec![
+                (b"k1".to_vec(), b"a1".to_vec()),
+                (b"k2".to_vec(), b"a2".to_vec()),
+            ])
+            .build();
+        let itr1 = &ConcatIterator::new(vec![&f1], false);
+        let itr2 = &ConcatIterator::new(vec![&f2], false);
+        let mut miter = MergeIterOverBuilder::default()
+            .add_batch(vec![itr1, itr2])
+            .build();
+
+        let item = miter.rewind().unwrap();
+        assert_eq!(item.key(), b"k1");
+        assert_eq!(item.value().value, b"a1");
+        assert_eq!(item.value().meta, 'A' as u8);
+
+        let item = miter.next().unwrap();
+        assert_eq!(item.key(), b"k2");
+        assert_eq!(item.value().value, b"a2");
+        assert_eq!(item.value().meta, 'A' as u8);
+
+        assert!(miter.next().is_none());
+        assert!(miter.peek().is_none());
+    }
+
+    #[test]
+    fn iter() {
+        let f1 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .key_value(vec![
+                (b"k1".to_vec(), b"a1".to_vec()),
+                (b"k2".to_vec(), b"a2".to_vec()),
+            ])
+            .build();
+        let itr = IteratorImpl::new(&f1, false);
+        let mut mitr = MergeIterOverBuilder::default().add(&itr).build();
+        assert_eq!(mitr.next().unwrap().key(), b"k1");
+        assert_eq!(mitr.next().unwrap().key(), b"k2");
+        assert!(mitr.next().is_none());
+    }
+
+    #[test]
     fn currency() {
         use std::fs;
         let (mut fp, path) = build_test_table("key", 101);
@@ -347,7 +500,7 @@ mod utils {
     fn build_table(mut key_value: Vec<(Vec<u8>, Vec<u8>)>) -> (File, String) {
         let mut builder = Builder::default();
         let file_name = format!(
-            "{}{}{}",
+            "{}/{}{}",
             temp_dir().to_str().unwrap(),
             random::<u64>(),
             FILE_SUFFIX
