@@ -1,26 +1,16 @@
-use crate::options::FileLoadingMode;
-use crate::skl::BlockBytes;
 use crate::skl::Chunk;
-use crate::table::iterator::{BlockIteratorItem, IteratorImpl, IteratorItem};
+use crate::table::iterator::IteratorItem;
 use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE, VALUE_SIZE};
 use byteorder::BigEndian;
 use byteorder::{ReadBytesExt, WriteBytesExt};
-use serde_json::Value;
 use std::borrow::{Borrow, Cow};
 use std::cell::{Cell, RefCell, RefMut};
-use std::cmp::{Ordering, Reverse};
-use std::collections::BinaryHeap;
+use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Formatter;
 use std::io::{Cursor, Read, Write};
 use std::iter::Iterator as stdIterator;
-use std::marker::PhantomData;
-use std::mem::size_of;
-use std::process::id;
-use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
-use std::rc::Rc;
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
-use std::sync::Arc;
 
 /// ValueStruct represents the value info that can be associated with a key, but also the internal
 /// Meta field.
@@ -99,6 +89,7 @@ impl Into<Vec<u8>> for &ValueStruct {
 pub trait Xiterator {
     type Output;
     fn next(&self) -> Option<Self::Output>;
+    /// Seeks to first element (or last element for reverse iterator).
     fn rewind(&self) -> Option<Self::Output>;
     fn seek(&self, key: &[u8]) -> Option<Self::Output>;
     fn peek(&self) -> Option<Self::Output> {
@@ -114,47 +105,35 @@ pub trait KeyValue<V> {
     fn value(&self) -> V;
 }
 
+/// Note: MustBe rewind the iterator that moved to first item when first call next
 #[derive(Default)]
 pub struct MergeIterOverIterator<'a> {
-    cur_key: RefCell<Vec<u8>>,
     reverse: bool,
     pub(crate) all: Vec<IterOverXIterator<'a>>,
     pub(crate) elements: RefCell<Vec<IterOverXIterator<'a>>>,
+    pub(crate) cursor: RefCell<MergeIterCursor>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct MergeIterCursor {
+    is_dummy: bool,
+    cur_item: Option<IteratorItem>,
 }
 
 impl Xiterator for MergeIterOverIterator<'_> {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
+        if self.cursor.borrow().is_dummy {
+            return self.rewind();
+        }
+
         if self.elements.borrow().is_empty() {
             return None;
         }
 
-        let mut keyvalue: Option<IteratorItem> = None;
-        for (idx, tb_iter) in self.elements.borrow().iter().enumerate() {
-            let item = tb_iter.m.peek();
-            if item.is_none() {
-                continue;
-            }
-            println!("preview");
-            let item = item.unwrap();
-
-            if keyvalue.is_none() {
-                keyvalue = Some(item.clone());
-            }
-
-            // continue proboe
-            if keyvalue.as_ref().unwrap().key() == item.key() {
-                tb_iter.m.next(); // Move
-                continue;
-            }
-            break;
-        }
-        self.reset();
-        if let Some(ref item) = keyvalue {
-            self.store_key(item.key());
-        }
-        keyvalue
+        println!("elements size: {}", self.elements.borrow().len());
+        self.move_cursor()
     }
 
     fn rewind(&self) -> Option<Self::Output> {
@@ -162,7 +141,7 @@ impl Xiterator for MergeIterOverIterator<'_> {
             itr.m.rewind();
         }
         self.reset();
-        self.peek()
+        self.move_cursor()
     }
 
     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
@@ -174,42 +153,71 @@ impl Xiterator for MergeIterOverIterator<'_> {
     }
 
     fn peek(&self) -> Option<Self::Output> {
-        if let Some(itr) = self.elements.borrow().first() {
-            return itr.m.peek();
-        }
-        None
+        self.cursor.borrow().cur_item.clone()
     }
 }
 
 impl MergeIterOverIterator<'_> {
-    // todo: reset all iterator index?
     fn reset(&self) {
-        let elements = self
-            .all
-            .iter()
-            .filter(|x| x.m.peek().is_some())
-            .map(|x| x.m.get_iter())
-            .collect::<Vec<_>>();
-
-        println!("new elements: {}, {}", self.all.len(), elements.len());
-        *self.elements.borrow_mut() = elements;
-        self.elements.borrow_mut().sort();
-        if let Some(cur_itr) = self.elements.borrow().first() {
-            if let Some(cur_key) = cur_itr.m.peek() {
-                self.store_key(cur_key.key());
-            } else {
-                self.store_key(b"");
+        self.elements.borrow_mut().clear();
+        for (index, itr) in self.all.iter().enumerate() {
+            if itr.m.peek().is_none() {
+                continue;
             }
+            let mut element = itr.m.get_iter();
+            element.nice = index as isize;
+            self.elements.borrow_mut().push(element);
         }
+        self.elements.borrow_mut().sort();
     }
 
-    fn store_key(&self, key: &[u8]) {
-        self.cur_key.borrow_mut().clear();
-        self.cur_key.borrow_mut().extend_from_slice(key);
-        println!(
-            "new cur key: {}",
-            String::from_utf8_lossy(self.cur_key.borrow().as_slice())
-        );
+    fn move_cursor(&self) -> Option<IteratorItem> {
+        let mut item = None;
+        // move same item
+        for itr in self.elements.borrow().iter() {
+            let itr_item = itr.m.peek();
+            println!("---> {},  {:?}", itr.nice, itr_item);
+            if itr_item.is_none() {
+                break;
+            }
+            if item.is_none() {
+                item = itr_item.clone();
+                let n = itr.m.next();
+                if n.is_none() {
+                    println!(
+                        "move it  {}, {}, xxx, {}",
+                        itr.nice,
+                        String::from_utf8_lossy(itr_item.as_ref().unwrap().key()),
+                        itr.m.peek().is_none(),
+                    );
+                }else {
+                    println!(
+                        "move it  {}, {}, {}",
+                        itr.nice,
+                        String::from_utf8_lossy(itr_item.as_ref().unwrap().key()),
+                        String::from_utf8_lossy(n.as_ref().unwrap().key())
+                    );
+                }
+                continue;
+            }
+            if itr_item.as_ref().unwrap().key() != item.as_ref().unwrap().key() {
+                break;
+            }
+            println!(
+                "move it  {}, {}",
+                itr.nice,
+                String::from_utf8_lossy(itr_item.as_ref().unwrap().key())
+            );
+            itr.m.next();
+        }
+        self.store_key(item.clone());
+        self.reset();
+        item
+    }
+
+    fn store_key(&self, item: Option<IteratorItem>) {
+        self.cursor.borrow_mut().is_dummy = item.is_none();
+        self.cursor.borrow_mut().cur_item = item;
     }
 }
 
@@ -217,6 +225,7 @@ impl MergeIterOverIterator<'_> {
 pub struct MergeIterOverBuilder<'a> {
     all: Vec<&'a dyn Xiterator<Output = IteratorItem>>,
     reverse: bool,
+    top: bool,
 }
 
 impl<'a> MergeIterOverBuilder<'a> {
@@ -236,7 +245,6 @@ impl<'a> MergeIterOverBuilder<'a> {
     pub fn build(mut self) -> MergeIterOverIterator<'a> {
         let mut all = vec![];
         for (index, e) in self.all.iter().enumerate() {
-            e.next(); // Note: move it to first item, very import, maybe peek check
             let mut itr = e.get_iter();
             itr.nice = index as isize + 1;
             all.push(itr);
@@ -244,10 +252,12 @@ impl<'a> MergeIterOverBuilder<'a> {
         let m = MergeIterOverIterator {
             all,
             reverse: self.reverse,
-            ..Default::default()
+            cursor: RefCell::new(MergeIterCursor {
+                is_dummy: true,
+                cur_item: None,
+            }),
+            elements: RefCell::new(vec![]),
         };
-        // do some
-        m.reset();
         m
     }
 }
@@ -325,15 +335,15 @@ fn merge_iter_element() {
         type Output = IteratorItem;
 
         fn next(&self) -> Option<Self::Output> {
-            todo!()
+            self.peek()
         }
 
         fn rewind(&self) -> Option<Self::Output> {
-            todo!()
+            self.peek()
         }
 
         fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-            todo!()
+            self.peek()
         }
 
         fn peek(&self) -> Option<Self::Output> {

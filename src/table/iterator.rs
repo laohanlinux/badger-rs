@@ -182,7 +182,10 @@ impl BlockIterator {
         }
         // todo advoid use unsafe code
         let b = unsafe { self.last_block.as_ptr().as_ref().unwrap().as_ref().unwrap() };
-        Some(BlockIteratorItem { key: b.key.clone(), value: b.data() })
+        Some(BlockIteratorItem {
+            key: b.key.clone(),
+            value: b.data(),
+        })
     }
 
     fn prev(&self) -> Option<BlockIteratorItem> {
@@ -230,7 +233,9 @@ impl BlockIterator {
 
         let value = &self.data[*pos as usize..*pos as usize + h.v_len as usize];
         *pos += h.v_len as u32;
-        self.last_block.borrow_mut().replace(BlockSlice::new(key.clone(), value));
+        self.last_block
+            .borrow_mut()
+            .replace(BlockSlice::new(key.clone(), value));
         (key, value)
     }
 }
@@ -264,7 +269,7 @@ impl IteratorItem {
 /// An iterator for a table.
 pub struct IteratorImpl<'a> {
     table: &'a TableCore,
-    bpos: RefCell<usize>,
+    bpos: RefCell<usize>, // block chunk index
     // start 0 to block.len() - 1
     bi: RefCell<Option<BlockIterator>>,
     // Internally, Iterator is bidirectional. However, we only expose the
@@ -338,7 +343,7 @@ impl<'a> Xiterator for IteratorImpl<'a> {
         if self.bi.borrow().is_none() {
             return None;
         }
-
+        println!(">>>>>>> {:?}", self.bpos.borrow());
         let bi = self.bi.borrow();
         if let Some(itr) = bi.as_ref() {
             itr.peek().map(|block| block.into())
@@ -461,7 +466,7 @@ impl<'a> IteratorImpl<'a> {
             self.prev() // > key
         } else {
             self.prev() // Just move it front one
-        }
+        };
     }
 
     pub(crate) fn prev(&self) -> Option<IteratorItem> {
@@ -508,6 +513,7 @@ impl<'a> IteratorImpl<'a> {
         self._next()
     }
 
+    /// Note: Reset will move to first item.
     pub(crate) fn reset(&self) {
         *self.bpos.borrow_mut() = 0;
         self.bi.borrow_mut().take();
@@ -582,6 +588,7 @@ pub struct ConcatIterator<'a> {
 }
 
 impl<'a> ConcatIterator<'a> {
+    /// Note: new ConcatIterator is invalid(Not pointer first element)
     pub fn new(tables: Vec<&'a TableCore>, reversed: bool) -> ConcatIterator<'a> {
         let iters = tables
             .iter()
@@ -618,8 +625,11 @@ impl<'a> Xiterator for ConcatIterator<'a> {
 
     /// advances our concat iterator.
     fn next(&self) -> Option<Self::Output> {
-        let cur_iter = self.get_cur().unwrap();
-        let item = cur_iter.next();
+        let cur_iter = self.get_cur();
+        if cur_iter.is_none() {
+            return None;
+        }
+        let item = cur_iter.as_ref().unwrap().next();
         if item.is_some() {
             return item;
         }
@@ -687,6 +697,14 @@ impl<'a> Xiterator for ConcatIterator<'a> {
             self.set_idx((idx - 1) as isize);
             self.get_cur().unwrap().seek_for_prev(key)
         }
+    }
+
+    fn peek(&self) -> Option<Self::Output> {
+        let cur = self.get_cur();
+        if cur.is_none() {
+            return None;
+        }
+        cur.as_ref().unwrap().peek()
     }
 }
 
