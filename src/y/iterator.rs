@@ -95,9 +95,6 @@ pub trait Xiterator {
     fn peek(&self) -> Option<Self::Output> {
         todo!()
     }
-    fn prev(&self) -> Option<Self::Output> {
-        todo!()
-    }
 }
 
 pub trait KeyValue<V> {
@@ -125,10 +122,12 @@ impl Xiterator for MergeIterOverIterator<'_> {
 
     fn next(&self) -> Option<Self::Output> {
         if self.cursor.borrow().is_dummy {
+            self.store_key(None);
             return self.rewind();
         }
 
         if self.elements.borrow().is_empty() {
+            self.store_key(None);
             return None;
         }
 
@@ -176,38 +175,17 @@ impl MergeIterOverIterator<'_> {
         // move same item
         for itr in self.elements.borrow().iter() {
             let itr_item = itr.m.peek();
-            println!("---> {},  {:?}", itr.nice, itr_item);
             if itr_item.is_none() {
                 break;
             }
             if item.is_none() {
                 item = itr_item.clone();
-                let n = itr.m.next();
-                if n.is_none() {
-                    println!(
-                        "move it  {}, {}, xxx, {}",
-                        itr.nice,
-                        String::from_utf8_lossy(itr_item.as_ref().unwrap().key()),
-                        itr.m.peek().is_none(),
-                    );
-                }else {
-                    println!(
-                        "move it  {}, {}, {}",
-                        itr.nice,
-                        String::from_utf8_lossy(itr_item.as_ref().unwrap().key()),
-                        String::from_utf8_lossy(n.as_ref().unwrap().key())
-                    );
-                }
+                itr.m.next();
                 continue;
             }
             if itr_item.as_ref().unwrap().key() != item.as_ref().unwrap().key() {
                 break;
             }
-            println!(
-                "move it  {}, {}",
-                itr.nice,
-                String::from_utf8_lossy(itr_item.as_ref().unwrap().key())
-            );
             itr.m.next();
         }
         self.store_key(item.clone());

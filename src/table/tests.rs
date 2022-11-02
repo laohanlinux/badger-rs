@@ -383,29 +383,82 @@ mod utils {
             .build();
 
         let itr1 = &IteratorImpl::new(&f1, true);
-        itr1.next();
-        itr1.next();
-        println!("{:?}", itr1.peek());
-        println!("{}", itr1.next().is_none());
-        println!("{:?}", itr1.peek());
-        // let itr2 = &ConcatIterator::new(vec![&f2], true);
-        // let mut miter = MergeIterOverBuilder::default()
-        //     .add_batch(vec![itr1, itr2])
-        //     .build();
-        // let item = miter.rewind().unwrap();
-        // assert_eq!(item.key(), b"k2");
-        // assert_eq!(item.value().value, b"a2");
-        // assert_eq!(item.value().meta, 'A' as u8);
-        //
-        // let item = miter.next().unwrap();
-        // assert_eq!(item.key(), b"k1");
-        // assert_eq!(item.value().value, b"a1");
-        // assert_eq!(item.value().meta, 'A' as u8);
-        //
-        // println!("<<<<");
-        // // println!("{:?}", miter.next().unwrap().key());
-        // assert!(miter.next().is_none());
+        let itr2 = &ConcatIterator::new(vec![&f2], true);
+        let mut miter = MergeIterOverBuilder::default()
+            .add_batch(vec![itr1, itr2])
+            .build();
+        let item = miter.rewind().unwrap();
+        assert_eq!(item.key(), b"k2");
+        assert_eq!(item.value().value, b"a2");
+        assert_eq!(item.value().meta, 'A' as u8);
+        let item = miter.next().unwrap();
+        assert_eq!(item.key(), b"k1");
+        assert_eq!(item.value().value, b"a1");
+        assert_eq!(item.value().meta, 'A' as u8);
+        assert!(miter.next().is_none());
     }
+
+    #[test]
+    fn merge_iterator_reversed_take_one() {
+        let f1 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .key_value(vec![
+                (b"k1".to_vec(), b"a1".to_vec()),
+                (b"k2".to_vec(), b"a2".to_vec()),
+            ])
+            .build();
+        let f2 = TableBuilder::new().mode(FileLoadingMode::MemoryMap).build();
+
+        let itr1 = &ConcatIterator::new(vec![&f1], false);
+        let itr2 = &ConcatIterator::new(vec![&f2], false);
+        let mut miter = MergeIterOverBuilder::default()
+            .add_batch(vec![itr1, itr2])
+            .build();
+
+        let item = miter.rewind().unwrap();
+        assert_eq!(item.key(), b"k1");
+        assert_eq!(item.value().value, b"a1");
+        assert_eq!(item.value().meta, 'A' as u8);
+
+        let item = miter.next().unwrap();
+        assert_eq!(item.key(), b"k2");
+        assert_eq!(item.value().value, b"a2");
+        assert_eq!(item.value().meta, 'A' as u8);
+
+        assert!(miter.next().is_none());
+        assert!(miter.peek().is_none());
+    }
+
+    #[test]
+    fn merge_iterator_reversed_take_two() {
+        let f1 = TableBuilder::new().mode(FileLoadingMode::MemoryMap).build();
+        let f2 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .key_value(vec![
+                (b"k1".to_vec(), b"a1".to_vec()),
+                (b"k2".to_vec(), b"a2".to_vec()),
+            ])
+            .build();
+        let itr1 = &ConcatIterator::new(vec![&f1], false);
+        let itr2 = &ConcatIterator::new(vec![&f2], false);
+        let mut miter = MergeIterOverBuilder::default()
+            .add_batch(vec![itr1, itr2])
+            .build();
+
+        let item = miter.rewind().unwrap();
+        assert_eq!(item.key(), b"k1");
+        assert_eq!(item.value().value, b"a1");
+        assert_eq!(item.value().meta, 'A' as u8);
+
+        let item = miter.next().unwrap();
+        assert_eq!(item.key(), b"k2");
+        assert_eq!(item.value().value, b"a2");
+        assert_eq!(item.value().meta, 'A' as u8);
+
+        assert!(miter.next().is_none());
+        assert!(miter.peek().is_none());
+    }
+
     #[test]
     fn iter() {
         let f1 = TableBuilder::new()

@@ -140,6 +140,7 @@ impl BlockIterator {
         *self.pos.borrow_mut() = 0;
         self.base_key.borrow_mut().clear();
         self.last_header.borrow_mut().take();
+        self.last_block.borrow_mut().take();
     }
 
     pub(crate) fn next(&self) -> Option<BlockIteratorItem> {
@@ -197,6 +198,8 @@ impl BlockIterator {
         if self.last_header.borrow().as_ref().unwrap().prev == u32::MAX {
             // This is the first element of the block!
             *self.pos.borrow_mut() = 0;
+            self.last_header.borrow_mut().take();
+            self.last_block.borrow_mut().take();
             return None;
         }
         // Move back using current header's prev.
@@ -333,7 +336,6 @@ impl<'a> Xiterator for IteratorImpl<'a> {
         if self.bi.borrow().is_none() {
             return None;
         }
-        println!(">>>>>>> {:?}", self.bpos.borrow());
         let bi = self.bi.borrow();
         if let Some(itr) = bi.as_ref() {
             itr.peek().map(|block| block.into())
