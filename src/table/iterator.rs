@@ -277,16 +277,6 @@ pub struct IteratorImpl<'a> {
     reversed: bool,
 }
 
-impl<'a> KeyValue<ValueStruct> for IteratorImpl<'a> {
-    fn key(&self) -> &[u8] {
-        todo!()
-    }
-
-    fn value(&self) -> ValueStruct {
-        todo!()
-    }
-}
-
 impl<'a> std::iter::Iterator for IteratorImpl<'a> {
     type Item = IteratorItem;
 
