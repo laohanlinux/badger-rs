@@ -1,4 +1,5 @@
-use std::sync::atomic::AtomicU8;
+use crate::value_log::Entry;
+use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE};
 
 /// Specifies how data in LSM table files and value log files should
 /// be loaded.
@@ -12,11 +13,93 @@ pub enum FileLoadingMode {
     MemoryMap,
 }
 
-//
-// #[test]
-// fn it_atomic() {
-//     let x = AtomicU8::new(0);
-//     let y = AtomicU8::new(0);
-//
-//     let
-// }
+/// Params for creating DB object.
+pub struct Options {
+    /// 1. Mandatory flags
+    /// -------------------
+    /// Directory to store the data in. Should exist and be writable.
+    pub dir: Box<String>,
+    /// Directory to store the value log in. Can be the same as Dir. Should
+    /// exist and be writable.
+    pub value_dir: Box<String>,
+    /// 2. Frequently modified flags
+    /// -----------------------------
+    /// Sync all writes to disk. Setting this to true would slow down data
+    /// loading significantly.
+    sync_writes: bool,
+    /// How should LSM tree be accessed.
+    table_loading_mode: FileLoadingMode,
+    /// 3. Flags that user might want to review
+    /// ----------------------------------------
+    /// The following affect all levels of LSM tree.
+    /// Each table (or file) is at most this size.
+    max_table_size: u64,
+    /// Equals SizeOf(Li+1)/SizeOf(Li).
+    level_size_multiplier: usize,
+    /// Maximum number of levels of compaction.
+    max_levels: usize,
+    /// If value size >= this threshold, only store value offsets in tree.
+    value_threshold: usize,
+    /// Maximum number of tables to keep in memory, before stalling.
+    num_mem_tables: usize,
+    /// The following affect how we handle LSM tree L0.
+    /// Maximum number of Level 0 tables before we start compacting.
+    num_level_zero_tables: usize,
+
+    /// If we hit this number of Level 0 tables, we will stall until L0 is
+    /// compacted away.
+    num_level_zero_tables_stall: usize,
+
+    /// Maximum total size for L1.
+    level_one_size: u64,
+
+    /// Size of single value log file.
+    value_log_file_size: u64,
+
+    /// Number of compaction workers to run concurrently.
+    num_compactors: u64,
+
+    /// 4. Flags for testing purposes
+    /// ------------------------------
+    /// Stops LSM tree from compactions.
+    do_not_compact: bool,
+    /// max entries in batch
+    max_batch_count: u64,
+    // max batch size in bytes
+    max_batch_size: u64,
+}
+
+impl Options {
+    fn estimate_size(&self, entry: Entry) -> usize {
+        if entry.value.len() < self.value_threshold {
+            return entry.key.len() + entry.value.len() + META_SIZE + USER_META_SIZE + CAS_SIZE;
+        }
+        entry.key.len() + 16 + META_SIZE + USER_META_SIZE + CAS_SIZE
+    }
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            sync_writes: false,
+            table_loading_mode: FileLoadingMode::LoadToRADM,
+            max_table_size: 64 << 20,
+            level_size_multiplier: 10,
+            max_levels: 7,
+            value_threshold: 20,
+            num_mem_tables: 5,
+            num_level_zero_tables: 5,
+            num_level_zero_tables_stall: 10,
+            level_one_size: 256 << 20,
+            value_log_file_size: 1 << 30,
+            num_compactors: 3,
+            do_not_compact: false,
+            max_batch_count: 0,
+            max_batch_size: 0,
+            ..Default::default()
+        }
+    }
+}
+
+#[test]
+fn it() {}

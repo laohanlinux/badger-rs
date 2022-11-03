@@ -7,6 +7,7 @@
 #![feature(cursor_remaining)]
 #![feature(pattern)]
 #![feature(cell_leak)]
+#![feature(async_fn_in_trait)]
 
 extern crate core;
 
@@ -18,6 +19,7 @@ mod skl;
 mod table;
 mod y;
 mod value_log;
+mod event;
 
 pub use skl::{Arena, Node, SkipList};
 pub use y::{Error, Result};
