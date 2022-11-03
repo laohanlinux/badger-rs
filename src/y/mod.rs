@@ -53,6 +53,9 @@ pub enum Error {
     /// Returned if the user request is invalid.
     #[error("Invalid request")]
     ValueInvalidRequest,
+
+    #[error("Too few bytes read")]
+    TooFewBytes,
 }
 
 impl Default for Error {
@@ -164,7 +167,7 @@ pub(crate) fn parallel_load_block_key(fp: File, offsets: Vec<u64>) -> Vec<Vec<u8
             read_at(&fp, &mut buffer, offset + Header::size() as u64).unwrap();
             tx.send((i, out)).unwrap();
         })
-        .unwrap();
+            .unwrap();
     }
     pool.close();
 
