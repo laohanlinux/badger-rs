@@ -19,6 +19,8 @@ mod table;
 mod y;
 mod value_log;
 mod event;
+mod types;
+mod log_file;
 
 pub use skl::{Arena, Node, SkipList};
 pub use y::{Error, Result};

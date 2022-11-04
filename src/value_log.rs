@@ -1,9 +1,12 @@
-use std::collections::HashMap;
+use bitflags::bitflags;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crc32fast::Hasher;
 use memmap::MmapMut;
+use parking_lot::*;
+use rand::random;
 use serde_json::to_vec;
-use std::fmt;
+use std::cell::{Ref, RefCell, RefMut};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 use std::fs::{File, OpenOptions};
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
@@ -11,149 +14,46 @@ use std::marker::PhantomData;
 use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::RwLock;
+use std::sync::Arc;
+use std::{fmt, thread};
+use tabled::object::Entity::Cell;
 
+use crate::log_file::LogFile;
 use crate::options::Options;
 use crate::skl::BlockBytes;
 use crate::table::iterator::BlockSlice;
 use crate::y::{is_eof, read_at, Decode, Encode};
 use crate::{Error, Result};
 
-struct LogFile {
-    _path: Box<String>,
-    fd: Option<File>,
-    fid: u32,
-    _mmap: Option<MmapMut>,
-    sz: u32,
-}
-
-impl LogFile {
-    fn open_read_only(&mut self) -> Result<()> {
-        let mut fd = std::fs::OpenOptions::new()
-            .read(true)
-            .open(self._path.as_ref())?;
-        let meta = fd.metadata()?;
-        let file_sz = meta.len();
-        let mut _mmap = MmapMut::map_anon(file_sz as usize).unwrap();
-        let read = read_at(&fd, &mut _mmap, 0)?;
-        self._mmap.replace(_mmap);
-        self.fd.replace(fd);
-        self.sz = file_sz as u32;
-        Ok(())
-    }
-
-    // Acquire lock on mmap if you are calling this.
-    fn read(&self, p: &ValuePointer) -> Result<&[u8]> {
-        let offset = p.offset;
-        let sz = self._mmap.as_ref().unwrap().len();
-        let value_sz = p.len;
-        if offset >= sz as u32 || offset + value_sz > sz as u32 {
-            return Err(Error::EOF);
-        } else {
-            return Ok(&self._mmap.as_ref().unwrap()[offset as usize..(offset + value_sz) as usize]);
-        }
-        // todo add metrics
-    }
-
-    // todo opz
-    fn done_writing(&mut self, offset: u32) -> Result<()> {
-        self.sync()?;
-        self._mmap.as_mut().unwrap().flush_async()?;
-        self.fd.as_mut().unwrap().set_len(offset as u64)?;
-        self.fd.as_mut().unwrap().sync_all()?;
-        {
-            self._mmap.take();
-            self.fd.take();
-        }
-        self.open_read_only()
-    }
-
-    // You must hold lf.lock to sync()
-    fn sync(&mut self) -> Result<()> {
-        self.fd.as_mut().unwrap().sync_all()?;
-        Ok(())
-    }
-
-    fn iterate(
-        &mut self,
-        offset: u32,
-        mut f: impl FnMut(&Entry, &ValuePointer) -> Result<bool>,
-    ) -> Result<()> {
-        let mut fd = self.fd.as_mut().unwrap();
-        fd.seek(SeekFrom::Start(offset as u64))?;
-        let mut entry = Entry::default();
-        let mut truncate = false;
-        let mut record_offset = offset;
-        loop {
-            let mut h = Header::default();
-            let ok = h.dec(&mut fd);
-            if ok.is_err() && ok.as_ref().unwrap_err().is_io_eof() {
-                break;
-            }
-            // todo add truncate currenct
-            ok?;
-            if h.k_len as usize > entry.key.capacity() {
-                entry.key = vec![0u8; h.k_len as usize];
-            }
-            if h.v_len as usize > entry.value.capacity() {
-                entry.value = vec![0u8; h.v_len as usize];
-            }
-            entry.key.clear();
-            entry.value.clear();
-
-            let ok = fd.read(&mut entry.key);
-            if is_eof(&ok) {
-                break;
-            }
-            ok?;
-
-            let ok = fd.read(&mut entry.value);
-            if is_eof(&ok) {
-                break;
-            }
-            ok?;
-            entry.offset = record_offset;
-            entry.meta = h.meta;
-            entry.user_meta = h.user_mata;
-            entry.cas_counter = h.cas_counter;
-            entry.cas_counter_check = h.cas_counter_check;
-            let ok = fd.read_u32::<BigEndian>();
-            if is_eof(&ok) {
-                break;
-            }
-            let crc = ok?;
-
-            let mut vp = ValuePointer::default();
-            vp.len = Header::encoded_size() as u32 + h.k_len + h.v_len + 4;
-            record_offset += vp.len;
-
-            vp.offset = entry.offset;
-            vp.fid = self.fid;
-
-            let _continue = f(&entry, &vp)?;
-            if !_continue {
-                break;
-            }
-        }
-
-        // todo add truncate
-        Ok(())
+// Values have their first byte being byteData or byteDelete. This helps us distinguish between
+// a key that has never been seen and a key that has been explicitly deleted.
+bitflags! {
+    pub struct MetaBit: u8{
+        // Set if the key has been deleted.
+        const BitDelete = 1;
+        // Set if the value is NOT stored directly next to key.
+        const BitValuePointer = 2;
+        const BitUnused = 4;
+        // Set if the key is set using SetIfAbsent.
+        const BitSetIfAbsent = 8;
     }
 }
+
+const M: u64 = 1 << 20;
 
 #[derive(Debug, Default)]
 #[repr(C)]
-struct Header {
-    k_len: u32,
-    v_len: u32,
-    meta: u8,
-    user_mata: u8,
-    cas_counter: u64,
-    cas_counter_check: u64,
+pub(crate) struct Header {
+    pub(crate) k_len: u32,
+    pub(crate) v_len: u32,
+    pub(crate) meta: u8,
+    pub(crate) user_mata: u8,
+    pub(crate) cas_counter: u64,
+    pub(crate) cas_counter_check: u64,
 }
 
 impl Header {
-    const fn encoded_size() -> usize {
+    pub(crate) const fn encoded_size() -> usize {
         size_of::<Self>()
     }
 }
@@ -218,14 +118,14 @@ impl Decode for Header {
 #[derive(Default)]
 pub struct Entry {
     pub(crate) key: Vec<u8>,
-    meta: u8,
-    user_meta: u8,
+    pub(crate) meta: u8,
+    pub(crate) user_meta: u8,
     pub(crate) value: Vec<u8>,
     // If nonzero, we will check if existing casCounter matches.
-    cas_counter_check: u64,
+    pub(crate) cas_counter_check: u64,
     // Fields maintained internally.
-    offset: u32,
-    cas_counter: u64,
+    pub(crate) offset: u32,
+    pub(crate) cas_counter: u64,
 }
 
 impl Entry {
@@ -279,10 +179,10 @@ impl fmt::Display for Entry {
 
 #[derive(Debug, Default)]
 #[repr(C)]
-struct ValuePointer {
-    fid: u32,
-    len: u32,
-    offset: u32,
+pub struct ValuePointer {
+    pub(crate) fid: u32,
+    pub(crate) len: u32,
+    pub(crate) offset: u32,
 }
 
 impl ValuePointer {
@@ -346,12 +246,18 @@ impl Into<Vec<u8>> for ValuePointer {
     }
 }
 
-struct ValueLogCore {
+pub struct ValueLogCore {
     dir_path: Box<String>,
     max_fid: AtomicU32,
-    files_map: RwLock<HashMap<u32, LogFile>>,
+    files: RwLock<ValueFiles>,
     writable_log_offset: AtomicU32,
     opt: Options,
+}
+
+#[derive(Debug)]
+struct ValueFiles {
+    files_to_be_deleted: HashSet<u32>,
+    files_map: HashMap<u32, LogFile>,
 }
 
 impl ValueLogCore {
@@ -373,10 +279,14 @@ impl ValueLogCore {
             _mmap: None,
             sz: 0,
         };
-        self.writable_log_offset.store(0, Ordering::Acquire);
-        let fd = OpenOptions::new().read(true).create(true).write(self.opt.sync_writes).open(_path)?;
+        self.writable_log_offset.store(0, Ordering::Release);
+        let fd = OpenOptions::new()
+            .read(true)
+            .create(true)
+            .write(self.opt.sync_writes)
+            .open(_path)?;
         lf.fd.replace(fd);
-        self.files_map.write().unwrap().insert(fid, lf);
+        self.files.write().files_map.insert(fid, lf);
         Ok(())
     }
 
@@ -384,9 +294,110 @@ impl ValueLogCore {
         todo!()
     }
 
-    fn pick_log(&self) {
+    // Read the value log at given location.
+    pub fn read(
+        &self,
+        vp: &ValuePointer,
+        mut consumer: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
+        // Check for valid offset if we are reading to writable log.
+        if vp.fid == self.max_fid.load(Ordering::Acquire)
+            && vp.offset >= self.writable_log_offset.load(Ordering::Acquire)
+        {
+            return Err(format!(
+                "Invalid value pointer offset: {} greater than current offset: {}",
+                vp.offset,
+                self.writable_log_offset.load(Ordering::Acquire)
+            )
+            .into());
+        }
 
+        self.read_value_bytes(vp, |buffer| {
+            let mut cursor = Cursor::new(buffer);
+            let mut h = Header::default();
+            h.dec(&mut cursor)?;
+            if (h.meta & MetaBit::BitDelete.bits()) != 0 {
+                // Tombstone key
+                return consumer(&vec![]);
+            }
+            let n = Header::encoded_size() + h.k_len as usize;
+            consumer(&buffer[n..n + h.v_len as usize])
+        })
     }
+
+    fn read_value_bytes(
+        &self,
+        vp: &ValuePointer,
+        mut consumer: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let mut files = self.files.write();
+        let log_file = files.files_map.get_mut(&vp.fid).unwrap();
+        let buffer = log_file.read(vp)?;
+        consumer(buffer)
+    }
+
+    fn pick_log(&self) -> Option<lock_api::MappedRwLockReadGuard<'_, RawRwLock, LogFile>> {
+        let files = self.files.read();
+        let fid_set = files
+            .files_map
+            .keys()
+            .map(|fid| *fid)
+            .collect::<HashSet<u32>>();
+        let mut fids = fid_set
+            .symmetric_difference(&files.files_to_be_deleted)
+            .collect::<Vec<_>>();
+        fids.sort();
+        if fids.len() <= 1 {
+            return None;
+        }
+        // This file shouldn't be being written to.
+        let mut idx = random::<usize>() % fids.len();
+        if idx > 0 {
+            // Another level of rand to favor smaller fids.
+            idx = random::<usize>() % idx;
+        }
+        let log = RwLockReadGuard::try_map(files, |fs| fs.files_map.get(&(idx as u32))).unwrap();
+        Some(log)
+    }
+
+    fn pick_mut_log(&self) -> Option<lock_api::MappedRwLockWriteGuard<'_, RawRwLock, LogFile>> {
+        let files = self.files.write();
+        let fid_set = files
+            .files_map
+            .keys()
+            .map(|fid| *fid)
+            .collect::<HashSet<u32>>();
+        let mut fids = fid_set
+            .symmetric_difference(&files.files_to_be_deleted)
+            .collect::<Vec<_>>();
+        fids.sort();
+        if fids.len() <= 1 {
+            return None;
+        }
+        // This file shouldn't be being written to.
+        let mut idx = random::<usize>() % fids.len();
+        if idx > 0 {
+            // Another level of rand to favor smaller fids.
+            idx = random::<usize>() % idx;
+        }
+        let log =
+            RwLockWriteGuard::try_map(files, |fs| fs.files_map.get_mut(&(idx as u32))).unwrap();
+        Some(log)
+    }
+
+    // fn sorted_fids(&self) -> Vec<u32> {
+    //     // let mut v = vec![];
+    //     // let files = self.files.rl();
+    //     //
+    //     // // for item in files.files_map.iter() {
+    //     // //     if files.files_to_be_deleted.contains(item.0) {
+    //     // //         continue;
+    //     // //     }
+    //     // //     v.push(item.0.clone());
+    //     // // }
+    //     // v.sort();
+    //     // v
+    // }
 }
 
 struct ValueLogIterator<'a> {
@@ -405,4 +416,59 @@ impl<'a> ValueLogIterator<'a> {
 }
 
 #[test]
-fn it() {}
+fn it() {
+    use parking_lot::*;
+    struct Flock {
+        df: RwLock<HashMap<u32, String>>,
+        age: u32,
+    }
+    impl Flock {
+        fn get_df(
+            &self,
+        ) -> std::result::Result<
+            lock_api::MappedRwLockReadGuard<'_, RawRwLock, String>,
+            lock_api::RwLockReadGuard<'_, RawRwLock, HashMap<u32, String>>,
+        > {
+            RwLockReadGuard::try_map(self.df.read(), |df| df.get(&0))
+        }
+
+        fn get_mut(
+            &self,
+        ) -> std::result::Result<
+            lock_api::MappedRwLockWriteGuard<'_, RawRwLock, String>,
+            lock_api::RwLockWriteGuard<'_, RawRwLock, HashMap<u32, String>>,
+        > {
+            RwLockWriteGuard::try_map(self.df.write(), |df| df.get_mut(&0))
+        }
+
+        // fn get_age(&self) -> ::std::result::Result<MappedRwLockReadGuard<'_, RawRwLock, u32>> {
+        //     RwLockReadGuard::try_map(self)
+        // }
+    }
+
+    // let mut f = Flock {
+    //     age: 0,
+    //     df: RwLock::new(HashMap::new()),
+    // };
+    // f.df.write().insert(0, "hello".to_string());
+    // let df = f.get_df().unwrap();
+    // println!("{:?}", df);
+    // let df = f.get_mut().unwrap();
+}
+
+#[test]
+fn arc_lock() {
+    let fd = Arc::new(parking_lot::RwLock::new((100, 200)));
+    let mut v = vec![];
+    for i in 0..100 {
+        let mut fd = fd.clone();
+        let a = thread::spawn(move || {
+            fd.write().0 += 1;
+        });
+        v.push(a);
+    }
+    for i in v {
+        i.join().unwrap();
+    }
+    println!("{:?}", fd.read());
+}
