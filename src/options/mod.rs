@@ -26,47 +26,47 @@ pub struct Options {
     /// -----------------------------
     /// Sync all writes to disk. Setting this to true would slow down data
     /// loading significantly.
-    sync_writes: bool,
+    pub sync_writes: bool,
     /// How should LSM tree be accessed.
-    table_loading_mode: FileLoadingMode,
+    pub table_loading_mode: FileLoadingMode,
     /// 3. Flags that user might want to review
     /// ----------------------------------------
     /// The following affect all levels of LSM tree.
     /// Each table (or file) is at most this size.
-    max_table_size: u64,
+    pub max_table_size: u64,
     /// Equals SizeOf(Li+1)/SizeOf(Li).
-    level_size_multiplier: usize,
+    pub level_size_multiplier: usize,
     /// Maximum number of levels of compaction.
-    max_levels: usize,
+    pub max_levels: usize,
     /// If value size >= this threshold, only store value offsets in tree.
-    value_threshold: usize,
+    pub value_threshold: usize,
     /// Maximum number of tables to keep in memory, before stalling.
-    num_mem_tables: usize,
+    pub num_mem_tables: usize,
     /// The following affect how we handle LSM tree L0.
     /// Maximum number of Level 0 tables before we start compacting.
-    num_level_zero_tables: usize,
+    pub num_level_zero_tables: usize,
 
     /// If we hit this number of Level 0 tables, we will stall until L0 is
     /// compacted away.
-    num_level_zero_tables_stall: usize,
+    pub num_level_zero_tables_stall: usize,
 
     /// Maximum total size for L1.
-    level_one_size: u64,
+    pub level_one_size: u64,
 
     /// Size of single value log file.
-    value_log_file_size: u64,
+    pub value_log_file_size: u64,
 
     /// Number of compaction workers to run concurrently.
-    num_compactors: u64,
+    pub num_compactors: u64,
 
     /// 4. Flags for testing purposes
     /// ------------------------------
     /// Stops LSM tree from compactions.
-    do_not_compact: bool,
+    pub do_not_compact: bool,
     /// max entries in batch
-    max_batch_count: u64,
+    pub max_batch_count: u64,
     // max batch size in bytes
-    max_batch_size: u64,
+    pub max_batch_size: u64,
 }
 
 impl Options {

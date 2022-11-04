@@ -1,15 +1,17 @@
+use std::collections::HashMap;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crc32fast::Hasher;
 use memmap::MmapMut;
 use serde_json::to_vec;
 use std::fmt;
 use std::fmt::Formatter;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::RwLock;
 
 use crate::options::Options;
 use crate::skl::BlockBytes;
@@ -347,6 +349,7 @@ impl Into<Vec<u8>> for ValuePointer {
 struct ValueLogCore {
     dir_path: Box<String>,
     max_fid: AtomicU32,
+    files_map: RwLock<HashMap<u32, LogFile>>,
     writable_log_offset: AtomicU32,
     opt: Options,
 }
@@ -358,6 +361,31 @@ impl ValueLogCore {
     }
     fn fpath(&self, fid: u32) -> String {
         ValueLogCore::vlog_file_path(&self.dir_path, fid)
+    }
+
+    // todo add logFile as return value.
+    fn create_vlog_file(&mut self, fid: u32) -> Result<()> {
+        let _path = self.fpath(fid);
+        let mut lf = LogFile {
+            _path: Box::new(_path.clone()),
+            fd: None,
+            fid,
+            _mmap: None,
+            sz: 0,
+        };
+        self.writable_log_offset.store(0, Ordering::Acquire);
+        let fd = OpenOptions::new().read(true).create(true).write(self.opt.sync_writes).open(_path)?;
+        lf.fd.replace(fd);
+        self.files_map.write().unwrap().insert(fid, lf);
+        Ok(())
+    }
+
+    fn open(&self) {
+        todo!()
+    }
+
+    fn pick_log(&self) {
+
     }
 }
 

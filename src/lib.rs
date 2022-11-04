@@ -7,7 +7,6 @@
 #![feature(cursor_remaining)]
 #![feature(pattern)]
 #![feature(cell_leak)]
-#![feature(async_fn_in_trait)]
 
 extern crate core;
 
