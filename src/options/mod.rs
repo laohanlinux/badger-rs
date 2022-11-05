@@ -14,6 +14,7 @@ pub enum FileLoadingMode {
 }
 
 /// Params for creating DB object.
+#[derive(Debug, Clone)]
 pub struct Options {
     /// 1. Mandatory flags
     /// -------------------

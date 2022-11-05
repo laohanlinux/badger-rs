@@ -33,7 +33,7 @@ impl SafeLogFile {
 }
 
 impl LogFile {
-    fn open_read_only(&mut self) -> Result<()> {
+    pub(crate) fn open_read_only(&mut self) -> Result<()> {
         let mut fd = std::fs::OpenOptions::new()
             .read(true)
             .open(self._path.as_ref())?;
@@ -52,16 +52,16 @@ impl LogFile {
         let offset = p.offset;
         let sz = self._mmap.as_ref().unwrap().len();
         let value_sz = p.len;
-        if offset >= sz as u32 || offset + value_sz > sz as u32 {
-            return Err(Error::EOF);
+        return if offset >= sz as u32 || offset + value_sz > sz as u32 {
+            Err(Error::EOF)
         } else {
-            return Ok(&self._mmap.as_ref().unwrap()[offset as usize..(offset + value_sz) as usize]);
-        }
+            Ok(&self._mmap.as_ref().unwrap()[offset as usize..(offset + value_sz) as usize])
+        };
         // todo add metrics
     }
 
     // todo opz
-    fn done_writing(&mut self, offset: u32) -> Result<()> {
+    pub(crate) fn done_writing(&mut self, offset: u32) -> Result<()> {
         self.sync()?;
         self._mmap.as_mut().unwrap().flush_async()?;
         self.fd.as_mut().unwrap().set_len(offset as u64)?;
@@ -79,10 +79,10 @@ impl LogFile {
         Ok(())
     }
 
-    fn iterate(
+    pub(crate) fn iterate(
         &mut self,
         offset: u32,
-        mut f: impl FnMut(&Entry, &ValuePointer) -> Result<bool>,
+        f: &mut impl FnMut(&Entry, &ValuePointer) -> Result<bool>,
     ) -> Result<()> {
         let mut fd = self.fd.as_mut().unwrap();
         fd.seek(SeekFrom::Start(offset as u64))?;
