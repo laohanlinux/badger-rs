@@ -1,13 +1,17 @@
+mod codec;
 pub(crate) mod iterator;
 mod metrics;
 
 use crate::Error::Unexpected;
+pub use codec::{Decode, Encode};
 pub use iterator::ValueStruct;
 use memmap::{Mmap, MmapMut};
+use std::backtrace;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::fs::File;
+use std::error::Error as _;
+use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io::ErrorKind;
 use std::sync::{Arc, RwLock};
@@ -20,8 +24,11 @@ pub const USER_META_SIZE: usize = 1;
 pub const CAS_SIZE: usize = 8;
 pub const VALUE_SIZE: usize = 4;
 
-#[derive(Debug, Error, PartialEq)]
+#[derive(Debug, Error)]
 pub enum Error {
+    #[error(transparent)]
+    StdIO(#[from] std::io::Error),
+
     #[error("io error: {0}")]
     Io(String),
     #[error("{0}")]
@@ -53,6 +60,16 @@ pub enum Error {
     /// Returned if the user request is invalid.
     #[error("Invalid request")]
     ValueInvalidRequest,
+
+    //////////////////////////////////
+    // valueLog error
+    /////////////
+    #[error("Too few bytes read")]
+    TooFewBytes,
+    /// Indicates an end of file then trying to read from a memory mapped file
+    /// and encountering the end of slice.
+    #[error("End of mapped region")]
+    EOF,
 }
 
 impl Default for Error {
@@ -61,10 +78,12 @@ impl Default for Error {
     }
 }
 
-impl From<io::Error> for Error {
-    #[inline]
-    fn from(e: io::Error) -> Self {
-        Self::Io(e.kind().to_string())
+impl Error {
+    pub fn is_io_eof(&self) -> bool {
+        match self {
+            Error::StdIO(err) if err.kind() == io::ErrorKind::UnexpectedEof => true,
+            _ => false,
+        }
     }
 }
 
@@ -164,7 +183,7 @@ pub(crate) fn parallel_load_block_key(fp: File, offsets: Vec<u64>) -> Vec<Vec<u8
             read_at(&fp, &mut buffer, offset + Header::size() as u64).unwrap();
             tx.send((i, out)).unwrap();
         })
-        .unwrap();
+            .unwrap();
     }
     pool.close();
 
@@ -183,6 +202,25 @@ pub(crate) fn slice_cmp_gte(a: &[u8], b: &[u8]) -> cmp::Ordering {
         cmp::Ordering::Greater => cmp::Ordering::Equal,
         cmp::Ordering::Equal => cmp::Ordering::Equal,
     }
+}
+
+const datasyncFileFlag: libc::c_int = 0x0;
+pub(crate) fn open_existing_synced_file(file_name: &str, synced: bool) -> Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut flags = libc::O_RDWR;
+    if synced {
+        flags |= datasyncFileFlag;
+    }
+    File::options().mode(0).custom_flags(flags).open(file_name).map_err(|err| err.into())
+}
+
+pub(crate) fn create_synced_file(file_name: &str, synce: bool) -> Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut flags = libc::O_RDWR | libc::O_CREAT | libc::O_EXCL;
+    if synce {
+        flags |= datasyncFileFlag;
+    }
+    File::options().mode(0666).custom_flags(flags).open(file_name).map_err(|err| err.into())
 }
 
 #[test]

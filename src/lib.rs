@@ -7,6 +7,7 @@
 #![feature(cursor_remaining)]
 #![feature(pattern)]
 #![feature(cell_leak)]
+#![feature(path_file_prefix)]
 
 extern crate core;
 
@@ -17,6 +18,12 @@ mod options;
 mod skl;
 mod table;
 mod y;
+mod value_log;
+mod event;
+mod types;
+mod log_file;
+mod kv;
+mod value_log_tests;
 
 pub use skl::{Arena, Node, SkipList};
 pub use y::{Error, Result};
