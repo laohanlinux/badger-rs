@@ -8,22 +8,28 @@
 #![feature(pattern)]
 #![feature(cell_leak)]
 #![feature(path_file_prefix)]
+#![feature(fs_try_exists)]
+#![feature(generic_associated_types)]
 
 extern crate core;
 
 use std::io;
 use std::mem::align_of;
 
+mod event;
+mod kv;
+mod log_file;
+mod manifest;
 mod options;
 mod skl;
 mod table;
-mod y;
-mod value_log;
-mod event;
 mod types;
-mod log_file;
-mod kv;
+mod value_log;
 mod value_log_tests;
+mod y;
+
+#[cfg(test)]
+mod test_util;
 
 pub use skl::{Arena, Node, SkipList};
 pub use y::{Error, Result};

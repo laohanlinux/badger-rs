@@ -60,6 +60,10 @@ pub enum Error {
     /// Returned if the user request is invalid.
     #[error("Invalid request")]
     ValueInvalidRequest,
+    #[error("Invalid Dir, directory does not exist")]
+    InValidDir,
+    #[error("Invalid ValueLogFileSize, must be between 1MB and 2GB")]
+    ValueLogSize,
 
     //////////////////////////////////
     // valueLog error
@@ -183,7 +187,7 @@ pub(crate) fn parallel_load_block_key(fp: File, offsets: Vec<u64>) -> Vec<Vec<u8
             read_at(&fp, &mut buffer, offset + Header::size() as u64).unwrap();
             tx.send((i, out)).unwrap();
         })
-            .unwrap();
+        .unwrap();
     }
     pool.close();
 
@@ -211,16 +215,27 @@ pub(crate) fn open_existing_synced_file(file_name: &str, synced: bool) -> Result
     if synced {
         flags |= datasyncFileFlag;
     }
-    File::options().mode(0).custom_flags(flags).open(file_name).map_err(|err| err.into())
+    File::options()
+        .mode(0)
+        .custom_flags(flags)
+        .open(file_name)
+        .map_err(|err| err.into())
 }
 
 pub(crate) fn create_synced_file(file_name: &str, synce: bool) -> Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut flags = libc::O_RDWR | libc::O_CREAT | libc::O_EXCL;
-    if synce {
-        flags |= datasyncFileFlag;
-    }
-    File::options().mode(0666).custom_flags(flags).open(file_name).map_err(|err| err.into())
+    // use std::os::unix::fs::OpenOptionsExt;
+    // let mut flags = libc::O_RDWR | libc::O_CREAT | libc::O_EXCL;
+    // if synce {
+    //     // flags |= datasyncFileFlag;
+    // }
+    // File::options().custom_flags(flags).open(file_name).map_err(|err| err.into())
+    OpenOptions::new()
+        .write(true)
+        .read(true)
+        .create(true)
+        .append(true)
+        .open(file_name)
+        .map_err(|err| err.into())
 }
 
 #[test]
