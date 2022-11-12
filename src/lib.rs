@@ -18,6 +18,7 @@ use std::mem::align_of;
 
 mod event;
 mod kv;
+mod level_handler;
 mod log_file;
 mod manifest;
 mod options;
@@ -25,6 +26,7 @@ mod skl;
 mod table;
 mod types;
 mod value_log;
+#[cfg(test)]
 mod value_log_tests;
 mod y;
 

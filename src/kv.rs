@@ -141,7 +141,7 @@ impl KV {
         // replaying, we will think that these CAS operations should fail, when they are actually
         // valid.
 
-        // There is code (in flushMemtable) whose correctness depends on us generating CAS Counter
+        // There is code (in flush_mem_table) whose correctness depends on us generating CAS Counter
         // values _before_ we modify s.vptr here.
         for req in reqs {
             let counter_base = self.new_cas_counter(req.entries.len() as u64);
@@ -157,7 +157,7 @@ impl KV {
             return _ok.clone();
         }
 
-        info!("Writing to memtable");
+        info!("Writing to memory table");
         let mut count = 0;
         for req in reqs {
             if req.entries.is_empty() {
