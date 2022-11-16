@@ -31,6 +31,9 @@ mod y;
 
 #[cfg(test)]
 mod test_util;
+mod levels;
+mod level_handler;
+mod compaction;
 
 pub use skl::{Arena, Node, SkipList};
 pub use y::{Error, Result};

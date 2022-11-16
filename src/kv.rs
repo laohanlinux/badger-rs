@@ -14,7 +14,7 @@ use std::fs::{try_exists, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
 // Prefix for internal keys used by badger.
@@ -128,7 +128,7 @@ impl KV {
 impl KV {
     // get returns the value in `mem_table` or disk for given key.
     // Note that value will include meta byte.
-    fn get(&self, key: &[u8]) -> Result<ValueStruct> {
+    pub(crate) fn get(&self, key: &[u8]) -> Result<ValueStruct> {
         let tables = self.get_mem_tables();
 
         // TODO add metrics
@@ -137,7 +137,11 @@ impl KV {
             if vs.is_none() {
                 continue;
             }
-            
+            let vs = vs.unwrap();
+            // TODO why
+            if vs.meta != 0 && !vs.value.is_empty() {
+                return Ok(vs);
+            }
         }
     }
 
@@ -241,6 +245,20 @@ impl KV {
     fn new_cas_counter(&self, how_many: u64) -> u64 {
         self.last_used_cas_counter
             .fetch_add(how_many, Ordering::Relaxed)
+    }
+}
+
+pub struct WeakKV(Weak<KV>);
+
+impl WeakKV {
+    pub(crate) fn new() -> Self { Self(Weak::new()) }
+    pub(crate) fn upgrade(&self) -> Option<ArcKV> {
+        // self.0.upgrade().map()
+        todo!()
+    }
+    pub(crate) fn from(kv: &ArcKV) -> Self {
+        // Self(Arc::downgrade(&kv.0))
+        todo!()
     }
 }
 
