@@ -28,20 +28,23 @@ use crate::log_file::LogFile;
 use crate::options::Options;
 use crate::skl::BlockBytes;
 use crate::table::iterator::BlockSlice;
-use crate::y::{create_synced_file, is_eof, open_existing_synced_file, read_at, Decode, Encode};
+use crate::types::Channel;
+use crate::y::{
+    create_synced_file, is_eof, open_existing_synced_file, read_at, sync_directory, Decode, Encode,
+};
 use crate::Error::Unexpected;
 use crate::{Error, Result};
 
-// Values have their first byte being byteData or byteDelete. This helps us distinguish between
-// a key that has never been seen and a key that has been explicitly deleted.
+/// Values have their first byte being byteData or byteDelete. This helps us distinguish between
+/// a key that has never been seen and a key that has been explicitly deleted.
 bitflags! {
     pub struct MetaBit: u8{
-        // Set if the key has been deleted.
+        /// Set if the key has been deleted.
         const BitDelete = 1;
-        // Set if the value is NOT stored directly next to key.
+        /// Set if the value is NOT stored directly next to key.
         const BitValuePointer = 2;
         const BitUnused = 4;
-        // Set if the key is set using SetIfAbsent.
+        /// Set if the key is set using SetIfAbsent.
         const BitSetIfAbsent = 8;
     }
 }
@@ -65,45 +68,15 @@ impl Header {
     }
 }
 
-impl From<&[u8]> for Header {
-    fn from(buf: &[u8]) -> Self {
-        let mut cur = Cursor::new(buf);
-        let mut h = Header::default();
-        h.k_len = cur.read_u32::<BigEndian>().unwrap();
-        h.v_len = cur.read_u32::<BigEndian>().unwrap();
-        h.meta = cur.read_u8().unwrap();
-        h.user_mata = cur.read_u8().unwrap();
-        h.cas_counter = cur.read_u64::<BigEndian>().unwrap();
-        h.cas_counter_check = cur.read_u64::<BigEndian>().unwrap();
-        h
-    }
-}
-
-impl Into<Vec<u8>> for Header {
-    fn into(self) -> Vec<u8> {
-        let mut cur = Cursor::new(vec![0u8; Header::encoded_size()]);
-        cur.write_u32::<BigEndian>(self.k_len).unwrap();
-        cur.write_u32::<BigEndian>(self.v_len).unwrap();
-        cur.write_u8(self.meta).unwrap();
-        cur.write_u8(self.user_mata).unwrap();
-        cur.write_u64::<BigEndian>(self.cas_counter).unwrap();
-        cur.write_u64::<BigEndian>(self.cas_counter_check).unwrap();
-        cur.into_inner()
-    }
-}
-
 impl Encode for Header {
     fn enc(&self, wt: &mut dyn Write) -> Result<usize> {
-        let mut cur = Cursor::new(vec![0u8; Header::encoded_size()]);
-        cur.write_u32::<BigEndian>(self.k_len)?;
-        cur.write_u32::<BigEndian>(self.v_len)?;
-        cur.write_u8(self.meta)?;
-        cur.write_u8(self.user_mata)?;
-        cur.write_u64::<BigEndian>(self.cas_counter)?;
-        cur.write_u64::<BigEndian>(self.cas_counter_check)?;
-        let block = cur.into_inner();
-        wt.write_all(&block)?;
-        Ok(block.len())
+        wt.write_u32::<BigEndian>(self.k_len)?;
+        wt.write_u32::<BigEndian>(self.v_len)?;
+        wt.write_u8(self.meta)?;
+        wt.write_u8(self.user_mata)?;
+        wt.write_u64::<BigEndian>(self.cas_counter)?;
+        wt.write_u64::<BigEndian>(self.cas_counter_check)?;
+        Ok(Self::encoded_size())
     }
 }
 
@@ -119,8 +92,8 @@ impl Decode for Header {
     }
 }
 
-/// Entry provides Key, Value and if required, CASCounterCheck to kv.BatchSet() API.
-/// If CASCounterCheck is provided, it would be compared against the current casCounter
+/// Entry provides Key, Value and if required, cas_counter_check to kv.batch_set() API.
+/// If cas_counter_check is provided, it would be compared against the current `cas_counter`
 /// assigned to this key-value. Set be done on this key only if the counters match.
 #[derive(Default)]
 pub struct Entry {
@@ -209,7 +182,7 @@ impl ValuePointer {
         self.fid == 0 && self.offset == 0 && self.len == 0
     }
 
-    pub(crate)  const fn value_pointer_encoded_size() -> usize {
+    pub(crate) const fn value_pointer_encoded_size() -> usize {
         size_of::<Self>()
     }
 }
@@ -232,27 +205,6 @@ impl Decode for ValuePointer {
     }
 }
 
-impl From<&[u8]> for ValuePointer {
-    fn from(buf: &[u8]) -> Self {
-        let mut cur = Cursor::new(buf);
-        let mut value = ValuePointer::default();
-        value.fid = cur.read_u32::<BigEndian>().unwrap();
-        value.len = cur.read_u32::<BigEndian>().unwrap();
-        value.offset = cur.read_u32::<BigEndian>().unwrap();
-        value
-    }
-}
-
-impl Into<Vec<u8>> for ValuePointer {
-    fn into(self) -> Vec<u8> {
-        let mut cur = Cursor::new(vec![0u8; ValuePointer::value_pointer_encoded_size()]);
-        cur.write_u32::<BigEndian>(self.fid).unwrap();
-        cur.write_u32::<BigEndian>(self.len).unwrap();
-        cur.write_u32::<BigEndian>(self.offset).unwrap();
-        cur.into_inner()
-    }
-}
-
 pub(crate) struct Request {
     // Input values
     pub(crate) entries: Vec<RefCell<Entry>>,
@@ -265,13 +217,20 @@ pub(crate) struct Request {
 pub struct ValueLogCore {
     dir_path: Box<String>,
     max_fid: AtomicU32,
+    // TODO
+    // guards our view of which files exist, which to be deleted, how many active iterators
+    files_log: Arc<RwLock<()>>,
     vlogs: Arc<RwLock<HashMap<u32, Arc<RwLock<LogFile>>>>>,
     dirty_vlogs: Arc<RwLock<HashSet<u32>>>,
+    // TODO why?
+    // A refcount of iterators -- when this hits zero, we can delete the files_to_be_deleted.
     num_active_iterators: AtomicI32,
     writable_log_offset: AtomicU32,
     buf: RefCell<BufWriter<Vec<u8>>>,
     opt: Options,
     kv: *const KV,
+    // Only allow one GC at a time.
+    garbage_ch: Channel<()>,
 }
 
 impl Default for ValueLogCore {
@@ -279,6 +238,7 @@ impl Default for ValueLogCore {
         ValueLogCore {
             dir_path: Box::new("".to_string()),
             max_fid: Default::default(),
+            files_log: Arc::new(Default::default()),
             vlogs: Arc::new(Default::default()),
             dirty_vlogs: Arc::new(Default::default()),
             num_active_iterators: Default::default(),
@@ -286,14 +246,9 @@ impl Default for ValueLogCore {
             buf: RefCell::new(BufWriter::new(vec![0u8; 0])),
             opt: Default::default(),
             kv: std::ptr::null(),
+            garbage_ch: Channel::new(1),
         }
     }
-}
-
-#[derive(Debug, Default)]
-struct ValueFiles {
-    files_to_be_deleted: HashSet<u32>,
-    files_map: HashMap<u32, LogFile>,
 }
 
 impl ValueLogCore {
@@ -305,7 +260,6 @@ impl ValueLogCore {
         ValueLogCore::vlog_file_path(&self.dir_path, fid)
     }
 
-    // todo add logFile as return value.
     fn create_vlog_file(&self, fid: u32) -> Result<LogFile> {
         let _path = self.fpath(fid);
         let mut log_file = LogFile {
@@ -318,26 +272,26 @@ impl ValueLogCore {
         self.writable_log_offset.store(0, Ordering::Release);
         let fd = create_synced_file(&_path, self.opt.sync_writes)?;
         log_file.fd.replace(fd);
-        // todo sync directly
+        sync_directory(&self.dir_path)?;
         Ok(log_file)
     }
 
     fn create_mmap_vlog_file(&self, fid: u32, offset: u64) -> Result<LogFile> {
         let mut vlog_file = self.create_vlog_file(fid)?;
         vlog_file.fd.as_mut().unwrap().set_len(offset)?;
-        vlog_file.fd.as_mut().unwrap().set_len(offset)?;
         let mut _mmap = unsafe { MmapMut::map_mut(vlog_file.fd.as_ref().unwrap())? };
         vlog_file._mmap.replace(_mmap);
         Ok(vlog_file)
     }
 
+    // TODO Use Arc<KV> to replace it
     pub(crate) fn open(&mut self, kv: &KV, opt: Options) -> Result<()> {
         self.dir_path = opt.value_dir.clone();
         self.opt = opt;
         let kv = kv as *const KV;
         self.kv = kv;
         self.open_create_files()?;
-        // todo add garbage
+        // todo add garbage and metrics
         Ok(())
     }
 
@@ -363,7 +317,7 @@ impl ValueLogCore {
         Ok(())
     }
 
-    fn open_create_files(&mut self) -> Result<()> {
+    fn open_create_files(&self) -> Result<()> {
         match fs::create_dir_all(self.dir_path.as_str()) {
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -568,6 +522,31 @@ impl ValueLogCore {
         to_disk()
     }
 
+    fn rewrite(&self, lf: &LogFile) -> Result<()> {
+        let max_fid = self.max_fid.load(Ordering::Relaxed);
+        assert!(
+            lf.fid < max_fid,
+            "fid to move: {}. Current max fid: {}",
+            lf.fid,
+            max_fid
+        );
+        // TODO add metrics
+
+        let mut wb = Vec::with_capacity(1000);
+        let mut size = 0i64;
+        let mut count = 0;
+        let fe = |e: &Entry| -> Result<()> {
+            count += 1;
+            if count % 1000 == 0 {
+                info!("Processing entry {}", count);
+            }
+            let vs = self.get_kv().get(&e.key);
+            Ok(())
+        };
+
+        Ok(())
+    }
+
     fn pick_log(&self) -> Option<Arc<lock_api::RwLock<RawRwLock, LogFile>>> {
         let vlogs_guard = self.pick_log_guard();
         if vlogs_guard.vlogs.len() <= 1 {
@@ -654,12 +633,6 @@ struct PickVlogsGuardsReadLock<'a> {
     fids: Vec<u32>,
 }
 
-// impl <'a> PickVlogsGuardsReadLock<'a> {
-//     fn to_owned(self) -> lock_api::RwLockReadGuard<'a, RawRwLock, HashMap<u32, Arc<lock_api::RwLock<RawRwLock, LogFile>>>> {
-//         self.vlogs
-//     }
-// }
-
 struct ValueLogIterator<'a> {
     fd: &'a File,
 }
@@ -672,6 +645,28 @@ impl<'a> ValueLogIterator<'a> {
 
     fn iterate(&mut self, log_file: &mut LogFile, offset: u32) -> Result<()> {
         todo!()
+    }
+}
+
+pub struct SafeValueLog {
+    gc_channel: Channel<()>,
+    value_log: Arc<ValueLogCore>,
+}
+
+impl SafeValueLog {
+    async fn trigger_gc(&self, gc_threshold: f64) -> Result<()> {
+        return match self.gc_channel.try_send(()) {
+            Ok(()) => {
+                let ok = self.do_run_gcc(gc_threshold).await;
+                self.gc_channel.recv().await.unwrap();
+                ok
+            }
+            Err(err) => Err(Error::ValueRejected),
+        };
+    }
+
+    async fn do_run_gcc(&self, gc_threshold: f64) -> Result<()> {
+        Ok(())
     }
 }
 

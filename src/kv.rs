@@ -16,7 +16,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-const _BADGER_PREFIX: &[u8; 8] = b"!badger!"; // Prefix for internal keys used by badger.
+const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
+// Prefix for internal keys used by badger.
 const _HEAD: &[u8; 11] = b"!bager!head"; // For Storing value offset for replay.
 
 struct Closers {
@@ -43,7 +44,10 @@ pub struct KV {
     dir_lock_guard: File,
     value_dir_guard: File,
     closers: Closers,
+    // Our latest (actively written) in-memory table.
     mt: SkipList,
+    // Add here only AFTER pushing to flush_ch
+    imm: Vec<SkipList>,
     // Incremented in the non-concurrently accessed write loop.  But also accessed outside. So
     // we use an atomic op.
     last_used_cas_counter: AtomicU64,
@@ -103,6 +107,7 @@ impl KV {
             value_dir_guard,
             closers,
             mt,
+            imm: Vec::new(),
             last_used_cas_counter: Default::default(),
         };
         let mut vlog = ValueLogCore::default();
@@ -121,6 +126,37 @@ impl KV {
 }
 
 impl KV {
+    // get returns the value in `mem_table` or disk for given key.
+    // Note that value will include meta byte.
+    fn get(&self, key: &[u8]) -> Result<ValueStruct> {
+        let tables = self.get_mem_tables();
+
+        // TODO add metrics
+        for tb in tables {
+            let vs = tb.get();
+            if vs.is_none() {
+                continue;
+            }
+            
+        }
+    }
+
+    // Returns the current `mem_tables` and get references.
+    fn get_mem_tables(&self) -> Vec<&SkipList> {
+        // TODO add kv lock
+        let mut tables = Vec::with_capacity(self.imm.len() + 1);
+        // Get mutable `mem_tables`.
+        tables.push(&self.mt);
+        tables[0].incr_ref();
+
+        // Get immutable `mem_tables`.
+        for tb in self.imm.iter().rev() {
+            tb.incr_ref();
+            tables.push(tb);
+        }
+        tables
+    }
+
     fn write_requests(&self, reqs: &[Request]) -> Arc<Result<()>> {
         if reqs.is_empty() {
             return Arc::new(Ok(()));

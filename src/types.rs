@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_channel::{bounded, Receiver, RecvError, SendError, Sender, TryRecvError};
+use async_channel::{bounded, Receiver, RecvError, SendError, Sender, TryRecvError, TrySendError};
 use tokio::time::sleep;
 
 #[derive(Clone)]
@@ -20,14 +20,14 @@ impl<T> Channel<T> {
             tx: Some(tx),
         }
     }
-    async fn try_send(&self, msg: T) -> Result<(), SendError<T>> {
+    pub(crate) fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
         if let Some(tx) = &self.tx {
-            return tx.send(msg).await;
+            return tx.try_send(msg);
         }
         Ok(())
     }
 
-    pub(crate) async fn try_recv(&self) -> Result<T, TryRecvError> {
+    pub(crate) fn try_recv(&self) -> Result<T, TryRecvError> {
         if let Some(rx) = &self.rx {
             return rx.try_recv();
         }
