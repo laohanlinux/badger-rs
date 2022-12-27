@@ -17,9 +17,9 @@ pub(crate) struct LevelHandler {
 
 impl LevelHandler {
     fn init_tables(&self, tables: Vec<TableCore>) {
-        let total_size = tables.iter().fold(0, |acc, &table| acc + table.size());
-        let tb = self.tables.write();
-        tb.0 = tables;
-        tb.1 = total_size;
+        // let total_size = tables.iter().fold(0, |acc, &table| acc + table.size());
+        // let mut tb = self.tables.write();
+        // tb.0 = tables;
+        // tb.1 = total_size as i64;
     }
 }

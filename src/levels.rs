@@ -38,5 +38,6 @@ impl LevelsControllerInner {
     // might be happening.
     fn is_level0_compact_table(&self) -> bool {
        // self.levels[0]
+        todo!()
     }
 }

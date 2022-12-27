@@ -532,7 +532,7 @@ impl ValueLogCore {
         );
         // TODO add metrics
 
-        let mut wb = Vec::with_capacity(1000);
+        // let mut wb = Vec::with_capacity(1000);
         let mut size = 0i64;
         let mut count = 0;
         let fe = |e: &Entry| -> Result<()> {

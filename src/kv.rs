@@ -133,7 +133,7 @@ impl KV {
 
         // TODO add metrics
         for tb in tables {
-            let vs = tb.get();
+            let vs = tb.get(key);
             if vs.is_none() {
                 continue;
             }
@@ -143,6 +143,8 @@ impl KV {
                 return Ok(vs);
             }
         }
+
+        todo!()
     }
 
     // Returns the current `mem_tables` and get references.
