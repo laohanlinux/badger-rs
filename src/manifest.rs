@@ -1,7 +1,7 @@
 // use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet, ManifestChange_Operation};
 use crate::pb::badgerpb3::manifest_change::Operation;
 use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet};
-use crate::y::is_eof;
+use crate::y::{is_eof, open_existing_synced_file};
 use crate::Error::{BadMagic, Unexpected};
 use crate::{Error, Result};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -13,6 +13,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{rename, File};
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
+use std::sync::atomic::AtomicU32;
+use std::sync::Arc;
 
 // Manifest file
 const MANIFEST_FILENAME: &str = "MANIFEST";
@@ -28,14 +30,14 @@ const MAGIC_VERSION: u32 = 2;
 
 /// Contains information about LSM tree levels
 /// in the *MANIFEST* file.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct LevelManifest {
     tables: HashSet<u64>, // Set of table id's
 }
 
 /// *TableManifest* contains information about a specific level
 /// in the LSM tree.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct TableManifest {
     level: u8,
 }
@@ -45,12 +47,106 @@ pub(crate) struct ManifestFile {
     fp: Option<File>,
     directory: String,
     // We make this configurable so that unit tests can hit rewrite() code quickly
-    deletions_rewrite_threshold: usize,
-    // Guards appends, which includes access to the manifest field.
-    append_lock: RwLock<()>,
+    deletions_rewrite_threshold: AtomicU32,
 
+    // Access must be with a lock.
     // Used to track the current state of the manifest, used when rewriting.
-    manifest: Manifest,
+    manifest: Arc<RwLock<Manifest>>,
+}
+
+impl ManifestFile {
+    /// Write a batch of changes, atomically, to the file. By "atomically" that means when
+    /// we replay the *MANIFEST* file, we'll either replay all the changes or none of them. (The truth of
+    /// this depends on the filesystem)
+    pub fn add_changes(&mut self, changes: Vec<ManifestChange>) -> Result<()> {
+        let mut mf_changes = ManifestChangeSet::new();
+        mf_changes.changes.extend(changes);
+        let mf_buffer = mf_changes.write_to_bytes().unwrap();
+        // Maybe we could user O_APPEND instead (on certain file systems)
+        apply_manifest_change_set(self.manifest.clone(), &mf_changes)?;
+        // Rewrite manifest if it'd shrink by 1/10 and it's big enough to care
+        let rewrite = {
+            let mf_lck = self.manifest.read();
+            mf_lck.deletions
+                > self
+                    .deletions_rewrite_threshold
+                    .load(atomic::Ordering::Relaxed) as usize
+                && mf_lck.deletions
+                    > MANIFEST_DELETIONS_RATIO * (mf_lck.creations - mf_lck.deletions)
+        };
+        if rewrite {
+            self.rewrite()?;
+        } else {
+            let mut buffer = Cursor::new(vec![]);
+            buffer.write_u32::<BigEndian>(mf_buffer.len() as u32)?;
+            let crc32 = crc32fast::hash(&mf_buffer);
+            buffer.write_u32::<BigEndian>(crc32)?;
+            buffer.write_all(&mf_buffer)?;
+            self.fp.as_mut().unwrap().write_all(&buffer.into_inner())?;
+        }
+        self.fp.as_mut().unwrap().sync_all()?;
+        Ok(())
+    }
+
+    /// Must be called while appendLock is held.
+    pub fn rewrite(&mut self) -> Result<()> {
+        {
+            self.fp.take();
+        }
+        let (fp, n) = self.help_rewrite(&self.directory, self.manifest.clone())?;
+        self.fp = Some(fp);
+        let mut m_lck = self.manifest.write();
+        m_lck.creations = n;
+        m_lck.deletions = 0;
+        Ok(())
+    }
+
+    fn help_rewrite(&self, dir: &str, m: Arc<RwLock<Manifest>>) -> Result<(File, usize)> {
+        let rewrite_path = Path::new(dir).join(MANIFEST_REWRITE_FILENAME);
+        // We explicitly sync.
+        let mut fp = File::options()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .read(true)
+            .open(&rewrite_path)?;
+        let mut wt = Cursor::new(vec![]);
+        wt.write_all(MAGIC_TEXT)?;
+        wt.write_u32::<BigEndian>(MAGIC_VERSION)?;
+
+        let m_lck = m.read();
+        let net_creations = m_lck.tables.len();
+        let mut mf_set = ManifestChangeSet::new();
+        mf_set.changes = m_lck.as_changes();
+        let mf_buffer = mf_set.write_to_bytes().unwrap();
+        wt.write_u32::<BigEndian>(mf_buffer.len() as u32)?;
+        let crc32 = crc32fast::hash(&*mf_buffer);
+        wt.write_u32::<BigEndian>(crc32)?;
+        wt.write_all(&*mf_buffer)?;
+        fp.write_all(&*wt.into_inner())?;
+        fp.sync_all()?;
+        drop(fp);
+
+        let manifest_path = Path::new(dir).join(MANIFEST_FILENAME);
+        rename(&rewrite_path, &manifest_path)?;
+        // TODO add directory sync
+
+        let fp = File::options()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .read(true)
+            .open(manifest_path)?;
+        Ok((fp, net_creations))
+    }
+
+    fn open_or_create_manifest_file(dir: &str, deletions_threshold: u32) -> Result<Manifest> {
+        let path = Path::new(dir).join(MANIFEST_FILENAME);
+        // We explicitly sync in add_changes, outside the lock.
+        let fp = open_existing_synced_file(path.to_str().unwrap(), false)?;
+        
+        todo!
+    }
 }
 
 /// Manifest represents the contents of the MANIFEST file in a Badger store.
@@ -61,7 +157,7 @@ pub(crate) struct ManifestFile {
 /// It consists of a sequence of ManifestChangeSet objects.  Each of these is treated atomically,
 /// and contains a sequence of ManifestChange's (file creations/deletions) which we use to
 /// reconstruct the manifest at startup.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Manifest {
     levels: Vec<LevelManifest>,
     tables: HashMap<u64, TableManifest>,
@@ -98,26 +194,35 @@ impl Manifest {
             return Err(BadMagic);
         }
 
-        let mut build = Manifest::new();
+        let build = Arc::new(RwLock::new(Manifest::new()));
         let mut offset = 8;
         loop {
-            let sz = fp.read_u32::<BigEndian>()?;
-            let crc32 = fp.read_u32::<BigEndian>()?;
+            let sz = fp.read_u32::<BigEndian>();
+            if is_eof(&sz) {
+                break;
+            }
+            let sz = sz?;
+            let crc32 = fp.read_u32::<BigEndian>();
+            if is_eof(&crc32) {
+                break;
+            }
+            let crc32 = crc32?;
             offset += 8;
             let mut buffer = vec![0u8; sz as usize];
             offset += fp.read(&mut buffer)?;
             if crc32 != crc32fast::hash(&buffer) {
-                // TODO why
                 break;
             }
-            let mut mf_set = ManifestChangeSet::parse_from_bytes(&buffer).map_err(|_| BadMagic)?;
-            apply_manifest_change_set(&mut build, &mf_set)?;
+            let mf_set = ManifestChangeSet::parse_from_bytes(&buffer).map_err(|_| BadMagic)?;
+            apply_manifest_change_set(build.clone(), &mf_set)?;
         }
 
+        let build = build.write().clone();
+        // so, return the lasted ManifestFile
         Ok((build, offset))
     }
 
-    pub fn rewrite(&self, dir: &str) -> Result<(File, usize)> {
+    fn help_rewrite(&self, dir: &str) -> Result<(File, usize)> {
         let rewrite_path = Path::new(dir).join(MANIFEST_REWRITE_FILENAME);
         // We explicitly sync.
         let mut fp = File::options()
@@ -170,15 +275,19 @@ impl Manifest {
 
 // this is not a "recoverable" error -- opening the KV store fails because the MANIFEST file
 // is just plain broken.
-fn apply_manifest_change_set(build: &mut Manifest, mf_set: &ManifestChangeSet) -> Result<()> {
+fn apply_manifest_change_set(
+    build: Arc<RwLock<Manifest>>,
+    mf_set: &ManifestChangeSet,
+) -> Result<()> {
     for change in mf_set.changes.iter() {
-        apply_manifest_change(build, change)?;
+        apply_manifest_change(build.clone(), change)?;
     }
     Ok(())
 }
 
-fn apply_manifest_change(build: &mut Manifest, tc: &ManifestChange) -> Result<()> {
+fn apply_manifest_change(build: Arc<RwLock<Manifest>>, tc: &ManifestChange) -> Result<()> {
     let op = Operation::from_i32(tc.Op.value()).unwrap();
+    let mut build = build.write();
     match op {
         Operation::CREATE => {
             if build.tables.contains_key(&tc.Id) {
@@ -213,11 +322,6 @@ fn apply_manifest_change(build: &mut Manifest, tc: &ManifestChange) -> Result<()
                 .tables
                 .remove(&tc.Id);
             assert!(has);
-        }
-        _ => {
-            return Err(Unexpected(
-                "MANIFEST file has invalid manifest_change op".into(),
-            ))
         }
     }
 

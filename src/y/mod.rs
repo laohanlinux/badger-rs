@@ -10,7 +10,6 @@ use std::error::Error as _;
 use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{ErrorKind, Write};
-use std::sync::{Arc, RwLock};
 use std::{cmp, io};
 use thiserror::Error;
 
@@ -207,13 +206,13 @@ pub(crate) fn slice_cmp_gte(a: &[u8], b: &[u8]) -> cmp::Ordering {
     }
 }
 
-const datasyncFileFlag: libc::c_int = 0x0;
+const DATA_SYNC_FILE_FLAG: libc::c_int = 0x0;
 
 pub(crate) fn open_existing_synced_file(file_name: &str, synced: bool) -> Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut flags = libc::O_RDWR;
     if synced {
-        flags |= datasyncFileFlag;
+        flags |= DATA_SYNC_FILE_FLAG;
     }
     File::options()
         .mode(0)
