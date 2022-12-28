@@ -2,21 +2,16 @@ mod codec;
 pub(crate) mod iterator;
 mod metrics;
 
-use crate::Error::Unexpected;
 pub use codec::{Decode, Encode};
 pub use iterator::ValueStruct;
-use memmap::{Mmap, MmapMut};
-use std::backtrace;
-use std::cmp::Ordering;
+use memmap::MmapMut;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
 use std::error::Error as _;
 use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{ErrorKind, Write};
 use std::sync::{Arc, RwLock};
 use std::{cmp, io};
-use libc::fsync;
 use thiserror::Error;
 
 /// Constants use in serialization sizes, and in ValueStruct serialization
@@ -191,7 +186,7 @@ pub(crate) fn parallel_load_block_key(fp: File, offsets: Vec<u64>) -> Vec<Vec<u8
             read_at(&fp, &mut buffer, offset + Header::size() as u64).unwrap();
             tx.send((i, out)).unwrap();
         })
-            .unwrap();
+        .unwrap();
     }
     pool.close();
 
@@ -252,7 +247,6 @@ pub(crate) fn sync_directory(d: &String) -> Result<()> {
 fn it_cpu() {
     println!("{:?}", num_cpu());
 }
-
 
 #[test]
 fn sync_dir() {

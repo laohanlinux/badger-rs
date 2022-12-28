@@ -228,6 +228,7 @@ pub(crate) fn open_or_create_manifest_file(dir: &str) -> Result<(ManifestFile, M
     Ok((ManifestFile::default(), Manifest::default()))
 }
 
+#[derive(Debug)]
 struct ManifestChangeBuilder {
     id: u64,
     level: u32,
@@ -239,7 +240,7 @@ impl ManifestChangeBuilder {
         ManifestChangeBuilder {
             id,
             level: 0,
-            op: Default::default(),
+            op: Operation::CREATE,
         }
     }
 
