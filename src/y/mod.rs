@@ -75,6 +75,9 @@ pub enum Error {
     /// and encountering the end of slice.
     #[error("End of mapped region")]
     EOF,
+    #[error("Manifest has bad magic")]
+    BadMagic,
+    /////////////////////////////////
 }
 
 impl Default for Error {

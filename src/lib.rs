@@ -10,8 +10,7 @@
 #![feature(path_file_prefix)]
 #![feature(fs_try_exists)]
 #![feature(generic_associated_types)]
-
-extern crate core;
+#![feature(unwrap_infallible)]
 
 use std::io;
 use std::mem::align_of;
@@ -29,11 +28,12 @@ mod value_log;
 mod value_log_tests;
 mod y;
 
+mod compaction;
+mod level_handler;
+mod levels;
+mod pb;
 #[cfg(test)]
 mod test_util;
-mod levels;
-mod level_handler;
-mod compaction;
 
 pub use skl::{Arena, Node, SkipList};
 pub use y::{Error, Result};

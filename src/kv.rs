@@ -1,4 +1,4 @@
-use crate::manifest::{open_or_create_manifest_file, Manifest};
+use crate::manifest::{Manifest, open_or_create_manifest_file};
 use crate::options::Options;
 use crate::table::builder::Builder;
 use crate::table::iterator::IteratorImpl;
