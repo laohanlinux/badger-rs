@@ -3,15 +3,14 @@ use crate::pb::badgerpb3::manifest_change::Operation;
 use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet};
 use crate::y::{is_eof, open_existing_synced_file};
 use crate::Error::{BadMagic, Unexpected};
-use crate::{Error, Result};
+use crate::Result;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use bytes::buf::Reader;
-use libc::bind;
+use log::info;
 use parking_lot::RwLock;
 use protobuf::{Enum, EnumOrUnknown, Message};
 use std::collections::{HashMap, HashSet};
 use std::fs::{rename, File};
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
@@ -93,7 +92,7 @@ impl ManifestFile {
         {
             self.fp.take();
         }
-        let (fp, n) = self.help_rewrite(&self.directory, self.manifest.clone())?;
+        let (fp, n) = Self::help_rewrite(&self.directory, self.manifest.clone())?;
         self.fp = Some(fp);
         let mut m_lck = self.manifest.write();
         m_lck.creations = n;
@@ -101,7 +100,7 @@ impl ManifestFile {
         Ok(())
     }
 
-    fn help_rewrite(&self, dir: &str, m: Arc<RwLock<Manifest>>) -> Result<(File, usize)> {
+    fn help_rewrite(dir: &str, m: Arc<RwLock<Manifest>>) -> Result<(File, usize)> {
         let rewrite_path = Path::new(dir).join(MANIFEST_REWRITE_FILENAME);
         // We explicitly sync.
         let mut fp = File::options()
@@ -140,12 +139,37 @@ impl ManifestFile {
         Ok((fp, net_creations))
     }
 
-    fn open_or_create_manifest_file(dir: &str, deletions_threshold: u32) -> Result<Manifest> {
+    fn open_or_create_manifest_file(dir: &str, deletions_threshold: u32) -> Result<ManifestFile> {
         let path = Path::new(dir).join(MANIFEST_FILENAME);
         // We explicitly sync in add_changes, outside the lock.
-        let fp = open_existing_synced_file(path.to_str().unwrap(), false)?;
-        
-        todo!
+        let fp = open_existing_synced_file(path.to_str().unwrap(), false);
+        return match fp {
+            Ok(mut fp) => {
+                let (manifest, trunc_offset) = Manifest::replay_manifest_file(&mut fp)?;
+                fp.set_len(trunc_offset as u64)?;
+                fp.seek(SeekFrom::End(0))?;
+                info!("recover a new manifest, offset: {}", trunc_offset);
+                Ok(ManifestFile {
+                    fp: Some(fp),
+                    directory: dir.to_string(),
+                    deletions_rewrite_threshold: AtomicU32::new(deletions_threshold),
+                    manifest: Arc::new(RwLock::new(manifest)),
+                })
+            }
+            Err(err) if err.is_io_notfound() => {
+                let mf = Arc::new(RwLock::new(Manifest::new()));
+                let (fp, n) = Self::help_rewrite(dir, mf.clone())?;
+                assert_eq!(n, 0);
+                info!("create a new manifest");
+                Ok(ManifestFile {
+                    fp: Some(fp),
+                    directory: dir.to_string(),
+                    deletions_rewrite_threshold: AtomicU32::new(deletions_threshold),
+                    manifest: mf,
+                })
+            }
+            Err(err) => Err(err),
+        };
     }
 }
 
@@ -160,7 +184,7 @@ impl ManifestFile {
 #[derive(Default, Clone)]
 pub struct Manifest {
     levels: Vec<LevelManifest>,
-    tables: HashMap<u64, TableManifest>,
+    pub(crate) tables: HashMap<u64, TableManifest>,
     // Contains total number of creation and deletion changes in the manifest --- used to compute
     // whether it'd be useful to rewrite the manifest
     creations: usize,
@@ -207,14 +231,14 @@ impl Manifest {
                 break;
             }
             let crc32 = crc32?;
-            offset += 8;
             let mut buffer = vec![0u8; sz as usize];
-            offset += fp.read(&mut buffer)?;
+            assert_eq!(sz as usize, fp.read(&mut buffer)?);
             if crc32 != crc32fast::hash(&buffer) {
                 break;
             }
             let mf_set = ManifestChangeSet::parse_from_bytes(&buffer).map_err(|_| BadMagic)?;
             apply_manifest_change_set(build.clone(), &mf_set)?;
+            offset = offset + 8 + sz as usize;
         }
 
         let build = build.write().clone();

@@ -4,10 +4,11 @@ mod metrics;
 
 pub use codec::{Decode, Encode};
 pub use iterator::ValueStruct;
+use libc::{O_DSYNC, O_WRONLY};
 use memmap::MmapMut;
 use std::collections::hash_map::DefaultHasher;
 use std::error::Error as _;
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, Permissions};
 use std::hash::Hasher;
 use std::io::{ErrorKind, Write};
 use std::{cmp, io};
@@ -83,7 +84,22 @@ impl Default for Error {
 impl Error {
     pub fn is_io_eof(&self) -> bool {
         match self {
-            Error::StdIO(err) if err.kind() == io::ErrorKind::UnexpectedEof => true,
+            Error::StdIO(err) if err.kind() == ErrorKind::UnexpectedEof => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_io_existing(&self) -> bool {
+        match self {
+            Error::StdIO(err) if err.kind() == ErrorKind::AlreadyExists => true,
+            _ => false,
+        }
+    }
+
+
+    pub fn is_io_notfound(&self) -> bool {
+        match self {
+            Error::StdIO(err) if err.kind() == ErrorKind::NotFound => true,
             _ => false,
         }
     }
@@ -111,6 +127,16 @@ pub fn is_eof<T>(ret: &io::Result<T>) -> bool {
     }
     match ret {
         Err(err) if err.kind() == ErrorKind::UnexpectedEof => true,
+        _ => false,
+    }
+}
+
+pub fn is_existing<T>(ret: &io::Result<T>) -> bool {
+    if ret.is_ok() {
+        return false;
+    }
+    match ret {
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => true,
         _ => false,
     }
 }
@@ -206,19 +232,22 @@ pub(crate) fn slice_cmp_gte(a: &[u8], b: &[u8]) -> cmp::Ordering {
     }
 }
 
-const DATA_SYNC_FILE_FLAG: libc::c_int = 0x0;
-
 pub(crate) fn open_existing_synced_file(file_name: &str, synced: bool) -> Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
-    let mut flags = libc::O_RDWR;
     if synced {
-        flags |= DATA_SYNC_FILE_FLAG;
+        File::options()
+            .write(true)
+            .read(true)
+            .custom_flags(O_DSYNC)
+            .open(file_name)
+            .map_err(|err| err.into())
+    } else {
+        File::options()
+            .write(true)
+            .read(true)
+            .open(file_name)
+            .map_err(|err| err.into())
     }
-    File::options()
-        .mode(0)
-        .custom_flags(flags)
-        .open(file_name)
-        .map_err(|err| err.into())
 }
 
 pub(crate) fn create_synced_file(file_name: &str, synce: bool) -> Result<File> {
@@ -251,4 +280,18 @@ fn it_cpu() {
 fn sync_dir() {
     let ok = sync_directory(&"/tmp".to_string());
     println!("{:?}", ok);
+}
+
+#[test]
+fn dsync() {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = OpenOptions::new();
+    options.write(true);
+    // if cfg!(unix) {
+    options.custom_flags(libc::O_WRONLY);
+    // }
+    let file = options.open("foo.txt");
+    println!("{:?}", file.err());
 }

@@ -1,6 +1,7 @@
 use parking_lot::*;
+use std::fmt::Debug;
 use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use async_channel::{bounded, Receiver, RecvError, SendError, Sender, TryRecvError, TrySendError};
@@ -108,6 +109,37 @@ impl Closer {
     pub(crate) async fn signal_and_wait(&self) {
         self.signal();
         self.wait().await;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct XWeak<T> {
+    x: Weak<T>,
+}
+
+pub struct XArc<T> {
+    x: Arc<T>,
+}
+
+impl<T> XArc<T> {
+    fn new(x: T) -> XArc<T> {
+        XArc { x: Arc::new(x) }
+    }
+}
+
+impl<T> XWeak<T> {
+    pub fn new() -> Self {
+        Self { x: Weak::new() }
+    }
+
+    pub fn upgrade(&self) -> Option<XArc<T>> {
+        self.x.upgrade().map(|x| XArc { x })
+    }
+
+    pub fn from(xarc: &XArc<T>) -> Self {
+        Self {
+            x: Arc::downgrade(&xarc.x),
+        }
     }
 }
 

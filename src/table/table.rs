@@ -7,8 +7,9 @@ use byteorder::{BigEndian, ReadBytesExt};
 use filename::file_name;
 use growable_bloom_filter::GrowableBloom;
 use memmap::{Mmap, MmapMut};
+use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
-use std::fs::{remove_file, File};
+use std::fs::{read_dir, remove_file, File};
 use std::io::{Cursor, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -22,6 +23,7 @@ use crate::y::iterator::Xiterator;
 use serde_json::to_vec;
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::FileExt;
+use std::process::id;
 use std::str::pattern::Pattern;
 
 pub(crate) const FILE_SUFFIX: &str = ".sst";
@@ -329,6 +331,26 @@ pub(crate) struct Block {
 }
 
 type ByKey = Vec<KeyOffset>;
+
+pub fn get_id_map(dir: &str) -> HashSet<u64> {
+    let dir = read_dir(dir).unwrap();
+    let mut ids = HashSet::new();
+    for el in dir {
+        if el.is_err() {
+            continue;
+        }
+        let dir_el = el.unwrap();
+        if dir_el.metadata().unwrap().is_dir() {
+            continue;
+        }
+        let fid = parse_file_id(dir_el.file_name().to_str().unwrap());
+        if fid.is_err() {
+            continue;
+        }
+        ids.insert(fid.unwrap());
+    }
+    ids
+}
 
 pub fn parse_file_id(name: &str) -> Result<u64> {
     use std::str::pattern::Pattern;
