@@ -19,6 +19,7 @@ use std::{fmt, io};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::FileExt;
 
+use crate::types::{XArc, XWeak};
 use crate::y::iterator::Xiterator;
 use serde_json::to_vec;
 #[cfg(target_os = "windows")]
@@ -44,7 +45,29 @@ impl fmt::Display for KeyOffset {
     }
 }
 
-pub struct Table {}
+pub type Table = XArc<TableCore>;
+pub type WeakTable = XWeak<TableCore>;
+
+impl Table {
+    pub(crate) fn incr_ref(&self) {
+        self.x.incr_ref()
+    }
+
+    pub(crate) fn decr_ref(&self) {
+        self.x.decr_ref()
+    }
+
+    pub(crate) fn size(&self) -> usize {
+        self.x.size()
+    }
+
+    pub(crate) fn biggest(&self) -> &[u8] {
+        &self.x.biggest
+    }
+    pub(crate) fn smallest(&self) -> &[u8] {
+        &self.x.smallest
+    }
+}
 
 pub struct TableCore {
     _ref: AtomicI32,
@@ -120,11 +143,11 @@ impl TableCore {
     }
 
     // increments the refcount (having to do with whether the file should be deleted)
-    fn incr_ref(&self) {
+    pub(crate) fn incr_ref(&self) {
         self._ref.fetch_add(1, Ordering::Relaxed);
     }
     // decrements the refcount and possibly deletes the table
-    fn decr_ref(&self) {
+    pub(crate) fn decr_ref(&self) {
         self._ref.fetch_sub(1, Ordering::Relaxed);
     }
 
@@ -153,6 +176,7 @@ impl TableCore {
         self.read(off, sz).unwrap()
     }
 
+    // TODO maybe use &self
     fn read_index(&mut self) -> Result<()> {
         let mut read_pos = self.table_size;
         // Read bloom filter.

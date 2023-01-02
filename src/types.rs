@@ -114,16 +114,27 @@ impl Closer {
 
 #[derive(Debug, Clone)]
 pub struct XWeak<T> {
-    x: Weak<T>,
+    pub(crate) x: Weak<T>,
 }
 
+#[derive(Debug)]
 pub struct XArc<T> {
-    x: Arc<T>,
+    pub(crate) x: Arc<T>,
+}
+
+impl<T> Clone for XArc<T> {
+    fn clone(&self) -> Self {
+        XArc { x: self.x.clone() }
+    }
 }
 
 impl<T> XArc<T> {
     fn new(x: T) -> XArc<T> {
         XArc { x: Arc::new(x) }
+    }
+
+    pub fn to_ref(&self) -> &T {
+        self.x.as_ref()
     }
 }
 
@@ -157,4 +168,18 @@ fn it_closer() {
         closer.signal_and_wait().await;
         println!("Hello Word");
     });
+}
+
+#[test]
+fn lck() {
+    // #![feature(slice_take)]
+    // use bytes::Buf;
+    //
+    // let x = Arc::new(RwLock::new(vec![0u8; 10]));
+    // let xr = x.read();
+    // let mut v1 = xr.take(1).into_inner();
+    // // let mut v2 = x.read().take(2).into_inner();
+    // x.write()[0] = 10;
+    //
+    // println!("{:?}", v1);
 }

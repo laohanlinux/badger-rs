@@ -1,8 +1,8 @@
-use crate::manifest::{Manifest, open_or_create_manifest_file};
+use crate::manifest::{open_or_create_manifest_file, Manifest};
 use crate::options::Options;
 use crate::table::builder::Builder;
 use crate::table::iterator::IteratorImpl;
-use crate::types::{Channel, Closer};
+use crate::types::{Channel, Closer, XArc, XWeak};
 use crate::value_log::{Request, ValueLogCore, ValuePointer};
 use crate::y::{Encode, Result, ValueStruct};
 use crate::{Error, Node, SkipList};
@@ -32,8 +32,6 @@ struct FlushTask {
     mt: Option<SkipList>,
     vptr: ValuePointer,
 }
-
-pub struct ArcKV(KV);
 
 pub struct KV {
     pub opt: Options,
@@ -250,17 +248,13 @@ impl KV {
     }
 }
 
-pub struct WeakKV(Weak<KV>);
+pub type WeakKV = XWeak<KV>;
 
-impl WeakKV {
-    pub(crate) fn new() -> Self { Self(Weak::new()) }
-    pub(crate) fn upgrade(&self) -> Option<ArcKV> {
-        // self.0.upgrade().map()
-        todo!()
-    }
-    pub(crate) fn from(kv: &ArcKV) -> Self {
-        // Self(Arc::downgrade(&kv.0))
-        todo!()
+pub type ArcKV = XArc<KV>;
+
+impl Clone for WeakKV {
+    fn clone(&self) -> Self {
+        XWeak { x: self.x.clone() }
     }
 }
 

@@ -3,6 +3,7 @@ use parking_lot::Mutex;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub(crate) struct CompactStatus {
     levels: Arc<Mutex<Vec<LevelCompactStatus>>>,
 }
@@ -14,12 +15,12 @@ impl CompactStatus {
 
     // fn compare_and_add(&self, cd:)
 
-    fn overlaps_with(&self, level: usize, this: &KeyRange) -> bool {
+    pub(crate) fn overlaps_with(&self, level: usize, this: &KeyRange) -> bool {
         let compact_status = self.levels.lock();
         compact_status[level].overlaps_with(this)
     }
 
-    fn del_size(&self, level: usize) -> i64 {
+    pub(crate) fn del_size(&self, level: usize) -> u64 {
         let compact_status = self.levels.lock();
         compact_status[level].del_size
     }
@@ -28,7 +29,7 @@ impl CompactStatus {
 #[derive(Debug)]
 pub(crate) struct LevelCompactStatus {
     ranges: Vec<KeyRange>,
-    del_size: i64,
+    del_size: u64,
 }
 
 impl LevelCompactStatus {
@@ -45,9 +46,9 @@ impl LevelCompactStatus {
 
 #[derive(Clone, Debug)]
 pub(crate) struct KeyRange {
-    left: Vec<u8>, // TODO zero Copy
-    right: Vec<u8>,
-    inf: bool,
+    pub(crate) left: Vec<u8>, // TODO zero Copy
+    pub(crate) right: Vec<u8>,
+    pub(crate) inf: bool,
 }
 
 impl Display for KeyRange {
@@ -60,10 +61,10 @@ impl Display for KeyRange {
     }
 }
 
-const INFO_RANGE: KeyRange = KeyRange {
+pub(crate) const INFO_RANGE: KeyRange = KeyRange {
     left: vec![],
     right: vec![],
-    inf: false,
+    inf: true,
 };
 
 impl KeyRange {
