@@ -7,8 +7,9 @@ use byteorder::{BigEndian, ReadBytesExt};
 use filename::file_name;
 use growable_bloom_filter::GrowableBloom;
 use memmap::{Mmap, MmapMut};
+use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
-use std::fs::{remove_file, File};
+use std::fs::{read_dir, remove_file, File};
 use std::io::{Cursor, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -18,10 +19,12 @@ use std::{fmt, io};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::FileExt;
 
+use crate::types::{XArc, XWeak};
 use crate::y::iterator::Xiterator;
 use serde_json::to_vec;
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::FileExt;
+use std::process::id;
 use std::str::pattern::Pattern;
 
 pub(crate) const FILE_SUFFIX: &str = ".sst";
@@ -42,7 +45,29 @@ impl fmt::Display for KeyOffset {
     }
 }
 
-pub struct Table {}
+pub type Table = XArc<TableCore>;
+pub type WeakTable = XWeak<TableCore>;
+
+impl Table {
+    pub(crate) fn incr_ref(&self) {
+        self.x.incr_ref()
+    }
+
+    pub(crate) fn decr_ref(&self) {
+        self.x.decr_ref()
+    }
+
+    pub(crate) fn size(&self) -> usize {
+        self.x.size()
+    }
+
+    pub(crate) fn biggest(&self) -> &[u8] {
+        &self.x.biggest
+    }
+    pub(crate) fn smallest(&self) -> &[u8] {
+        &self.x.smallest
+    }
+}
 
 pub struct TableCore {
     _ref: AtomicI32,
@@ -118,11 +143,11 @@ impl TableCore {
     }
 
     // increments the refcount (having to do with whether the file should be deleted)
-    fn incr_ref(&self) {
+    pub(crate) fn incr_ref(&self) {
         self._ref.fetch_add(1, Ordering::Relaxed);
     }
     // decrements the refcount and possibly deletes the table
-    fn decr_ref(&self) {
+    pub(crate) fn decr_ref(&self) {
         self._ref.fetch_sub(1, Ordering::Relaxed);
     }
 
@@ -151,6 +176,7 @@ impl TableCore {
         self.read(off, sz).unwrap()
     }
 
+    // TODO maybe use &self
     fn read_index(&mut self) -> Result<()> {
         let mut read_pos = self.table_size;
         // Read bloom filter.
@@ -329,6 +355,26 @@ pub(crate) struct Block {
 }
 
 type ByKey = Vec<KeyOffset>;
+
+pub fn get_id_map(dir: &str) -> HashSet<u64> {
+    let dir = read_dir(dir).unwrap();
+    let mut ids = HashSet::new();
+    for el in dir {
+        if el.is_err() {
+            continue;
+        }
+        let dir_el = el.unwrap();
+        if dir_el.metadata().unwrap().is_dir() {
+            continue;
+        }
+        let fid = parse_file_id(dir_el.file_name().to_str().unwrap());
+        if fid.is_err() {
+            continue;
+        }
+        ids.insert(fid.unwrap());
+    }
+    ids
+}
 
 pub fn parse_file_id(name: &str) -> Result<u64> {
     use std::str::pattern::Pattern;

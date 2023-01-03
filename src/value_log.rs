@@ -1,7 +1,9 @@
+use awaitgroup::{WaitGroup, Worker};
 use bitflags::bitflags;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crc32fast::Hasher;
 use log::info;
+use log::kv::Source;
 use memmap::MmapMut;
 use parking_lot::*;
 use rand::random;
@@ -10,9 +12,10 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 use std::fs::{read_dir, File, OpenOptions};
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::size_of;
+use std::ops::{Deref, Index};
 use std::path::Path;
 use std::process::id;
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
@@ -25,20 +28,23 @@ use crate::log_file::LogFile;
 use crate::options::Options;
 use crate::skl::BlockBytes;
 use crate::table::iterator::BlockSlice;
-use crate::y::{create_synced_file, is_eof, open_existing_synced_file, read_at, Decode, Encode};
+use crate::types::Channel;
+use crate::y::{
+    create_synced_file, is_eof, open_existing_synced_file, read_at, sync_directory, Decode, Encode,
+};
 use crate::Error::Unexpected;
 use crate::{Error, Result};
 
-// Values have their first byte being byteData or byteDelete. This helps us distinguish between
-// a key that has never been seen and a key that has been explicitly deleted.
+/// Values have their first byte being byteData or byteDelete. This helps us distinguish between
+/// a key that has never been seen and a key that has been explicitly deleted.
 bitflags! {
     pub struct MetaBit: u8{
-        // Set if the key has been deleted.
+        /// Set if the key has been deleted.
         const BitDelete = 1;
-        // Set if the value is NOT stored directly next to key.
+        /// Set if the value is NOT stored directly next to key.
         const BitValuePointer = 2;
         const BitUnused = 4;
-        // Set if the key is set using SetIfAbsent.
+        /// Set if the key is set using SetIfAbsent.
         const BitSetIfAbsent = 8;
     }
 }
@@ -62,45 +68,15 @@ impl Header {
     }
 }
 
-impl From<&[u8]> for Header {
-    fn from(buf: &[u8]) -> Self {
-        let mut cur = Cursor::new(buf);
-        let mut h = Header::default();
-        h.k_len = cur.read_u32::<BigEndian>().unwrap();
-        h.v_len = cur.read_u32::<BigEndian>().unwrap();
-        h.meta = cur.read_u8().unwrap();
-        h.user_mata = cur.read_u8().unwrap();
-        h.cas_counter = cur.read_u64::<BigEndian>().unwrap();
-        h.cas_counter_check = cur.read_u64::<BigEndian>().unwrap();
-        h
-    }
-}
-
-impl Into<Vec<u8>> for Header {
-    fn into(self) -> Vec<u8> {
-        let mut cur = Cursor::new(vec![0u8; Header::encoded_size()]);
-        cur.write_u32::<BigEndian>(self.k_len).unwrap();
-        cur.write_u32::<BigEndian>(self.v_len).unwrap();
-        cur.write_u8(self.meta).unwrap();
-        cur.write_u8(self.user_mata).unwrap();
-        cur.write_u64::<BigEndian>(self.cas_counter).unwrap();
-        cur.write_u64::<BigEndian>(self.cas_counter_check).unwrap();
-        cur.into_inner()
-    }
-}
-
 impl Encode for Header {
     fn enc(&self, wt: &mut dyn Write) -> Result<usize> {
-        let mut cur = Cursor::new(vec![0u8; Header::encoded_size()]);
-        cur.write_u32::<BigEndian>(self.k_len)?;
-        cur.write_u32::<BigEndian>(self.v_len)?;
-        cur.write_u8(self.meta)?;
-        cur.write_u8(self.user_mata)?;
-        cur.write_u64::<BigEndian>(self.cas_counter)?;
-        cur.write_u64::<BigEndian>(self.cas_counter_check)?;
-        let block = cur.into_inner();
-        wt.write_all(&block)?;
-        Ok(block.len())
+        wt.write_u32::<BigEndian>(self.k_len)?;
+        wt.write_u32::<BigEndian>(self.v_len)?;
+        wt.write_u8(self.meta)?;
+        wt.write_u8(self.user_mata)?;
+        wt.write_u64::<BigEndian>(self.cas_counter)?;
+        wt.write_u64::<BigEndian>(self.cas_counter_check)?;
+        Ok(Self::encoded_size())
     }
 }
 
@@ -116,8 +92,8 @@ impl Decode for Header {
     }
 }
 
-/// Entry provides Key, Value and if required, CASCounterCheck to kv.BatchSet() API.
-/// If CASCounterCheck is provided, it would be compared against the current casCounter
+/// Entry provides Key, Value and if required, cas_counter_check to kv.batch_set() API.
+/// If cas_counter_check is provided, it would be compared against the current `cas_counter`
 /// assigned to this key-value. Set be done on this key only if the counters match.
 #[derive(Default)]
 pub struct Entry {
@@ -181,7 +157,7 @@ impl fmt::Display for Entry {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 #[repr(C)]
 pub struct ValuePointer {
     pub(crate) fid: u32,
@@ -202,11 +178,11 @@ impl ValuePointer {
         self.len < o.len
     }
 
-    fn is_zero(&self) -> bool {
+    pub(crate) fn is_zero(&self) -> bool {
         self.fid == 0 && self.offset == 0 && self.len == 0
     }
 
-    const fn value_pointer_encoded_size() -> usize {
+    pub(crate) const fn value_pointer_encoded_size() -> usize {
         size_of::<Self>()
     }
 }
@@ -229,57 +205,61 @@ impl Decode for ValuePointer {
     }
 }
 
-impl From<&[u8]> for ValuePointer {
-    fn from(buf: &[u8]) -> Self {
-        let mut cur = Cursor::new(buf);
-        let mut value = ValuePointer::default();
-        value.fid = cur.read_u32::<BigEndian>().unwrap();
-        value.len = cur.read_u32::<BigEndian>().unwrap();
-        value.offset = cur.read_u32::<BigEndian>().unwrap();
-        value
-    }
-}
-
-impl Into<Vec<u8>> for ValuePointer {
-    fn into(self) -> Vec<u8> {
-        let mut cur = Cursor::new(vec![0u8; ValuePointer::value_pointer_encoded_size()]);
-        cur.write_u32::<BigEndian>(self.fid).unwrap();
-        cur.write_u32::<BigEndian>(self.len).unwrap();
-        cur.write_u32::<BigEndian>(self.offset).unwrap();
-        cur.into_inner()
-    }
-}
-
-struct Request<'a> {
-    entries: &'a [Entry],
+pub(crate) struct Request {
+    // Input values
+    pub(crate) entries: Vec<RefCell<Entry>>,
+    // Output Values and wait group stuff below
+    pub(crate) ptrs: RefCell<Vec<Option<ValuePointer>>>,
+    pub(crate) wait_group: RefCell<Option<Worker>>,
+    pub(crate) err: RefCell<Arc<Result<()>>>,
 }
 
 pub struct ValueLogCore {
     dir_path: Box<String>,
     max_fid: AtomicU32,
-    files: RwLock<ValueFiles>,
+    // TODO
+    // guards our view of which files exist, which to be deleted, how many active iterators
+    files_log: Arc<RwLock<()>>,
+    vlogs: Arc<RwLock<HashMap<u32, Arc<RwLock<LogFile>>>>>,
+    dirty_vlogs: Arc<RwLock<HashSet<u32>>>,
+    // TODO why?
+    // A refcount of iterators -- when this hits zero, we can delete the files_to_be_deleted.
     num_active_iterators: AtomicI32,
     writable_log_offset: AtomicU32,
+    buf: RefCell<BufWriter<Vec<u8>>>,
     opt: Options,
     kv: *const KV,
+    // Only allow one GC at a time.
+    garbage_ch: Channel<()>,
 }
 
-#[derive(Debug)]
-struct ValueFiles {
-    files_to_be_deleted: HashSet<u32>,
-    files_map: HashMap<u32, LogFile>,
+impl Default for ValueLogCore {
+    fn default() -> Self {
+        ValueLogCore {
+            dir_path: Box::new("".to_string()),
+            max_fid: Default::default(),
+            files_log: Arc::new(Default::default()),
+            vlogs: Arc::new(Default::default()),
+            dirty_vlogs: Arc::new(Default::default()),
+            num_active_iterators: Default::default(),
+            writable_log_offset: Default::default(),
+            buf: RefCell::new(BufWriter::new(vec![0u8; 0])),
+            opt: Default::default(),
+            kv: std::ptr::null(),
+            garbage_ch: Channel::new(1),
+        }
+    }
 }
 
 impl ValueLogCore {
     fn vlog_file_path(dir_path: &str, fid: u32) -> String {
-        let mut path = Path::new(dir_path).join(format!("{:6}", fid));
+        let mut path = Path::new(dir_path).join(format!("{:06}.vlog", fid));
         path.to_str().unwrap().to_string()
     }
     fn fpath(&self, fid: u32) -> String {
         ValueLogCore::vlog_file_path(&self.dir_path, fid)
     }
 
-    // todo add logFile as return value.
     fn create_vlog_file(&self, fid: u32) -> Result<LogFile> {
         let _path = self.fpath(fid);
         let mut log_file = LogFile {
@@ -292,17 +272,26 @@ impl ValueLogCore {
         self.writable_log_offset.store(0, Ordering::Release);
         let fd = create_synced_file(&_path, self.opt.sync_writes)?;
         log_file.fd.replace(fd);
-        // todo sync directly
+        sync_directory(&self.dir_path)?;
         Ok(log_file)
     }
 
-    fn open(&mut self, kv: &KV, opt: Options) -> Result<()> {
+    fn create_mmap_vlog_file(&self, fid: u32, offset: u64) -> Result<LogFile> {
+        let mut vlog_file = self.create_vlog_file(fid)?;
+        vlog_file.fd.as_mut().unwrap().set_len(offset)?;
+        let mut _mmap = unsafe { MmapMut::map_mut(vlog_file.fd.as_ref().unwrap())? };
+        vlog_file._mmap.replace(_mmap);
+        Ok(vlog_file)
+    }
+
+    // TODO Use Arc<KV> to replace it
+    pub(crate) fn open(&mut self, kv: &KV, opt: Options) -> Result<()> {
         self.dir_path = opt.value_dir.clone();
         self.opt = opt;
         let kv = kv as *const KV;
         self.kv = kv;
         self.open_create_files()?;
-        // todo add garbage
+        // todo add garbage and metrics
         Ok(())
     }
 
@@ -312,65 +301,66 @@ impl ValueLogCore {
 
     pub fn close(&self) -> Result<()> {
         info!("Stopping garbage collection of values.");
-        let mut files = self.files.write();
-        for file_log in files.files_map.iter_mut() {
-            file_log.1._mmap.as_mut().unwrap().flush()?;
-            if *file_log.0 == self.max_fid.load(Ordering::Acquire) {
-                file_log
-                    .1
+        let mut vlogs = self.vlogs.write();
+        for vlog in vlogs.iter() {
+            vlog.1.write()._mmap.as_mut().unwrap().flush()?;
+            if *vlog.0 == self.max_fid.load(Ordering::Acquire) {
+                vlog.1
+                    .write()
                     .fd
                     .as_mut()
                     .unwrap()
                     .set_len(self.writable_log_offset.load(Ordering::Acquire) as u64)?;
             }
         }
-        files.files_map.clear();
+        vlogs.clear();
         Ok(())
     }
 
-    fn open_create_files(&mut self) -> Result<()> {
+    fn open_create_files(&self) -> Result<()> {
         match fs::create_dir_all(self.dir_path.as_str()) {
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(err) => return Err(err.into()),
         }
 
-        /// add pid_lock
+        // add pid_lock
         let mut vlog_files = Self::get_data_files(&self.dir_path)?;
         let fids = Self::parse_file_ids(&mut vlog_files)?;
         let mut max_fid = 0;
         for fid in fids {
-            let mut log_file = LogFile {
+            let log_file = LogFile {
                 _path: Box::new(self.fpath(fid as u32)),
                 fd: None,
                 fid: fid as u32,
                 _mmap: None,
                 sz: 0,
             };
-            self.files.write().files_map.insert(fid as u32, log_file);
+            self.vlogs
+                .write()
+                .insert(fid as u32, Arc::new(RwLock::new(log_file)));
             if fid > max_fid {
                 max_fid = fid;
             }
         }
-
         self.max_fid.store(max_fid as u32, Ordering::Release);
 
         // Open all previous log files are read only. Open the last log file
         // as read write.
-        let mut files = self.files.write();
-        for (fid, fp) in files.files_map.iter_mut() {
+        let mut vlogs = self.vlogs.write();
+        for (fid, fp) in vlogs.iter() {
             if *fid == max_fid as u32 {
                 let fpath = self.fpath(*fid as u32);
                 let _fp = open_existing_synced_file(&fpath, self.opt.sync_writes)?;
-                fp.fd.replace(_fp);
+                fp.write().fd.replace(_fp);
             } else {
-                fp.open_read_only()?;
+                fp.write().open_read_only()?;
             }
         }
-        // If no files are found, the create a new file.
-        if files.files_map.is_empty() {
+        // If no files are found, creating a new file.
+        if vlogs.is_empty() {
             let log_file = self.create_vlog_file(0)?;
-            files.files_map.insert(0, log_file);
+            vlogs.insert(0, Arc::new(RwLock::new(log_file)));
         }
         Ok(())
     }
@@ -390,7 +380,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-                .into());
+            .into());
         }
 
         self.read_value_bytes(vp, |buffer| {
@@ -412,21 +402,10 @@ impl ValueLogCore {
         vp: &ValuePointer,
         mut f: impl FnMut(&Entry, &ValuePointer) -> Result<bool>,
     ) -> Result<()> {
-        let mut files = self.files.write();
-        let fid_set = files
-            .files_map
-            .keys()
-            .map(|fid| *fid)
-            .collect::<HashSet<u32>>();
-        let mut fids = fid_set
-            .symmetric_difference(&files.files_to_be_deleted)
-            .map(|fid| *fid)
-            .collect::<Vec<_>>();
-        fids.sort();
-
+        let vlogs = self.pick_log_guard();
         info!("Seeking at value pointer: {:?}", vp);
         let offset = vp.offset + vp.len;
-        for id in fids {
+        for id in vlogs.fids {
             if id < vp.fid {
                 continue;
             }
@@ -434,15 +413,20 @@ impl ValueLogCore {
             if id > vp.fid {
                 of = 0;
             }
-            let log_file = files.files_map.get_mut(&id).unwrap();
-            log_file.iterate(of, &mut f)?;
+            let log_file = vlogs.vlogs.get(&id).unwrap();
+            log_file.write().iterate(of, &mut f)?;
         }
         // Seek to the end to start writing.
-        let mut last_file = files
-            .files_map
-            .get_mut(&self.max_fid.load(Ordering::Acquire))
+        let last_file = vlogs
+            .vlogs
+            .get(&self.max_fid.load(Ordering::Acquire))
             .unwrap();
-        let last_offset = last_file.fd.as_mut().unwrap().seek(SeekFrom::End(0))?;
+        let last_offset = last_file
+            .write()
+            .fd
+            .as_mut()
+            .unwrap()
+            .seek(SeekFrom::End(0))?;
         self.writable_log_offset
             .store(last_offset as u32, Ordering::Release);
         Ok(())
@@ -457,11 +441,11 @@ impl ValueLogCore {
         if self.opt.sync_writes {
             return Ok(());
         }
-        let cur_log_file = self
-            .files
-            .write()
-            .files_map
-            .get_mut(&self.max_fid.load(Ordering::Acquire)).unwrap();
+        let cur_wt_vlog = self
+            .pick_log_guard()
+            .vlogs
+            .get(&self.max_fid.load(Ordering::Acquire))
+            .unwrap();
         // todo add sync directory meta
         // sync_dir_async()
         Ok(())
@@ -472,62 +456,131 @@ impl ValueLogCore {
         vp: &ValuePointer,
         mut consumer: impl FnMut(&[u8]) -> Result<()>,
     ) -> Result<()> {
-        let mut files = self.files.write();
-        let log_file = files.files_map.get_mut(&vp.fid).unwrap();
-        let buffer = log_file.read(vp)?;
+        let log_file = self.pick_log_by_vlog_id(&vp.fid);
+        let lf = log_file.read();
+        let buffer = lf.read(vp)?;
         consumer(buffer)
     }
 
     // write is thread-unsafe by design and should not be called concurrently.
-    fn write(&self, req: &[Request]) -> Result<()> { todo!() }
+    pub(crate) fn write(&self, reqs: &[Request]) -> Result<()> {
+        let cur_vlog_file = self.pick_log_by_vlog_id(&self.max_fid.load(Ordering::Acquire));
+        let to_disk = || -> Result<()> {
+            if self.buf.borrow().buffer().is_empty() {
+                return Ok(());
+            }
+            info!(
+                " Flushing {} blocks of total size: {}",
+                reqs.len(),
+                self.buf.borrow().buffer().len()
+            );
 
-    fn pick_log(&self) -> Option<lock_api::MappedRwLockReadGuard<'_, RawRwLock, LogFile>> {
-        let files = self.files.read();
-        let fid_set = files
-            .files_map
-            .keys()
-            .map(|fid| *fid)
-            .collect::<HashSet<u32>>();
-        let mut fids = fid_set
-            .symmetric_difference(&files.files_to_be_deleted)
-            .collect::<Vec<_>>();
-        fids.sort();
-        if fids.len() <= 1 {
-            return None;
+            let n = cur_vlog_file
+                .write()
+                .fd
+                .as_mut()
+                .unwrap()
+                .write(self.buf.borrow().buffer())?;
+            // todo add metrics
+            info!("Done");
+            self.writable_log_offset
+                .fetch_add(n as u32, Ordering::Release);
+            self.buf.borrow_mut().get_mut().clear();
+
+            if self.writable_log_offset.load(Ordering::Acquire)
+                > self.opt.value_log_file_size as u32
+            {
+                cur_vlog_file
+                    .write()
+                    .done_writing(self.writable_log_offset.load(Ordering::Acquire))?;
+
+                let new_id = self.max_fid.fetch_add(1, Ordering::Release);
+                assert!(new_id < 1 << 16, "newid will overflow u16: {}", new_id);
+                *cur_vlog_file.write() =
+                    self.create_mmap_vlog_file(new_id, 2 * self.opt.value_log_file_size)?;
+            }
+            Ok(())
+        };
+
+        for req in reqs {
+            for (idx, entry) in req.entries.iter().enumerate() {
+                if !self.opt.sync_writes && entry.borrow().value.len() < self.opt.value_threshold {
+                    // No need to write to value log.
+                    req.ptrs.borrow_mut()[idx] = None;
+                    continue;
+                }
+
+                let mut ptr = ValuePointer::default();
+                ptr.fid = cur_vlog_file.read().fid;
+                // Use the offset including buffer length so far.
+                ptr.offset = self.writable_log_offset.load(Ordering::Acquire)
+                    + self.buf.borrow().buffer().len() as u32;
+                let mut buf = self.buf.borrow_mut();
+                entry.borrow_mut().enc(&mut *buf)?;
+            }
         }
-        // This file shouldn't be being written to.
-        let mut idx = random::<usize>() % fids.len();
-        if idx > 0 {
-            // Another level of rand to favor smaller fids.
-            idx = random::<usize>() % idx;
-        }
-        let log = RwLockReadGuard::try_map(files, |fs| fs.files_map.get(&(idx as u32))).unwrap();
-        Some(log)
+        to_disk()
     }
 
-    fn pick_mut_log(&self) -> Option<lock_api::MappedRwLockWriteGuard<'_, RawRwLock, LogFile>> {
-        let files = self.files.write();
-        let fid_set = files
-            .files_map
-            .keys()
-            .map(|fid| *fid)
-            .collect::<HashSet<u32>>();
-        let mut fids = fid_set
-            .symmetric_difference(&files.files_to_be_deleted)
-            .collect::<Vec<_>>();
-        fids.sort();
-        if fids.len() <= 1 {
+    fn rewrite(&self, lf: &LogFile) -> Result<()> {
+        let max_fid = self.max_fid.load(Ordering::Relaxed);
+        assert!(
+            lf.fid < max_fid,
+            "fid to move: {}. Current max fid: {}",
+            lf.fid,
+            max_fid
+        );
+        // TODO add metrics
+
+        // let mut wb = Vec::with_capacity(1000);
+        let mut size = 0i64;
+        let mut count = 0;
+        let fe = |e: &Entry| -> Result<()> {
+            count += 1;
+            if count % 1000 == 0 {
+                info!("Processing entry {}", count);
+            }
+            let vs = self.get_kv().get(&e.key);
+            Ok(())
+        };
+
+        Ok(())
+    }
+
+    fn pick_log(&self) -> Option<Arc<lock_api::RwLock<RawRwLock, LogFile>>> {
+        let vlogs_guard = self.pick_log_guard();
+        if vlogs_guard.vlogs.len() <= 1 {
             return None;
         }
         // This file shouldn't be being written to.
-        let mut idx = random::<usize>() % fids.len();
+        let mut idx = random::<usize>() % vlogs_guard.fids.len();
         if idx > 0 {
             // Another level of rand to favor smaller fids.
             idx = random::<usize>() % idx;
         }
-        let log =
-            RwLockWriteGuard::try_map(files, |fs| fs.files_map.get_mut(&(idx as u32))).unwrap();
-        Some(log)
+        let fid = vlogs_guard.fids.index(idx);
+        let vlog = vlogs_guard.vlogs.get(fid).unwrap();
+        Some(vlog.clone())
+    }
+
+    fn pick_log_by_vlog_id(&self, id: &u32) -> Arc<RwLock<LogFile>> {
+        let pick_vlogs = self.pick_log_guard();
+        let vlogs = pick_vlogs.vlogs.get(id);
+        let vlog = vlogs.unwrap();
+        vlog.clone()
+    }
+
+    // Note: it not including dirty file
+    fn pick_log_guard(&self) -> PickVlogsGuardsReadLock {
+        let vlogs = self.vlogs.read();
+        let vlogs_fids = vlogs.keys().map(|fid| *fid).collect::<HashSet<_>>();
+        let dirty_vlogs = self.dirty_vlogs.read();
+        let mut fids = vlogs_fids
+            .difference(&*dirty_vlogs)
+            .map(|fid| *fid)
+            .collect::<Vec<_>>();
+        fids.sort();
+        PickVlogsGuardsReadLock { vlogs, fids }
     }
 
     fn get_data_files(path: &str) -> Result<Vec<String>> {
@@ -546,6 +599,7 @@ impl ValueLogCore {
         ps.sort();
         Ok(ps)
     }
+
     fn parse_file_ids(data_files: &mut Vec<String>) -> Result<Vec<u64>> {
         let mut data_file_ids = data_files
             .iter_mut()
@@ -562,9 +616,21 @@ impl ValueLogCore {
         Ok(data_file_ids)
     }
 
-    fn wait_gc(&self) {todo!()}
-    fn run_gc(&self) -> Result<()> {todo!()}
+    fn wait_gc(&self) {
+        todo!()
+    }
+    fn run_gc(&self) -> Result<()> {
+        todo!()
+    }
+}
 
+struct PickVlogsGuardsReadLock<'a> {
+    vlogs: lock_api::RwLockReadGuard<
+        'a,
+        RawRwLock,
+        HashMap<u32, Arc<lock_api::RwLock<RawRwLock, LogFile>>>,
+    >,
+    fids: Vec<u32>,
 }
 
 struct ValueLogIterator<'a> {
@@ -582,47 +648,125 @@ impl<'a> ValueLogIterator<'a> {
     }
 }
 
-#[test]
-fn it() {
-    use parking_lot::*;
-    struct Flock {
-        df: RwLock<HashMap<u32, String>>,
-        age: u32,
-    }
-    impl Flock {
-        fn get_df(
-            &self,
-        ) -> std::result::Result<
-            lock_api::MappedRwLockReadGuard<'_, RawRwLock, String>,
-            lock_api::RwLockReadGuard<'_, RawRwLock, HashMap<u32, String>>,
-        > {
-            RwLockReadGuard::try_map(self.df.read(), |df| df.get(&0))
-        }
+pub struct SafeValueLog {
+    gc_channel: Channel<()>,
+    value_log: Arc<ValueLogCore>,
+}
 
-        fn get_mut(
-            &self,
-        ) -> std::result::Result<
-            lock_api::MappedRwLockWriteGuard<'_, RawRwLock, String>,
-            lock_api::RwLockWriteGuard<'_, RawRwLock, HashMap<u32, String>>,
-        > {
-            RwLockWriteGuard::try_map(self.df.write(), |df| df.get_mut(&0))
-        }
+impl SafeValueLog {
+    async fn trigger_gc(&self, gc_threshold: f64) -> Result<()> {
+        return match self.gc_channel.try_send(()) {
+            Ok(()) => {
+                let ok = self.do_run_gcc(gc_threshold).await;
+                self.gc_channel.recv().await.unwrap();
+                ok
+            }
+            Err(err) => Err(Error::ValueRejected),
+        };
+    }
+
+    async fn do_run_gcc(&self, gc_threshold: f64) -> Result<()> {
+        Ok(())
     }
 }
 
 #[test]
-fn arc_lock() {
-    let fd = Arc::new(parking_lot::RwLock::new((100, 200)));
-    let mut v = vec![];
-    for i in 0..100 {
-        let mut fd = fd.clone();
-        let a = thread::spawn(move || {
-            fd.write().0 += 1;
-        });
-        v.push(a);
+fn it() {
+    use parking_lot::*;
+    struct Flock {
+        df: RwLock<HashMap<u32, RwLock<String>>>,
+        age: u32,
     }
-    for i in v {
-        i.join().unwrap();
+    // impl Flock {
+    //     fn get_df(
+    //         &self,
+    //     ) -> std::result::Result<
+    //         lock_api::MappedRwLockReadGuard<'_, RawRwLock, String>,
+    //         lock_api::RwLockReadGuard<'_, RawRwLock, HashMap<u32, String>>,
+    //     > {
+    //         RwLockReadGuard::try_map(self.df.read(), |df| df.get(&0))
+    //     }
+    //
+    //     fn get_mut(
+    //         &self,
+    //         idx: u32,
+    //     ) -> std::result::Result<
+    //         lock_api::MappedRwLockWriteGuard<'_, RawRwLock, String>,
+    //         lock_api::RwLockWriteGuard<'_, RawRwLock, HashMap<u32, String>>,
+    //     > {
+    //         RwLockWriteGuard::try_map(self.df.write(), |df| df.get_mut(&idx))
+    //     }
+    // }
+
+    let mut flock = Flock {
+        df: RwLock::new(HashMap::new()),
+        age: 19,
+    };
+    {
+        flock
+            .df
+            .write()
+            .insert(0, RwLock::new("foobat".to_string()));
+        flock.df.write().insert(1, RwLock::new("ok!".to_string()));
     }
-    println!("{:?}", fd.read());
+    // let lock1 = flock.df.write().get(&0).as_mut().unwrap();
+    // let lock2 = flock.df.write().get(&1).as_mut().unwrap();
+    // flock.df.write().insert(3, RwLock::new("ok!".to_string()));
+    // let value = RwLockReadGuard::try_map(lock1.read(), |df| Some(df));
+    // println!("WHat??? {:?}", value);
+}
+
+#[tokio::test]
+async fn lock() {
+    use parking_lot::*;
+
+    #[derive(Debug)]
+    struct FileLog {}
+
+    #[derive(Debug)]
+    struct FileLogProxy {
+        files: HashMap<u32, RwLock<FileLog>>,
+    }
+
+    impl FileLogProxy {
+        fn get_file(
+            &self,
+            idx: u32,
+        ) -> parking_lot::lock_api::RwLockReadGuard<'_, RawRwLock, FileLog> {
+            let flog = self.files.get(&idx).unwrap();
+            let c = flog.read();
+            c
+        }
+
+        fn get_mut_file(
+            &self,
+            idx: u32,
+        ) -> std::result::Result<
+            parking_lot::lock_api::MappedRwLockWriteGuard<'_, RawRwLock, FileLog>,
+            parking_lot::lock_api::RwLockWriteGuard<'_, RawRwLock, FileLog>,
+        > {
+            let flog = self.files.get(&idx).unwrap();
+            RwLockWriteGuard::try_map(flog.write(), |df| Some(df))
+        }
+    }
+
+    struct ValueLog {
+        df: RwLock<FileLogProxy>,
+        age: u32,
+    }
+
+    impl ValueLog {
+        // fn max_vlog_rl(
+        //     &self,
+        // ) -> parking_lot::lock_api::RwLockReadGuard<'_, RawRwLock, FileLog> {
+        //     let rl = self.rl();
+        //     let vlog = rl.get_file(0);
+        //     vlog
+        // }
+
+        // fn rl(&self) -> parking_lot::lock_api::RwLockReadGuard<'_, RawRwLock, FileLog> {
+        //     let df  = self.df.read().get_file(0);
+        //     df
+        // }
+    }
 }

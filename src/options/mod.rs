@@ -82,6 +82,8 @@ impl Options {
 impl Default for Options {
     fn default() -> Self {
         Options {
+            dir: Box::new("".to_string()),
+            value_dir: Box::new("".to_string()),
             sync_writes: false,
             table_loading_mode: FileLoadingMode::LoadToRADM,
             max_table_size: 64 << 20,
@@ -97,7 +99,6 @@ impl Default for Options {
             do_not_compact: false,
             max_batch_count: 0,
             max_batch_size: 0,
-            ..Default::default()
         }
     }
 }
