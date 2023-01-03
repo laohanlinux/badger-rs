@@ -1,34 +1,22 @@
 use crate::compaction::KeyRange;
-use crate::kv::WeakKV;
-use crate::table::iterator::{BlockIteratorItem, IteratorImpl, IteratorItem};
-use crate::table::table::{Table, TableCore};
+use crate::kv::{WeakKV, KV};
+use crate::table::iterator::{IteratorImpl, IteratorItem};
+use crate::table::table::Table;
 use crate::types::{XArc, XWeak};
 use crate::y::iterator::Xiterator;
-use crate::y::ValueStruct;
 use crate::Result;
 use core::slice::SlicePattern;
-use libc::truncate;
+
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::collections::HashSet;
-use std::mem;
-use std::ops::Deref;
-use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
-
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::Arc;
 
 pub(crate) type LevelHandler = XArc<LevelHandlerInner>;
 pub(crate) type WeakLevelHandler = XWeak<LevelHandlerInner>;
 
 impl LevelHandler {
-    pub(crate) fn close(&self) -> Result<()> {
-        self.x.close()
-    }
-
-    pub(crate) fn num_tables(&self) -> usize {
-        self.x.num_tables()
-    }
-
     // Returns true if the non-zero level may be compacted. *del_size* provides the size of the tables
     // which are currently being compacted so that we treat them as already having started being
     // compacted (because they have been, yet their size is already counted in get_total_size).
@@ -47,7 +35,7 @@ impl LevelHandler {
     // TODO add deference table deleted
     pub(crate) fn delete_tables(&self, to_del: Vec<u64>) {
         let to_del = to_del.iter().map(|id| *id).collect::<HashSet<_>>();
-        let mut tb_wl = self.x.tables_wl();
+        let mut tb_wl = self.tables_wl();
         tb_wl.retain_mut(|tb| {
             if to_del.contains(&tb.x.id()) {
                 tb.decr_ref();
@@ -56,31 +44,15 @@ impl LevelHandler {
             true
         });
     }
-}
 
-pub(crate) struct LevelHandlerInner {
-    // TODO this lock maybe global, not only for compacted
-    pub(crate) self_lock: Arc<RwLock<()>>,
-    // Guards tables, total_size.
-    // For level >= 1, *tables* are sorted by key ranges, which do not overlap.
-    // For level 0, *tables* are sorted by time.
-    // For level 0, *newest* table are at the back. Compact the oldest one first, which is at the front.
-    pub(crate) tables: Arc<RwLock<Vec<Table>>>,
-    pub(crate) total_size: AtomicU64,
-    // The following are initialized once and const.
-    pub(crate) level: AtomicI32,
-    str_level: Arc<String>,
-    pub(crate) max_total_size: AtomicU64,
-    kv: WeakKV,
-}
-
-impl LevelHandlerInner {
-    fn init_tables(&self, tables: Vec<Table>) {
+    pub(crate) fn init_tables(&self, tables: Vec<Table>) {
         let total_size = tables.iter().fold(0, |acc, table| acc + table.size());
-        self.total_size.store(total_size as u64, Ordering::Relaxed);
+        self.x
+            .total_size
+            .store(total_size as u64, Ordering::Relaxed);
         let mut tb_wl = self.tables_wl();
         (*tb_wl) = tables;
-        if self.level.load(Ordering::Relaxed) == 0 {
+        if self.x.level.load(Ordering::Relaxed) == 0 {
             // key range will overlap. Just sort by file_id in ascending order
             // because newer tables are at the end of level 0.
             tb_wl.sort_by_key(|tb| tb.x.id());
@@ -89,6 +61,32 @@ impl LevelHandlerInner {
             // TODO avoid copy
             tb_wl.sort_by_key(|tb| tb.smallest().to_vec());
         }
+    }
+
+    fn tables_wl(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<Table>> {
+        self.x.tables.write()
+    }
+    fn tables_rd(&self) -> RwLockReadGuard<'_, RawRwLock, Vec<Table>> {
+        self.x.tables.read()
+    }
+
+    // Returns the tables that intersect with key range. Returns a half-interval.
+    // This function should already have acquired a read lock, and this is so important the caller must
+    // pass an empty parameter declaring such.
+    // TODO Opz me
+    pub(crate) fn overlapping_tables(&self, key_range: &KeyRange) -> (usize, usize) {
+        let left = self
+            .tables_rd()
+            .binary_search_by(|tb| key_range.left.as_slice().cmp(tb.biggest()));
+
+        let right = self
+            .tables_rd()
+            .binary_search_by(|tb| key_range.right.as_slice().cmp(tb.smallest()));
+        (left.unwrap(), right.unwrap())
+    }
+
+    pub(crate) fn get_total_siz(&self) -> u64 {
+        self.x.total_size.load(Ordering::Relaxed)
     }
 
     // Replace tables[left:right] with new_tables, Note this EXCLUDES tables[right].
@@ -102,7 +100,8 @@ impl LevelHandlerInner {
         }
         // Increase total_size first.
         for tb in &new_tables {
-            self.total_size
+            self.x
+                .total_size
                 .fetch_add(tb.size() as u64, Ordering::Relaxed);
             // add table reference
             tb.incr_ref();
@@ -125,7 +124,8 @@ impl LevelHandlerInner {
                     // TODO it should be not a good idea decr reference here, slow lock
                     // decr table reference
                     tb.decr_ref();
-                    self.total_size
+                    self.x
+                        .total_size
                         .fetch_sub(tb.size() as u64, Ordering::Relaxed);
                     false
                 }
@@ -138,33 +138,34 @@ impl LevelHandlerInner {
     }
 
     // Return true if ok and no stalling.
-    fn try_add_level0_table(&self, t: Table) -> bool {
-        assert_eq!(self.level.load(Ordering::Relaxed), 0);
+    pub(crate) fn try_add_level0_table(&self, t: Table) -> bool {
+        assert_eq!(self.x.level.load(Ordering::Relaxed), 0);
         let tw = self.tables_wl();
-        if tw.len() >= self.kv.upgrade().unwrap().x.opt.num_level_zero_tables_stall {
+        if tw.len() >= self.kv().x.opt.num_level_zero_tables_stall {
             return false;
         }
         t.incr_ref();
-        self.total_size
+        self.x
+            .total_size
             .fetch_add(t.size() as u64, Ordering::Relaxed);
-        self.tables.write().push(t);
+        self.tables_wl().push(t);
         true
     }
 
-    fn num_tables(&self) -> usize {
+    pub(crate) fn num_tables(&self) -> usize {
         self.tables_rd().len()
     }
 
     // Must be call only once
-    fn close(&self) -> Result<()> {
+    pub(crate) fn close(&self) -> Result<()> {
         let tw = self.tables_wl();
         tw.iter().for_each(|tb| tb.decr_ref());
         Ok(())
     }
 
     // Acquires a read-lock to access s.tables. It return a list of table_handlers.
-    fn get_table_for_key(&self, key: &[u8]) -> Option<IteratorItem> {
-        return if self.level.load(Ordering::Relaxed) == 0 {
+    pub(crate) fn get_table_for_key(&self, key: &[u8]) -> Option<IteratorItem> {
+        return if self.x.level.load(Ordering::Relaxed) == 0 {
             let tw = self.tables_rd();
             for tb in tw.iter().rev() {
                 tb.incr_ref();
@@ -195,32 +196,25 @@ impl LevelHandlerInner {
         };
     }
 
-    // Returns the tables that intersect with key range. Returns a half-interval.
-    // This function should already have acquired a read lock, and this is so important the caller must
-    // pass an empty parameter declaring such.
-    // TODO Opz me
-    fn overlapping_tables(&self, key_range: &KeyRange) {
-        let left = self
-            .tables
-            .read()
-            .binary_search_by(|tb| key_range.left.as_slice().cmp(tb.biggest()));
-        let left_index = left.map_err(|n| n).unwrap();
-
-        let right = self
-            .tables
-            .read()
-            .binary_search_by(|tb| key_range.right.as_slice().cmp(tb.smallest()));
-        // let right_index = right
-    }
-
-    fn get_total_siz(&self) -> u64 {
-        self.total_size.load(Ordering::Relaxed)
-    }
-
-    fn tables_wl(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<Table>> {
-        self.tables.write()
-    }
-    fn tables_rd(&self) -> RwLockReadGuard<'_, RawRwLock, Vec<Table>> {
-        self.tables.read()
+    fn kv(&self) -> XArc<KV> {
+        self.x.kv.upgrade().unwrap()
     }
 }
+
+pub(crate) struct LevelHandlerInner {
+    // TODO this lock maybe global, not only for compacted
+    pub(crate) self_lock: Arc<RwLock<()>>,
+    // Guards tables, total_size.
+    // For level >= 1, *tables* are sorted by key ranges, which do not overlap.
+    // For level 0, *tables* are sorted by time.
+    // For level 0, *newest* table are at the back. Compact the oldest one first, which is at the front.
+    pub(crate) tables: Arc<RwLock<Vec<Table>>>,
+    pub(crate) total_size: AtomicU64,
+    // The following are initialized once and const.
+    pub(crate) level: AtomicI32,
+    str_level: Arc<String>,
+    pub(crate) max_total_size: AtomicU64,
+    kv: WeakKV,
+}
+
+impl LevelHandlerInner {}

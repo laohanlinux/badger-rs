@@ -1,10 +1,14 @@
 use parking_lot::*;
 use std::fmt::Debug;
-use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
+use std::ops::{Deref, RangeBounds};
+use std::sync::atomic::{AtomicI32, AtomicIsize, AtomicUsize, Ordering};
+use std::sync::{Arc, TryLockResult, Weak};
 use std::time::Duration;
+use std::{hint, thread};
 
 use async_channel::{bounded, Receiver, RecvError, SendError, Sender, TryRecvError, TrySendError};
+
+use range_lock::{VecRangeLock, VecRangeLockGuard};
 use tokio::time::sleep;
 
 #[derive(Clone)]
@@ -154,11 +158,52 @@ impl<T> XWeak<T> {
     }
 }
 
+#[derive(Clone)]
+pub struct XVec<T>(pub Arc<VecRangeLock<T>>);
+
+impl<T> XVec<T> {
+    pub fn new(v: Vec<T>) -> Self {
+        XVec(Arc::new(VecRangeLock::new(v)))
+    }
+
+    pub fn lock(&self, left: usize, right: usize) {
+        loop {
+            let range = left..right;
+            if self.0.try_lock(range).is_ok() {
+                break;
+            } else {
+                hint::spin_loop();
+            }
+        }
+    }
+
+    pub fn try_lock(&self, range: impl RangeBounds<usize>) -> TryLockResult<VecRangeLockGuard<T>> {
+        self.0.try_lock(range)
+    }
+
+    // fn to_owned(self) -> Vec<T> {
+    //     self.0.into_inner()
+    // }
+}
+
+impl<T> Deref for XVec<T> {
+    type Target = VecRangeLock<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+// impl<T> DerefMut for XVec<T> {
+//     fn deref_mut(&mut self) -> &mut Self::Target {
+//         &mut self.0
+//     }
+// }
+
 #[test]
 fn it_closer() {
-    let mut runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
-        let mut closer = Closer::new(1);
+        let closer = Closer::new(1);
         let c = closer.clone();
         tokio::spawn(async move {
             sleep(Duration::from_millis(20000)).await;
@@ -172,14 +217,11 @@ fn it_closer() {
 
 #[test]
 fn lck() {
-    // #![feature(slice_take)]
-    // use bytes::Buf;
-    //
-    // let x = Arc::new(RwLock::new(vec![0u8; 10]));
-    // let xr = x.read();
-    // let mut v1 = xr.take(1).into_inner();
-    // // let mut v2 = x.read().take(2).into_inner();
-    // x.write()[0] = 10;
-    //
-    // println!("{:?}", v1);
+    // let x: &'static [i32; 3] = Box::leak(Box::new([1, 2, 3]));
+    //  thread::spawn(move || dbg!(x));
+    //  thread::spawn(move || dbg!(x));
+    let v = Arc::new(RwLock::new(vec![Arc::new(AtomicI32::new(10))]));
+    let lck = v.write().to_vec();
+    lck[0].store(100, Ordering::Relaxed);
+    println!("{:?}", v.read());
 }

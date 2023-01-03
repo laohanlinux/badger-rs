@@ -97,19 +97,30 @@ impl LevelsController {
         Ok(true)
     }
 
-    fn fill_tables_l0<'a>(
-        &'a self,
-        cd: &'a CompactDef,
-    ) -> parking_lot::lock_api::RwLockReadGuard<'_, parking_lot::RawRwLock, Vec<Table>> {
+    fn fill_tables_l0(&self, cd: &mut CompactDef) -> bool {
         cd.lock_levels();
         let top = cd.this_level.to_ref().tables.read();
+        // TODO here maybe have some issue that i don't understand
+        let tables = top.to_vec();
+        cd.top.borrow_mut().extend(tables);
+        if cd.top.borrow().is_empty() {
+            cd.unlock_levels();
+            return false;
+        }
+        cd.this_range = INFO_RANGE;
+        let kr = KeyRange::get_range(cd.top.borrow().as_ref());
+        let (left, right) = cd.next_level.overlapping_tables(&kr);
+        let bot = cd.next_level.to_ref().tables.read();
+        let tables = bot.to_vec();
+        cd.bot.borrow_mut().extend(tables[left..right].to_vec());
+        if cd.bot.borrow().is_empty() {
+            cd.next_range = kr;
+        } else {
+            cd.next_range = KeyRange::get_range(cd.bot.borrow().as_ref());
+        }
+        // if !self.c_status.
         cd.unlock_levels();
-        top
-    }
-
-    fn f<'a>(&'a self, cd: &'a mut CompactDef<'a>) {
-        let c = self.fill_tables_l0(cd);
-        let _ = cd._c.replace(c);
+        true
     }
 
     // Determines which level to compact.
@@ -201,10 +212,10 @@ impl LevelsControllerInner {
 }
 
 pub(crate) struct CompactDef<'a> {
-    this_level: LevelHandler,
-    next_level: LevelHandler,
-    // top: RwLockReadGuard<'a, Vec<Table>>,
-    bot: RwLock<Vec<Table>>,
+    pub(crate) this_level: LevelHandler,
+    pub(crate) next_level: LevelHandler,
+    top: RefCell<Vec<Table>>,
+    bot: RefCell<Vec<Table>>,
     _c: RefCell<RwLockReadGuard<'a, Vec<Table>>>,
     this_range: KeyRange,
     next_range: KeyRange,
@@ -236,7 +247,6 @@ impl<'a> Default for CompactDef<'a> {
 
 impl<'a> CompactDef<'a> {
     fn lock_levels(&self) {
-        use parking_lot::lock_api::RawRwLock;
         unsafe {
             self.this_level.x.self_lock.raw().lock_shared();
             self.next_level.x.self_lock.raw().lock_shared();

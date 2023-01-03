@@ -1,7 +1,9 @@
-use crate::table::table::TableCore;
+use crate::levels::CompactDef;
+use crate::table::table::{Table, TableCore};
 use parking_lot::Mutex;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 #[derive(Clone)]
 pub(crate) struct CompactStatus {
@@ -23,6 +25,14 @@ impl CompactStatus {
     pub(crate) fn del_size(&self, level: usize) -> u64 {
         let compact_status = self.levels.lock();
         compact_status[level].del_size
+    }
+
+    // Check whether we can run this `CompactDef`. That it doesn't overlap with any
+    // other running compaction. If it can be run, it would store this run in the `compact_status` state.
+    pub(crate) fn compare_and_add(&self, cd: CompactDef) {
+        let compact_status = self.levels.lock();
+        let level = cd.this_level.x.level.load(Ordering::Relaxed);
+        // assert!(level < compact_status.levels.len())
     }
 }
 
@@ -68,7 +78,7 @@ pub(crate) const INFO_RANGE: KeyRange = KeyRange {
 };
 
 impl KeyRange {
-    fn get_range(tables: &Vec<TableCore>) -> KeyRange {
+    pub fn get_range(tables: &Vec<Table>) -> KeyRange {
         assert!(!tables.is_empty());
         let mut smallest = tables[0].smallest();
         let mut biggest = tables[0].biggest();
