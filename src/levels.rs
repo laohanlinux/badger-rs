@@ -211,18 +211,17 @@ impl LevelsControllerInner {
     }
 }
 
-pub(crate) struct CompactDef<'a> {
+pub(crate) struct CompactDef {
     pub(crate) this_level: LevelHandler,
     pub(crate) next_level: LevelHandler,
-    top: RefCell<Vec<Table>>,
-    bot: RefCell<Vec<Table>>,
-    _c: RefCell<RwLockReadGuard<'a, Vec<Table>>>,
-    this_range: KeyRange,
-    next_range: KeyRange,
-    this_size: AtomicU64,
+    pub(crate) top: RefCell<Vec<Table>>,
+    pub(crate) bot: RefCell<Vec<Table>>,
+    pub(crate) this_range: KeyRange,
+    pub(crate) next_range: KeyRange,
+    pub(crate) this_size: AtomicU64,
 }
 
-impl<'a> Default for CompactDef<'a> {
+impl Default for CompactDef {
     fn default() -> Self {
         // CompactDef {
         //     this_level: XWeak::new(),
@@ -245,7 +244,7 @@ impl<'a> Default for CompactDef<'a> {
     }
 }
 
-impl<'a> CompactDef<'a> {
+impl CompactDef {
     fn lock_levels(&self) {
         unsafe {
             self.this_level.x.self_lock.raw().lock_shared();

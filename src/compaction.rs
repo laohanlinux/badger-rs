@@ -1,13 +1,15 @@
 use crate::levels::CompactDef;
 use crate::table::table::{Table, TableCore};
-use parking_lot::Mutex;
+use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::{RawRwLock, RwLock};
 use std::fmt::{Display, Formatter};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use tokio::sync::RwLockMappedWriteGuard;
 
 #[derive(Clone)]
 pub(crate) struct CompactStatus {
-    levels: Arc<Mutex<Vec<LevelCompactStatus>>>,
+    levels: Arc<RwLock<Vec<LevelCompactStatus>>>,
 }
 
 impl CompactStatus {
@@ -15,24 +17,58 @@ impl CompactStatus {
         todo!()
     }
 
-    // fn compare_and_add(&self, cd:)
+    // Check whether we can run this *CompactDef*. That it doesn't overlap with any
+    // other running Compaction. If it can be run, it would store this run in the compactStatus state.
+    pub(crate) fn compare_and_add(&self, cd: &mut CompactDef) -> bool {
+        let level = cd.this_level.level();
+        assert!(
+            level < self.rl().len() - 1,
+            "Got level {}, max level {}",
+            level,
+            self.rl().len()
+        );
+
+        let mut this_level =
+            RwLockWriteGuard::map(self.levels.write(), |lc| lc.get_mut(level).unwrap());
+        let mut next_level =
+            RwLockWriteGuard::map(self.levels.write(), |lc| lc.get_mut(level + 1).unwrap());
+
+        if this_level.overlaps_with(&cd.this_range) {
+            return false;
+        }
+        if next_level.overlaps_with(&cd.next_range) {
+            return false;
+        }
+
+        // Check whether this level really needs compaction or not. Otherwise, we'll end up
+        // running parallel compactions for the same level.
+        // *NOTE*: We can directly call this_level.total_size, because we already have acquire a read lock
+        // over this and the next level.
+        if cd.this_level.get_total_size() - this_level.del_size < cd.this_level.get_max_total_size()
+        {
+            return false;
+        }
+        this_level.ranges.push(cd.this_range.clone());
+        next_level.ranges.push(cd.next_range.clone());
+        this_level.del_size += cd.this_size.load(Ordering::Relaxed);
+        true
+    }
 
     pub(crate) fn overlaps_with(&self, level: usize, this: &KeyRange) -> bool {
-        let compact_status = self.levels.lock();
+        let compact_status = self.wl();
         compact_status[level].overlaps_with(this)
     }
 
     pub(crate) fn del_size(&self, level: usize) -> u64 {
-        let compact_status = self.levels.lock();
+        let compact_status = self.rl();
         compact_status[level].del_size
     }
 
-    // Check whether we can run this `CompactDef`. That it doesn't overlap with any
-    // other running compaction. If it can be run, it would store this run in the `compact_status` state.
-    pub(crate) fn compare_and_add(&self, cd: CompactDef) {
-        let compact_status = self.levels.lock();
-        let level = cd.this_level.x.level.load(Ordering::Relaxed);
-        // assert!(level < compact_status.levels.len())
+    fn wl(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<LevelCompactStatus>> {
+        self.levels.write()
+    }
+    fn rl(&self) -> RwLockReadGuard<'_, RawRwLock, Vec<LevelCompactStatus>> {
+        self.levels.read()
     }
 }
 

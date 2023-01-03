@@ -196,6 +196,10 @@ impl LevelHandler {
         };
     }
 
+    pub(crate) fn level(&self) -> usize {
+        self.x.level.load(Ordering::Relaxed) as usize
+    }
+
     fn kv(&self) -> XArc<KV> {
         self.x.kv.upgrade().unwrap()
     }
