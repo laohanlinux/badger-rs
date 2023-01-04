@@ -1,10 +1,11 @@
 use parking_lot::*;
 use std::fmt::Debug;
+use std::mem::ManuallyDrop;
 use std::ops::{Deref, RangeBounds};
-use std::sync::atomic::{AtomicI32, AtomicIsize, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicIsize, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, TryLockResult, Weak};
 use std::time::Duration;
-use std::{hint, thread};
+use std::{hint, mem, thread};
 
 use async_channel::{bounded, Receiver, RecvError, SendError, Sender, TryRecvError, TrySendError};
 
@@ -58,10 +59,9 @@ impl<T> Channel<T> {
     }
 
     pub(crate) fn close(&self) {
-        if self.tx.is_none() {
-            return;
+        if let Some(tx) = &self.tx {
+            tx.close();
         }
-        self.tx.as_ref().unwrap().close();
     }
 }
 
@@ -76,6 +76,7 @@ pub(crate) struct Closer {
 
 impl Closer {
     pub(crate) fn new(initial: isize) -> Self {
+        assert!(initial >= 0, "Sanity check");
         let mut close = Closer {
             closed: Channel::new(1),
             wait: Arc::from(AtomicIsize::new(initial)),
@@ -83,33 +84,40 @@ impl Closer {
         close
     }
 
+    // Incr delta to the WaitGroup.
     pub(crate) fn add_running(&self, delta: isize) {
-        self.wait.fetch_add(delta, Ordering::Relaxed);
+        let old = self.wait.fetch_add(delta, Ordering::Relaxed);
+        assert!(old >= 0, "Sanity check");
     }
 
+    // Decr delta to the WaitGroup.
+    pub(crate) fn done(&self) {
+        let old = self.wait.fetch_sub(1, Ordering::Relaxed);
+        assert!(old >= 0, "Sanity check");
+    }
+
+    // Signals the `has_been_closed` signal.
     pub(crate) fn signal(&self) {
         self.closed.close();
     }
 
-    // todo
+    // Gets signaled when signal() is called.
     pub(crate) fn has_been_closed(&self) -> Channel<()> {
         self.closed.clone()
     }
 
-    pub(crate) fn done(&self) {
-        self.wait.fetch_sub(1, Ordering::Relaxed);
-    }
-
+    // Waiting until done
     pub(crate) async fn wait(&self) {
         loop {
             if self.wait.load(Ordering::Relaxed) <= 0 {
                 break;
             }
-            println!("wait");
+            hint::spin_loop();
             sleep(Duration::from_millis(10)).await;
         }
     }
 
+    // Send a close signal and waiting util done
     pub(crate) async fn signal_and_wait(&self) {
         self.signal();
         self.wait().await;
@@ -166,6 +174,11 @@ impl<T> XVec<T> {
         XVec(Arc::new(VecRangeLock::new(v)))
     }
 
+    pub fn lock_all(&self) {
+        let right = self.0.data_len();
+        self.lock(0, right)
+    }
+
     pub fn lock(&self, left: usize, right: usize) {
         loop {
             let range = left..right;
@@ -180,10 +193,6 @@ impl<T> XVec<T> {
     pub fn try_lock(&self, range: impl RangeBounds<usize>) -> TryLockResult<VecRangeLockGuard<T>> {
         self.0.try_lock(range)
     }
-
-    // fn to_owned(self) -> Vec<T> {
-    //     self.0.into_inner()
-    // }
 }
 
 impl<T> Deref for XVec<T> {
@@ -193,35 +202,21 @@ impl<T> Deref for XVec<T> {
     }
 }
 
-// impl<T> DerefMut for XVec<T> {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         &mut self.0
-//     }
-// }
-
 #[test]
 fn it_closer() {
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(async {
-        let closer = Closer::new(1);
-        let c = closer.clone();
-        tokio::spawn(async move {
-            sleep(Duration::from_millis(20000)).await;
-            println!("Hello Word1");
-            c.done();
-        });
-        closer.signal_and_wait().await;
-        println!("Hello Word");
-    });
+    // let runtime = tokio::runtime::Runtime::new().unwrap();
+    // runtime.block_on(async {
+    //     let closer = Closer::new(1);
+    //     let c = closer.clone();
+    //     tokio::spawn(async move {
+    //         sleep(Duration::from_millis(20000)).await;
+    //         println!("Hello Word1");
+    //         c.done();
+    //     });
+    //     closer.signal_and_wait().await;
+    //     println!("Hello Word");
+    // });
 }
 
 #[test]
-fn lck() {
-    // let x: &'static [i32; 3] = Box::leak(Box::new([1, 2, 3]));
-    //  thread::spawn(move || dbg!(x));
-    //  thread::spawn(move || dbg!(x));
-    let v = Arc::new(RwLock::new(vec![Arc::new(AtomicI32::new(10))]));
-    let lck = v.write().to_vec();
-    lck[0].store(100, Ordering::Relaxed);
-    println!("{:?}", v.read());
-}
+fn lck() {}

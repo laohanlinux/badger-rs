@@ -1,25 +1,21 @@
 use crate::levels::CompactDef;
-use crate::table::table::{Table, TableCore};
+use crate::table::table::Table;
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::fmt::{Display, Formatter};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::RwLockMappedWriteGuard;
 
-#[derive(Clone)]
+#[derive(Debug)]
 pub(crate) struct CompactStatus {
-    levels: Arc<RwLock<Vec<LevelCompactStatus>>>,
+    // every level has a *CompactionStatus* that includes multipart *KeyRange*
+    levels: RwLock<Vec<LevelCompactStatus>>,
 }
 
 impl CompactStatus {
-    fn to_log(&self) {
-        todo!()
-    }
-
     // Check whether we can run this *CompactDef*. That it doesn't overlap with any
     // other running Compaction. If it can be run, it would store this run in the compactStatus state.
-    pub(crate) fn compare_and_add(&self, cd: &mut CompactDef) -> bool {
+    pub(crate) fn compare_and_add(&self, cd: &CompactDef) -> bool {
         let level = cd.this_level.level();
         assert!(
             level < self.rl().len() - 1,
@@ -27,12 +23,9 @@ impl CompactStatus {
             level,
             self.rl().len()
         );
-
-        let mut this_level =
-            RwLockWriteGuard::map(self.levels.write(), |lc| lc.get_mut(level).unwrap());
-        let mut next_level =
-            RwLockWriteGuard::map(self.levels.write(), |lc| lc.get_mut(level + 1).unwrap());
-
+        let lc = self.levels.read();
+        let this_level = lc.get(level).unwrap();
+        let next_level = lc.get(level + 1).unwrap();
         if this_level.overlaps_with(&cd.this_range) {
             return false;
         }
@@ -44,13 +37,14 @@ impl CompactStatus {
         // running parallel compactions for the same level.
         // *NOTE*: We can directly call this_level.total_size, because we already have acquire a read lock
         // over this and the next level.
-        if cd.this_level.get_total_size() - this_level.del_size < cd.this_level.get_max_total_size()
+        if cd.this_level.get_total_size() - this_level.get_del_size()
+            < cd.this_level.get_max_total_size()
         {
             return false;
         }
-        this_level.ranges.push(cd.this_range.clone());
-        next_level.ranges.push(cd.next_range.clone());
-        this_level.del_size += cd.this_size.load(Ordering::Relaxed);
+        this_level.ranges.write().push(cd.this_range.clone());
+        next_level.ranges.write().push(cd.next_range.clone());
+        this_level.incr_del_size(cd.this_size.load(Ordering::Relaxed));
         true
     }
 
@@ -59,34 +53,51 @@ impl CompactStatus {
         compact_status[level].overlaps_with(this)
     }
 
+    // Return level's deleted data count
     pub(crate) fn del_size(&self, level: usize) -> u64 {
         let compact_status = self.rl();
-        compact_status[level].del_size
+        compact_status[level].get_del_size()
     }
 
+    // Return Level's compaction status with *WriteLockGuard*
     fn wl(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<LevelCompactStatus>> {
         self.levels.write()
     }
+
+    // Return Level's compaction status with *ReadLockGuard*
     fn rl(&self) -> RwLockReadGuard<'_, RawRwLock, Vec<LevelCompactStatus>> {
         self.levels.read()
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct LevelCompactStatus {
-    ranges: Vec<KeyRange>,
-    del_size: u64,
+    ranges: Arc<RwLock<Vec<KeyRange>>>,
+    del_size: Arc<AtomicU64>,
 }
 
 impl LevelCompactStatus {
     fn overlaps_with(&self, dst: &KeyRange) -> bool {
-        self.ranges.iter().any(|r| r.overlaps_with(dst))
+        self.ranges.write().iter().any(|r| r.overlaps_with(dst))
     }
 
     fn remove(&mut self, dst: &KeyRange) -> bool {
-        let len = self.ranges.len();
-        self.ranges.retain(|r| r.equals(dst));
-        len > self.ranges.len()
+        let mut rlock = self.ranges.write();
+        let len = rlock.len();
+        rlock.retain(|r| r.equals(dst));
+        len > rlock.len()
+    }
+
+    fn get_del_size(&self) -> u64 {
+        self.del_size.load(Ordering::Relaxed)
+    }
+
+    fn incr_del_size(&self, n: u64) {
+        self.del_size.fetch_add(n, Ordering::Relaxed);
+    }
+
+    fn decr_del_size(&self, n: u64) {
+        self.del_size.fetch_sub(n, Ordering::Relaxed);
     }
 }
 
@@ -114,7 +125,8 @@ pub(crate) const INFO_RANGE: KeyRange = KeyRange {
 };
 
 impl KeyRange {
-    pub fn get_range(tables: &Vec<Table>) -> KeyRange {
+    // Get the KeyRange of tables
+    pub(crate) fn get_range(tables: &Vec<Table>) -> KeyRange {
         assert!(!tables.is_empty());
         let mut smallest = tables[0].smallest();
         let mut biggest = tables[0].biggest();
@@ -134,11 +146,13 @@ impl KeyRange {
         }
     }
 
-    fn equals(&self, other: &KeyRange) -> bool {
+    // Left, right, inf all same, indicate equal
+    pub(crate) fn equals(&self, other: &KeyRange) -> bool {
         self.left == other.left && self.right == self.right && self.inf == self.inf
     }
 
-    fn overlaps_with(&self, other: &KeyRange) -> bool {
+    // Check for overlap, *Notice*, if a and b are all inf, indicate has overlap.
+    pub(crate) fn overlaps_with(&self, other: &KeyRange) -> bool {
         if self.inf || other.inf {
             return true;
         }
