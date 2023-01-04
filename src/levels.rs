@@ -118,7 +118,14 @@ impl LevelsController {
                 return Ok(false);
             }
         } else {
+            if !self.fill_tables(&mut cd) {
+                info!("failed to fill tables for level {}", l);
+                return Ok(false);
+            }
         }
+        info!("Running for level: {}", cd.this_level.level());
+        info!("{:?}", self.c_status);
+        info!("Compaction for level: {} DONE", cd.this_level.level());
         Ok(true)
     }
 
