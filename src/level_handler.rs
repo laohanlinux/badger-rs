@@ -16,6 +16,12 @@ use std::sync::Arc;
 pub(crate) type LevelHandler = XArc<LevelHandlerInner>;
 pub(crate) type WeakLevelHandler = XWeak<LevelHandlerInner>;
 
+impl From<LevelHandlerInner> for LevelHandler {
+    fn from(value: LevelHandlerInner) -> Self {
+        XArc::new(value)
+    }
+}
+
 impl LevelHandler {
     // Returns true if the non-zero level may be compacted. *del_size* provides the size of the tables
     // which are currently being compacted so that we treat them as already having started being
@@ -221,4 +227,16 @@ pub(crate) struct LevelHandlerInner {
     kv: WeakKV,
 }
 
-impl LevelHandlerInner {}
+impl LevelHandlerInner {
+    pub(crate) fn new(kv: WeakKV, level: usize) -> LevelHandlerInner {
+        LevelHandlerInner {
+            self_lock: Arc::new(Default::default()),
+            tables: Arc::new(Default::default()),
+            total_size: Default::default(),
+            level: Default::default(),
+            str_level: Arc::new(format!("L{}", level)),
+            max_total_size: Default::default(),
+            kv,
+        }
+    }
+}

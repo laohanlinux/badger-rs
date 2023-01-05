@@ -141,7 +141,7 @@ impl<T> Clone for XArc<T> {
 }
 
 impl<T> XArc<T> {
-    fn new(x: T) -> XArc<T> {
+    pub fn new(x: T) -> XArc<T> {
         XArc { x: Arc::new(x) }
     }
 

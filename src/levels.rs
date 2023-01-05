@@ -1,5 +1,5 @@
 use crate::compaction::{CompactStatus, KeyRange, INFO_RANGE};
-use crate::kv::{WeakKV, KV};
+use crate::kv::{ArcKV, WeakKV, KV};
 use crate::level_handler::{LevelHandler, LevelHandlerInner, WeakLevelHandler};
 use crate::manifest::Manifest;
 use crate::options::Options;
@@ -19,7 +19,7 @@ use std::ops::Deref;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::macros::support::thread_rng_n;
 
 #[derive(Clone)]
@@ -44,6 +44,20 @@ impl Default for LevelsController {
 }
 
 impl LevelsController {
+    fn new(kv: ArcKV, mf: &Manifest) -> Result<LevelsController> {
+        assert!(kv.x.opt.num_level_zero_tables_stall > kv.x.opt.num_level_zero_tables);
+        let mut levels = vec![];
+        for i in 0..kv.x.opt.max_levels {
+            let lh = LevelHandlerInner::new(WeakKV::from(&kv), i);
+            levels.push(LevelHandler::from(lh));
+            if i == 0 {
+            } else if i == 1 {
+            } else {
+            }
+        }
+        todo!()
+    }
+
     fn cleanup_levels(&self) -> Result<()> {
         for level in self.levels.iter() {
             level.close()?;
@@ -125,8 +139,20 @@ impl LevelsController {
         }
         info!("Running for level: {}", cd.this_level.level());
         info!("{:?}", self.c_status);
+
         info!("Compaction for level: {} DONE", cd.this_level.level());
         Ok(true)
+    }
+
+    fn run_compact_def(&self, l: usize, cd: &mut CompactDef) -> Result<()> {
+        let time_start = SystemTime::now();
+        let this_level = cd.this_level.clone();
+        let next_level = cd.next_level.clone();
+
+        if this_level.level() >= 1 && cd.bot.is_empty() {
+            assert_eq!(cd.top.len(), 1);
+        }
+        todo!()
     }
 
     fn fill_tables_l0(&self, cd: &mut CompactDef) -> bool {
@@ -134,21 +160,21 @@ impl LevelsController {
         let top = cd.this_level.to_ref().tables.read();
         // TODO here maybe have some issue that i don't understand
         let tables = top.to_vec();
-        cd.top.borrow_mut().extend(tables);
-        if cd.top.borrow().is_empty() {
+        cd.top.extend(tables);
+        if cd.top.is_empty() {
             cd.unlock_levels();
             return false;
         }
         cd.this_range = INFO_RANGE;
-        let kr = KeyRange::get_range(cd.top.borrow().as_ref());
+        let kr = KeyRange::get_range(cd.top.as_ref());
         let (left, right) = cd.next_level.overlapping_tables(&kr);
         let bot = cd.next_level.to_ref().tables.read();
         let tables = bot.to_vec();
-        cd.bot.borrow_mut().extend(tables[left..right].to_vec());
-        if cd.bot.borrow().is_empty() {
+        cd.bot.extend(tables[left..right].to_vec());
+        if cd.bot.is_empty() {
             cd.next_range = kr;
         } else {
-            cd.next_range = KeyRange::get_range(cd.bot.borrow().as_ref());
+            cd.next_range = KeyRange::get_range(cd.bot.as_ref());
         }
         // if !self.c_status.
         cd.unlock_levels();
@@ -179,16 +205,16 @@ impl LevelsController {
                 continue;
             }
 
-            cd.top.borrow_mut().clear();
-            cd.top.borrow_mut().push(t);
+            cd.top.clear();
+            cd.top.push(t);
             let (left, right) = cd.next_level.overlapping_tables(&cd.this_range);
             let bot = cd.next_level.to_ref().tables.read();
             let tables = bot.to_vec();
-            cd.bot.borrow_mut().clear();
-            cd.bot.borrow_mut().extend(tables[left..right].to_vec());
+            cd.bot.clear();
+            cd.bot.extend(tables[left..right].to_vec());
 
-            if cd.bot.borrow().is_empty() {
-                cd.bot.borrow_mut().clear();
+            if cd.bot.is_empty() {
+                cd.bot.clear();
                 cd.next_range = cd.this_range.clone();
                 if !self.c_status.compare_and_add(cd) {
                     continue;
@@ -197,7 +223,7 @@ impl LevelsController {
                 return true;
             }
 
-            cd.next_range = KeyRange::get_range(cd.bot.borrow().as_ref());
+            cd.next_range = KeyRange::get_range(cd.bot.as_ref());
 
             if self
                 .c_status
@@ -217,7 +243,7 @@ impl LevelsController {
     }
 
     // Determines which level to compact.
-    // Base on: https://github.com/facebook/rocksdb/wiki/Leveled-Compaction.
+    // Base on https://github.com/facebook/rocksdb/wiki/Leveled-Compaction.
     fn pick_compact_levels(&self) -> Vec<CompactionPriority> {
         // This function must use identical criteria for guaranteeing compaction's progress that
         // add_level0_table use.
@@ -270,8 +296,8 @@ struct CompactionPriority {
 pub(crate) struct CompactDef {
     pub(crate) this_level: LevelHandler,
     pub(crate) next_level: LevelHandler,
-    pub(crate) top: RefCell<Vec<Table>>,
-    pub(crate) bot: RefCell<Vec<Table>>,
+    pub(crate) top: Vec<Table>,
+    pub(crate) bot: Vec<Table>,
     pub(crate) this_range: KeyRange,
     pub(crate) next_range: KeyRange,
     pub(crate) this_size: AtomicU64,
