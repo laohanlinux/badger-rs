@@ -5,6 +5,7 @@ use crate::table::iterator::IteratorImpl;
 use crate::types::{Channel, Closer, XArc, XWeak};
 use crate::value_log::{Request, ValueLogCore, ValuePointer};
 use crate::y::{Encode, Result, ValueStruct};
+use crate::Error::Unexpected;
 use crate::{Error, Node, SkipList};
 use fs2::FileExt;
 use log::info;
@@ -51,19 +52,8 @@ pub struct KV {
     last_used_cas_counter: AtomicU64,
 }
 
-impl Drop for KV {
-    fn drop(&mut self) {
-        self.dir_lock_guard.unlock().unwrap();
-        self.value_dir_guard.unlock().unwrap();
-        self.closers.compactors.signal_and_wait();
-        self.closers.mem_table.signal_and_wait();
-        self.closers.writes.signal_and_wait();
-        self.closers.update_size.signal_and_wait();
-    }
-}
-
 impl KV {
-    pub fn new(opt: Options) -> Result<KV> {
+    pub fn new(opt: Options) -> Result<XArc<KV>> {
         let mut _opt = opt.clone();
         _opt.max_batch_size = (15 * opt.max_table_size) / 100;
         _opt.max_batch_count = opt.max_batch_size / Node::size() as u64;
@@ -94,7 +84,7 @@ impl KV {
             value_gc: Closer::new(0),
         };
         // go out.updateSize(out.closers.updateSize)
-        let mut mt = SkipList::new(arena_size(&opt));
+        let mt = SkipList::new(arena_size(&opt));
         let mut out = KV {
             opt: opt.clone(),
             vlog: None,
@@ -110,16 +100,32 @@ impl KV {
         };
         let mut vlog = ValueLogCore::default();
         vlog.open(&out, opt)?;
+
         out.vlog = Some(vlog);
-        Ok(out)
+        Ok(XArc::new(out))
     }
 
-    pub fn must_vlog(&self) -> &ValueLogCore {
-        self.vlog.as_ref().unwrap()
-    }
+    // pub fn must_vlog(&self) -> &ValueLogCore {
+    //     self.vlog.as_ref().unwrap()
+    // }
 
-    pub fn must_mut_vlog(&mut self) -> &mut ValueLogCore {
-        self.vlog.as_mut().unwrap()
+    // pub fn must_mut_vlog(&mut self) -> &mut ValueLogCore {
+    //     self.vlog.as_mut().unwrap()
+    // }
+
+    /// close kv, should be call only once
+    pub async fn close(&self) -> Result<()> {
+        self.dir_lock_guard
+            .unlock()
+            .map_err(|err| Unexpected(err.to_string()))?;
+        self.value_dir_guard
+            .unlock()
+            .map_err(|err| Unexpected(err.to_string()))?;
+        self.closers.compactors.signal_and_wait().await;
+        self.closers.mem_table.signal_and_wait().await;
+        self.closers.writes.signal_and_wait().await;
+        self.closers.update_size.signal_and_wait().await;
+        Ok(())
     }
 }
 

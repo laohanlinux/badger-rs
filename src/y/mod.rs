@@ -121,6 +121,7 @@ impl From<String> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[inline]
 pub fn is_eof<T>(ret: &io::Result<T>) -> bool {
     if ret.is_ok() {
         return false;
@@ -131,6 +132,7 @@ pub fn is_eof<T>(ret: &io::Result<T>) -> bool {
     }
 }
 
+#[inline]
 pub fn is_existing<T>(ret: &io::Result<T>) -> bool {
     if ret.is_ok() {
         return false;
