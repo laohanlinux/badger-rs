@@ -5,13 +5,13 @@ use crate::table::table::Table;
 use crate::types::{XArc, XWeak};
 use crate::y::iterator::Xiterator;
 use crate::Result;
-use core::slice::SlicePattern;
 
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
+
 
 pub(crate) type LevelHandler = XArc<LevelHandlerInner>;
 pub(crate) type WeakLevelHandler = XWeak<LevelHandlerInner>;
@@ -38,12 +38,12 @@ impl LevelHandler {
         self.x.max_total_size.load(Ordering::Relaxed)
     }
 
-    // TODO add deference table deleted
     pub(crate) fn delete_tables(&self, to_del: Vec<u64>) {
         let to_del = to_del.iter().map(|id| *id).collect::<HashSet<_>>();
         let mut tb_wl = self.tables_wl();
         tb_wl.retain_mut(|tb| {
             if to_del.contains(&tb.x.id()) {
+                // delete table reference
                 tb.decr_ref();
                 return false;
             }
@@ -51,6 +51,7 @@ impl LevelHandler {
         });
     }
 
+    /// init with tables
     pub(crate) fn init_tables(&self, tables: Vec<Table>) {
         let total_size = tables.iter().fold(0, |acc, table| acc + table.size());
         self.x
@@ -69,9 +70,12 @@ impl LevelHandler {
         }
     }
 
+    // Get table write lock guards.
     fn tables_wl(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<Table>> {
         self.x.tables.write()
     }
+
+    // Get table read lock guards
     fn tables_rd(&self) -> RwLockReadGuard<'_, RawRwLock, Vec<Table>> {
         self.x.tables.read()
     }

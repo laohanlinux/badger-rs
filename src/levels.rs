@@ -293,6 +293,7 @@ struct CompactionPriority {
     score: f64,
 }
 
+// Compact deference
 pub(crate) struct CompactDef {
     pub(crate) this_level: LevelHandler,
     pub(crate) next_level: LevelHandler,
