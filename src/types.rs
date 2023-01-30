@@ -12,6 +12,7 @@ use async_channel::{bounded, Receiver, RecvError, SendError, Sender, TryRecvErro
 use range_lock::{VecRangeLock, VecRangeLockGuard};
 use tokio::time::sleep;
 
+// Channel like to go's channel
 #[derive(Clone)]
 pub(crate) struct Channel<T> {
     rx: Option<Receiver<T>>,
@@ -19,6 +20,7 @@ pub(crate) struct Channel<T> {
 }
 
 impl<T> Channel<T> {
+    // create a *Channel* with n cap
     pub(crate) fn new(n: usize) -> Self {
         let (tx, rx) = bounded(n);
         Channel {
@@ -26,6 +28,8 @@ impl<T> Channel<T> {
             tx: Some(tx),
         }
     }
+
+    // try to send message T without blocking
     pub(crate) fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
         if let Some(tx) = &self.tx {
             return tx.try_send(msg);
@@ -33,6 +37,7 @@ impl<T> Channel<T> {
         Ok(())
     }
 
+    // try to receive a message without blocking
     pub(crate) fn try_recv(&self) -> Result<T, TryRecvError> {
         if let Some(rx) = &self.rx {
             return rx.try_recv();
@@ -40,24 +45,29 @@ impl<T> Channel<T> {
         Err(TryRecvError::Empty)
     }
 
+    // async receive a message with blocking
     pub(crate) async fn recv(&self) -> Result<T, async_channel::RecvError> {
         let rx = self.rx.as_ref().unwrap();
         rx.recv().await
     }
 
+    // async send a message with blocking
     pub(crate) async fn send(&self, msg: T) -> Result<(), SendError<T>> {
         let tx = self.tx.as_ref().unwrap();
         tx.send(msg).await
     }
 
+    // returns Sender
     pub(crate) fn tx(&self) -> Sender<T> {
         self.tx.as_ref().unwrap().clone()
     }
 
+    // consume tx and return it if exist
     pub(crate) fn take_tx(&mut self) -> Option<Sender<T>> {
         self.tx.take()
     }
 
+    // close *Channel*, Sender will be consumed
     pub(crate) fn close(&self) {
         if let Some(tx) = &self.tx {
             tx.close();
@@ -75,6 +85,7 @@ pub(crate) struct Closer {
 }
 
 impl Closer {
+    // create a Closer with *initial* cap Workers
     pub(crate) fn new(initial: isize) -> Self {
         assert!(initial >= 0, "Sanity check");
         let mut close = Closer {
@@ -204,18 +215,18 @@ impl<T> Deref for XVec<T> {
 
 #[test]
 fn it_closer() {
-    // let runtime = tokio::runtime::Runtime::new().unwrap();
-    // runtime.block_on(async {
-    //     let closer = Closer::new(1);
-    //     let c = closer.clone();
-    //     tokio::spawn(async move {
-    //         sleep(Duration::from_millis(20000)).await;
-    //         println!("Hello Word1");
-    //         c.done();
-    //     });
-    //     closer.signal_and_wait().await;
-    //     println!("Hello Word");
-    // });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let closer = Closer::new(1);
+        let c = closer.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(200)).await;
+            println!("Hello Word1");
+            c.done();
+        });
+        closer.signal_and_wait().await;
+        println!("Hello Word");
+    });
 }
 
 #[test]

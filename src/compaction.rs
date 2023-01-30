@@ -101,6 +101,7 @@ impl LevelCompactStatus {
     }
 }
 
+// [left, right], Special inf is range all if it be set `true`
 #[derive(Clone, Debug)]
 pub(crate) struct KeyRange {
     pub(crate) left: Vec<u8>, // TODO zero Copy
@@ -118,6 +119,7 @@ impl Display for KeyRange {
     }
 }
 
+// Including all keys
 pub(crate) const INFO_RANGE: KeyRange = KeyRange {
     left: vec![],
     right: vec![],
