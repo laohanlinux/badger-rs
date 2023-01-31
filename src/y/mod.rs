@@ -2,7 +2,7 @@ mod codec;
 pub(crate) mod iterator;
 mod metrics;
 
-pub use codec::{Decode, Encode};
+pub use codec::{Decode, Encode, AsyncEncDec};
 pub use iterator::ValueStruct;
 use libc::{O_DSYNC, O_WRONLY};
 use memmap::MmapMut;

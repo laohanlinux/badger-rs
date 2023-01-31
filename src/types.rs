@@ -1,7 +1,7 @@
 use parking_lot::*;
 use std::fmt::Debug;
 use std::mem::ManuallyDrop;
-use std::ops::{Deref, RangeBounds};
+use std::ops::{Deref, DerefMut, RangeBounds};
 use std::sync::atomic::{AtomicI32, AtomicIsize, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, TryLockResult, Weak};
 use std::time::Duration;
@@ -84,6 +84,12 @@ pub(crate) struct Closer {
     wait: Arc<AtomicIsize>,
 }
 
+impl Drop for Closer {
+    fn drop(&mut self) {
+        assert!(self.wait.load(Ordering::Relaxed) >= 0, "Sanity check!");
+    }
+}
+
 impl Closer {
     // create a Closer with *initial* cap Workers
     pub(crate) fn new(initial: isize) -> Self {
@@ -101,7 +107,13 @@ impl Closer {
         assert!(old >= 0, "Sanity check");
     }
 
-    // Decr delta to the WaitGroup.
+    // Spawn a worker
+    pub(crate) fn spawn(&self) -> Self {
+        self.add_running(1);
+        self.clone()
+    }
+
+    // Decr delta to the WaitGroup(Note: must be call for every worker avoid leak).
     pub(crate) fn done(&self) {
         let old = self.wait.fetch_sub(1, Ordering::Relaxed);
         assert!(old >= 0, "Sanity check");
@@ -143,6 +155,14 @@ pub struct XWeak<T> {
 #[derive(Debug)]
 pub struct XArc<T> {
     pub(crate) x: Arc<T>,
+}
+
+impl<T> Deref for XArc<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.x.deref()
+    }
 }
 
 impl<T> Clone for XArc<T> {
@@ -217,15 +237,19 @@ impl<T> Deref for XVec<T> {
 fn it_closer() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
-        let closer = Closer::new(1);
-        let c = closer.clone();
-        tokio::spawn(async move {
-            sleep(Duration::from_millis(200)).await;
-            println!("Hello Word1");
-            c.done();
-        });
+        let closer = Closer::new(0);
+        let count = Arc::new(AtomicUsize::new(100));
+        for i in 0..count.load(Ordering::Relaxed) {
+            let c = closer.spawn();
+            let n = count.clone();
+            tokio::spawn(async move {
+                sleep(Duration::from_millis(200)).await;
+                n.fetch_add(1, Ordering::Relaxed);
+                c.done();
+            });
+        }
         closer.signal_and_wait().await;
-        println!("Hello Word");
+        assert_eq!(count.load(Ordering::Relaxed), 200);
     });
 }
 

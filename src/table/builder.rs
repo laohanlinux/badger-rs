@@ -1,5 +1,6 @@
-use crate::y::{hash, is_eof, ValueStruct};
+use crate::y::{hash, is_eof, AsyncEncDec, Decode, Encode, ValueStruct};
 use crate::Error;
+use async_trait::async_trait;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use bytes::{Buf, BufMut, BytesMut};
 use growable_bloom_filter::GrowableBloom;
@@ -11,6 +12,7 @@ use std::fmt;
 use std::fmt::Formatter;
 use std::hash::Hasher;
 use std::io::{self, Cursor, Read, Write};
+use std::str::pattern::Searcher;
 
 #[derive(Clone, Default)]
 pub(crate) struct Header {
@@ -24,7 +26,7 @@ impl fmt::Display for Header {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "plen:{}, klen:{}, vlen:{}, prev:{}",
+            "p_len:{}, k_len:{}, v_len:{}, prev:{}",
             self.p_len, self.k_len, self.v_len, self.prev
         )
     }
@@ -34,49 +36,65 @@ impl Header {
     pub(crate) const fn size() -> usize {
         10
     }
-    fn decode(buffer: &[u8]) -> Self {
-        let mut header = Header::default();
-        let mut cursor = Cursor::new(buffer);
-        header.p_len = cursor.read_u16::<BigEndian>().unwrap();
-        header.k_len = cursor.read_u16::<BigEndian>().unwrap();
-        header.v_len = cursor.read_u16::<BigEndian>().unwrap();
-        header.prev = cursor.read_u32::<BigEndian>().unwrap();
-        header
-    }
-
-    fn encode(&self, buffer: &mut [u8]) {
-        let mut cursor = Cursor::new(buffer);
-        cursor.write_u16::<BigEndian>(self.p_len).unwrap();
-        cursor.write_u16::<BigEndian>(self.k_len).unwrap();
-        cursor.write_u16::<BigEndian>(self.v_len).unwrap();
-        cursor.write_u32::<BigEndian>(self.prev).unwrap();
-    }
 
     pub(crate) fn is_dummy(&self) -> bool {
         self.k_len == 0 && self.p_len == 0
     }
 }
 
+impl Decode for Header {
+    fn dec(&mut self, rd: &mut dyn Read) -> crate::Result<()> {
+        self.p_len = rd.read_u16::<BigEndian>()?;
+        self.k_len = rd.read_u16::<BigEndian>()?;
+        self.v_len = rd.read_u16::<BigEndian>()?;
+        self.prev = rd.read_u32::<BigEndian>()?;
+        Ok(())
+    }
+}
+
+impl Encode for Header {
+    fn enc(&self, wt: &mut dyn Write) -> crate::Result<usize> {
+        wt.write_u16::<BigEndian>(self.p_len)?;
+        wt.write_u16::<BigEndian>(self.k_len)?;
+        wt.write_u16::<BigEndian>(self.v_len)?;
+        wt.write_u32::<BigEndian>(self.prev)?;
+        Ok(Header::size())
+    }
+}
+
+// #[async_trait]
+// impl<R, W> AsyncEncDec<R, W> for Header
+// where
+//     R: AsyncRead + Unpin + Sync + Send,
+//     W: AsyncWrite + Unpin + Sync + Send,
+// {
+//     async fn enc(&self, wt: &mut W) -> crate::Result<usize> {
+//         wt.write_u16(self.p_len).await?;
+//         wt.write_u16(self.k_len).await?;
+//         wt.write_u16(self.v_len).await?;
+//         wt.write_u32(self.prev).await?;
+//         wt.flush().await?;
+//         Ok(Header::size())
+//     }
+//
+//     async fn dec(&mut self, rd: &R) -> crate::Result<()> {
+//         todo!()
+//     }
+// }
+
 impl From<&[u8]> for Header {
     fn from(buffer: &[u8]) -> Self {
         let mut header = Header::default();
-        let mut cursor = Cursor::new(buffer);
-        header.p_len = cursor.read_u16::<BigEndian>().unwrap();
-        header.k_len = cursor.read_u16::<BigEndian>().unwrap();
-        header.v_len = cursor.read_u16::<BigEndian>().unwrap();
-        header.prev = cursor.read_u32::<BigEndian>().unwrap();
+        Decode::dec(&mut header, &mut Cursor::new(buffer)).unwrap();
         header
     }
 }
 
 impl Into<Vec<u8>> for Header {
     fn into(self) -> Vec<u8> {
-        let mut cursor = Cursor::new(vec![0u8; Header::size()]);
-        cursor.write_u16::<BigEndian>(self.p_len).unwrap();
-        cursor.write_u16::<BigEndian>(self.k_len).unwrap();
-        cursor.write_u16::<BigEndian>(self.v_len).unwrap();
-        cursor.write_u32::<BigEndian>(self.prev).unwrap();
-        cursor.into_inner()
+        let mut wt = Cursor::new(vec![0u8; Header::size()]);
+        Encode::enc(&self, &mut wt).unwrap();
+        wt.into_inner()
     }
 }
 
@@ -94,7 +112,6 @@ pub struct Builder {
 
 impl Builder {
     const RESTART_INTERVAL: usize = 100;
-    fn close(&self) {}
 
     fn empty(&self) -> bool {
         self.buf.is_empty()
@@ -189,10 +206,10 @@ impl Builder {
 
     // ReachedCapacity returns true if we... roughly (?) reached capacity?
     fn reached_capacity(&self, cap: u64) -> bool {
-        let estimateSz =
+        let estimate_sz =
             self.buf.get_ref().len() + 8 /* empty header */ + 4*self.restarts.len() + 8;
         // 8 = end of buf offset + len(restarts).
-        estimateSz as u64 > cap
+        estimate_sz as u64 > cap
     }
 
     // blockIndex generates the block index for the table.

@@ -12,9 +12,8 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 
-
 pub(crate) type LevelHandler = XArc<LevelHandlerInner>;
-pub(crate) type WeakLevelHandler = XWeak<LevelHandlerInner>;
+// pub(crate) type WeakLevelHandler = XWeak<LevelHandlerInner>;
 
 impl From<LevelHandlerInner> for LevelHandler {
     fn from(value: LevelHandlerInner) -> Self {
@@ -38,6 +37,7 @@ impl LevelHandler {
         self.x.max_total_size.load(Ordering::Relaxed)
     }
 
+    // delete current level's tables of to_del
     pub(crate) fn delete_tables(&self, to_del: Vec<u64>) {
         let to_del = to_del.iter().map(|id| *id).collect::<HashSet<_>>();
         let mut tb_wl = self.tables_wl();
@@ -51,7 +51,7 @@ impl LevelHandler {
         });
     }
 
-    /// init with tables
+    // init with tables
     pub(crate) fn init_tables(&self, tables: Vec<Table>) {
         let total_size = tables.iter().fold(0, |acc, table| acc + table.size());
         self.x
@@ -65,7 +65,6 @@ impl LevelHandler {
             tb_wl.sort_by_key(|tb| tb.x.id());
         } else {
             // Sort tables by keys.
-            // TODO avoid copy
             tb_wl.sort_by_key(|tb| tb.smallest().to_vec());
         }
     }
@@ -80,10 +79,9 @@ impl LevelHandler {
         self.x.tables.read()
     }
 
-    // Returns the tables that intersect with key range. Returns a half-interval.
+    // Returns the tables that intersect with key range. Returns a half-interval [left, right].
     // This function should already have acquired a read lock, and this is so important the caller must
     // pass an empty parameter declaring such.
-    // TODO Opz me
     pub(crate) fn overlapping_tables(&self, key_range: &KeyRange) -> (usize, usize) {
         let left = self
             .tables_rd()
@@ -108,6 +106,7 @@ impl LevelHandler {
         if new_tables.is_empty() {
             return Ok(());
         }
+        // TODO Add lock (think of level's sharing lock)
         // Increase total_size first.
         for tb in &new_tables {
             self.x
@@ -173,7 +172,7 @@ impl LevelHandler {
         Ok(())
     }
 
-    // Acquires a read-lock to access s.tables. It return a list of table_handlers.
+    // Acquires a read-lock to access s.tables. It returns a list of table_handlers.
     pub(crate) fn get_table_for_key(&self, key: &[u8]) -> Option<IteratorItem> {
         return if self.x.level.load(Ordering::Relaxed) == 0 {
             let tw = self.tables_rd();
@@ -184,6 +183,8 @@ impl LevelHandler {
                 tb.decr_ref();
                 if item.is_none() {
                     // todo add metrics
+                } else {
+                    return item;
                 }
             }
             None
@@ -206,6 +207,7 @@ impl LevelHandler {
         };
     }
 
+    // returns current level
     pub(crate) fn level(&self) -> usize {
         self.x.level.load(Ordering::Relaxed) as usize
     }
@@ -222,6 +224,7 @@ pub(crate) struct LevelHandlerInner {
     // For level >= 1, *tables* are sorted by key ranges, which do not overlap.
     // For level 0, *tables* are sorted by time.
     // For level 0, *newest* table are at the back. Compact the oldest one first, which is at the front.
+    // TODO tables and total_size maybe should be lock with same lock.
     pub(crate) tables: Arc<RwLock<Vec<Table>>>,
     pub(crate) total_size: AtomicU64,
     // The following are initialized once and const.

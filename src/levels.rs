@@ -1,6 +1,6 @@
 use crate::compaction::{CompactStatus, KeyRange, INFO_RANGE};
 use crate::kv::{ArcKV, WeakKV, KV};
-use crate::level_handler::{LevelHandler, LevelHandlerInner, WeakLevelHandler};
+use crate::level_handler::{LevelHandler, LevelHandlerInner};
 use crate::manifest::Manifest;
 use crate::options::Options;
 use crate::table::table::{new_file_name, Table, TableCore};
@@ -58,6 +58,7 @@ impl LevelsController {
         todo!()
     }
 
+    // cleanup all level's handler
     fn cleanup_levels(&self) -> Result<()> {
         for level in self.levels.iter() {
             level.close()?;
@@ -68,8 +69,7 @@ impl LevelsController {
     // start compact
     fn start_compact(&self, lc: Closer) {
         for i in 0..self.must_kv().opt.num_compactors {
-            lc.add_running(1);
-            let lc = lc.clone();
+            let lc = lc.spawn();
             let _self = self.clone();
             tokio::spawn(async move {
                 _self.run_worker(lc).await;
@@ -77,15 +77,18 @@ impl LevelsController {
         }
     }
 
+    // compact worker
     async fn run_worker(&self, lc: Closer) {
         if self.must_kv().opt.do_not_compact {
             lc.done();
             return;
         }
+        // random sleep avoid all worker compact at same time
         {
             let duration = thread_rng_n(1000);
             tokio::time::sleep(Duration::from_millis(duration as u64)).await;
         }
+        // 1 seconds to check compact
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         loop {
             // why interval can life long
@@ -99,7 +102,7 @@ impl LevelsController {
                                 info!("succeed to compacted")
                             },
                             Ok(false) => {
-                                info!("failed to do compacted");
+                                info!("skip to do compacted");
                                 break;
                             },
                             Err(err) => { // TODO handle error
@@ -109,7 +112,7 @@ impl LevelsController {
                     }
                 },
                 _ =  done.recv() => {
-                    info!("closing compact job");
+                    info!("receive a closer signal for closing compact job");
                     return;
                 }
             }

@@ -307,10 +307,7 @@ impl TableCore {
 
 impl Drop for TableCore {
     fn drop(&mut self) {
-        dbg!(
-            "table reference count: {}",
-            self._ref.load(Ordering::Relaxed)
-        );
+        dbg!(self._ref.load(Ordering::Relaxed));
         // We can safely delete this file, because for all the current files, we always have
         // at least one reference pointing to them.
         #[cfg(any(target_os = "macos", target_os = "linux"))]
