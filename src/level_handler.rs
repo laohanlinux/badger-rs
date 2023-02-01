@@ -2,12 +2,13 @@ use crate::compaction::KeyRange;
 use crate::kv::{WeakKV, KV};
 use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
 use crate::table::table::{Table, TableCore};
-use crate::types::{XArc, XWeak};
-use crate::y::iterator::Xiterator;
+use crate::types::{Channel, XArc, XWeak};
+use crate::y::iterator::{MergeIterOverBuilder, Xiterator};
 use crate::Result;
 use core::slice::SlicePattern;
 
 use crate::levels::CompactDef;
+use drop_cell::defer;
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::collections::HashSet;
@@ -219,12 +220,16 @@ impl LevelHandler {
     }
 
     // Merge top tables and bot tables to from a List of new tables.
-    pub(crate) fn compact_build_tables(&self, l: usize, cd: &CompactDef) -> Result<Table> {
+    pub(crate) async fn compact_build_tables(
+        &self,
+        l: usize,
+        cd: &'static CompactDef,
+    ) -> Result<Table> {
         let top_tables = &cd.top;
         let bot_tables = &cd.bot;
 
         // Create iterators across all the tables involved first.
-        let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        let mut itr: Vec<&dyn Xiterator<Output = IteratorItem>> = vec![];
         if l == 0 {
             Self::append_iterators_reversed(&mut itr, top_tables, false);
         } else {
@@ -234,13 +239,26 @@ impl LevelHandler {
 
         // Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
         // TODO
-        // itr.push(ConcatIterator::new(bot_tables, false));
+        let bot_tables = bot_tables.iter().map(|t| t.to_ref()).collect::<Vec<_>>();
+        let citr = ConcatIterator::new(bot_tables, false);
+        itr.push(&citr);
+        let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
+        // Important to close the iterator to do ref counting.
+        defer! {mitr.close()};
+        mitr.rewind();
+
+        // Start generating new tables.
+        struct NewTableResult {
+            table: Table,
+            err: Result<()>,
+        }
+        let result_ch: Channel<NewTableResult> = Channel::new(1);
         todo!()
     }
 
     // TODO
     fn append_iterators_reversed(
-        out: &mut Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+        out: &mut Vec<&dyn Xiterator<Output = IteratorItem>>,
         th: &Vec<Table>,
         reversed: bool,
     ) {

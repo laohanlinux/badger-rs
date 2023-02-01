@@ -35,12 +35,16 @@ pub(crate) struct KeyOffset {
     len: usize,
 }
 
-impl fmt::Display for KeyOffset {
+impl Display for KeyOffset {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let key = String::from_utf8(self.key.clone())
             .map_err(|_| "...")
             .unwrap();
-        write!(f, "key: {}  | offset:{:10}| len:{}", key, self.offset, self.len)
+        write!(
+            f,
+            "key: {}  | offset:{:10}| len:{}",
+            key, self.offset, self.len
+        )
     }
 }
 

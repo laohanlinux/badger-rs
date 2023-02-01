@@ -497,6 +497,21 @@ mod utils {
         }
     }
 
+    #[test]
+    fn t_table() {
+        let f1 = TableBuilder::new()
+            .mode(FileLoadingMode::MemoryMap)
+            .key_value(vec![
+                (b"k1".to_vec(), b"a1".to_vec()),
+                (b"k2".to_vec(), b"a2".to_vec()),
+            ])
+            .build();
+        let x_table = Table::new(f1);
+        let core = x_table.to_ref();
+        let cores = vec![core];
+        let itr = ConcatIterator::new(cores, false);
+    }
+
     fn build_table(mut key_value: Vec<(Vec<u8>, Vec<u8>)>) -> (File, String) {
         let mut builder = Builder::default();
         let file_name = format!(

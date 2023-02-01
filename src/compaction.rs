@@ -57,7 +57,6 @@ impl CompactStatus {
             level,
             levels.len()
         );
-
     }
 
     pub(crate) fn overlaps_with(&self, level: usize, this: &KeyRange) -> bool {

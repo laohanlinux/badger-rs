@@ -146,7 +146,8 @@ impl LevelsController {
                 return Ok(false);
             }
         }
-        info!("Running for level: {}", cd.this_level.level());
+        let level = cd.this_level.level();
+        info!("Running for level: {}", level);
         info!("{:?}", self.c_status);
         let compacted_res = self.run_compact_def(l, cd).await;
         if compacted_res.is_err() {
@@ -156,8 +157,8 @@ impl LevelsController {
             );
         }
         // Done with compaction. So, remove the ranges from compaction status.
-        // self.c_status.del_size(;)
-        info!("Compaction for level: {} DONE", cd.this_level.level());
+        self.c_status.del_size(level);
+        info!("Compaction for level: {} DONE", level);
         Ok(true)
     }
 
@@ -291,7 +292,9 @@ impl LevelsController {
         } else {
             cd.next_range = KeyRange::get_range(cd.bot.as_ref());
         }
-        // if !self.c_status.
+        if !self.c_status.compare_and_add(cd) {
+            return false;
+        }
         cd.unlock_shared_levels();
         true
     }
