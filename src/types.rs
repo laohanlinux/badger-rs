@@ -205,11 +205,13 @@ impl<T> XVec<T> {
         XVec(Arc::new(VecRangeLock::new(v)))
     }
 
+    #[inline]
     pub fn lock_all(&self) {
         let right = self.0.data_len();
         self.lock(0, right)
     }
 
+    #[inline]
     pub fn lock(&self, left: usize, right: usize) {
         loop {
             let range = left..right;
@@ -221,6 +223,7 @@ impl<T> XVec<T> {
         }
     }
 
+    #[inline]
     pub fn try_lock(&self, range: impl RangeBounds<usize>) -> TryLockResult<VecRangeLockGuard<T>> {
         self.0.try_lock(range)
     }

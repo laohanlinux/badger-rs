@@ -40,7 +40,7 @@ impl fmt::Display for KeyOffset {
         let key = String::from_utf8(self.key.clone())
             .map_err(|_| "...")
             .unwrap();
-        write!(f, "key:{}, offset:{}, len:{}", key, self.offset, self.len)
+        write!(f, "key: {}  | offset:{:10}| len:{}", key, self.offset, self.len)
     }
 }
 
@@ -338,15 +338,18 @@ impl Display for TableCore {
         let biggest = String::from_utf8_lossy(self.biggest());
         writeln!(
             f,
-            "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}, index-size: {:?}, smallest: {}, biggest: {}",
+            "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}, smallest: {}, biggest: {}",
             self._ref.load(Ordering::Relaxed),
             self.file_name,
             self.block_index.len(),
             self.id,
             self.table_size,
-            index_str,
             smallest, biggest,
-        )
+        ).unwrap();
+        for index in index_str {
+            writeln!(f, "{}", index).unwrap();
+        }
+        Ok(())
     }
 }
 

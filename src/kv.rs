@@ -1,4 +1,4 @@
-use crate::manifest::{open_or_create_manifest_file, Manifest};
+use crate::manifest::{open_or_create_manifest_file, Manifest, ManifestFile};
 use crate::options::Options;
 use crate::table::builder::Builder;
 use crate::table::iterator::IteratorImpl;
@@ -16,6 +16,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
+use tokio::sync::{RwLock, RwLockWriteGuard};
 
 const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
 // Prefix for internal keys used by badger.
@@ -37,7 +38,7 @@ struct FlushTask {
 pub struct KV {
     pub opt: Options,
     pub vlog: Option<ValueLogCore>,
-    pub manifest: Manifest,
+    pub manifest: Arc<RwLock<ManifestFile>>,
     flush_chan: Channel<FlushTask>,
     // write_chan: Channel<Request>,
     dir_lock_guard: File,
@@ -51,6 +52,10 @@ pub struct KV {
     // we use an atomic op.
     last_used_cas_counter: AtomicU64,
 }
+
+// TODO not add bellow lines
+unsafe impl Send for KV {}
+unsafe impl Sync for KV {}
 
 impl KV {
     pub fn new(opt: Options) -> Result<XArc<KV>> {
@@ -88,7 +93,7 @@ impl KV {
         let mut out = KV {
             opt: opt.clone(),
             vlog: None,
-            manifest,
+            manifest: Arc::new(RwLock::new(manifest_file)),
             flush_chan: Channel::new(1),
             // write_chan: Channel::new(1),
             dir_lock_guard,
@@ -257,6 +262,12 @@ impl KV {
 pub type WeakKV = XWeak<KV>;
 
 pub type ArcKV = XArc<KV>;
+
+impl ArcKV {
+    pub async fn manifest_wl(&self) -> RwLockWriteGuard<'_, ManifestFile> {
+        self.manifest.write().await
+    }
+}
 
 impl Clone for WeakKV {
     fn clone(&self) -> Self {

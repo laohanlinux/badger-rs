@@ -1,25 +1,30 @@
 use crate::compaction::{CompactStatus, KeyRange, INFO_RANGE};
 use crate::kv::{ArcKV, WeakKV, KV};
 use crate::level_handler::{LevelHandler, LevelHandlerInner};
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, ManifestChangeBuilder, ManifestFile};
 use crate::options::Options;
+use crate::pb::badgerpb3::manifest_change::Operation::{CREATE, DELETE};
+use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet};
 use crate::table::table::{new_file_name, Table, TableCore};
 use crate::types::{Closer, XArc, XWeak};
 use crate::Error::Unexpected;
 use crate::Result;
 use atomic::Ordering;
 use awaitgroup::WaitGroup;
+use drop_cell::defer;
 use log::{error, info};
 use parking_lot::lock_api::RawRwLock;
 use parking_lot::{RwLock, RwLockReadGuard};
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::fmt::{Display, Formatter};
 use std::fs::remove_file;
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+use std::vec;
 use tokio::macros::support::thread_rng_n;
 
 #[derive(Clone)]
@@ -30,6 +35,7 @@ pub(crate) struct LevelsController {
     next_file_id: Arc<AtomicI64>,
     // For ending compactions.
     compact_worker_wg: Arc<WaitGroup>,
+    // Store compact status that will be run or has running
     c_status: Arc<CompactStatus>,
 }
 
@@ -97,7 +103,7 @@ impl LevelsController {
                 _ = interval.tick() => {
                     let pick: Vec<CompactionPriority> = self.pick_compact_levels();
                     for p in pick {
-                        match self.do_compact(p) {
+                        match self.do_compact(p).await {
                             Ok(true) => {
                                 info!("succeed to compacted")
                             },
@@ -120,7 +126,7 @@ impl LevelsController {
     }
 
     // Picks some table on level l and compacts it away to the next level.
-    fn do_compact(&self, p: CompactionPriority) -> Result<bool> {
+    async fn do_compact(&self, p: CompactionPriority) -> Result<bool> {
         let l = p.level;
         assert!(l + 1 < self.must_kv().opt.max_levels); //  Sanity check.
         let mut cd = CompactDef::default();
@@ -142,30 +148,136 @@ impl LevelsController {
         }
         info!("Running for level: {}", cd.this_level.level());
         info!("{:?}", self.c_status);
-
+        let compacted_res = self.run_compact_def(l, cd).await;
+        if compacted_res.is_err() {
+            error!(
+                "LOG Compact FAILED with error: {}",
+                compacted_res.unwrap_err().to_string()
+            );
+        }
+        // Done with compaction. So, remove the ranges from compaction status.
+        // self.c_status.del_size(;)
         info!("Compaction for level: {} DONE", cd.this_level.level());
         Ok(true)
     }
 
-    fn run_compact_def(&self, l: usize, cd: &mut CompactDef) -> Result<()> {
+    async fn run_compact_def(&self, l: usize, cd: CompactDef) -> Result<()> {
         let time_start = SystemTime::now();
         let this_level = cd.this_level.clone();
         let next_level = cd.next_level.clone();
 
         if this_level.level() >= 1 && cd.bot.is_empty() {
             assert_eq!(cd.top.len(), 1);
+            let table_lck = cd.top[0].clone();
+            // We write to the manifest _before_ we delete files (and after we created files).
+            // The order matters here -- you can't temporarily have two copies of the same
+            // table id when reloading the manifest.
+            // TODO Why?
+            let delete_change = ManifestChangeBuilder::new(table_lck.id())
+                .with_op(DELETE)
+                .build();
+            let create_change = ManifestChangeBuilder::new(table_lck.id())
+                .with_level(next_level.level() as u32)
+                .with_op(CREATE)
+                .build();
+            let changes = vec![delete_change, create_change];
+            let kv = self.must_kv();
+            let mut manifest = kv.manifest.write().await;
+            manifest.add_changes(changes)?;
+            // We have to add to next_level before we remove from this_level, not after. This way, we
+            // don't have a bug where reads would see keys missing from both levels.
+            //
+            // Note: It's critical that we add tables (replace them) in next_level before deleting them
+            // in this_level. (We could finagle it atomically somehow.) Also, when reading we must
+            // read, or at least acquire s.rlock(), in increasing order by level, so that we don't skip
+            // a compaction.
+            next_level.replace_tables(cd.top.clone())?;
+            this_level.replace_tables(cd.top.clone())?;
+            info!(
+                "LOG Compact-Move {}->{} smallest:{} biggest:{} took {}",
+                l,
+                l + 1,
+                String::from_utf8_lossy(table_lck.smallest()),
+                String::from_utf8_lossy(table_lck.biggest()),
+                time_start.elapsed().unwrap().as_millis(),
+            );
+            return Ok(());
         }
+
+        // NOTE: table deref
+        let new_tables = self.compact_build_tables(l, &cd)?;
+        let deref_tables = || new_tables.iter().for_each(|tb| tb.decr_ref());
+        defer! {deref_tables();}
+        let change_set = Self::build_change_set(&cd, &new_tables);
+
+        // We write to the manifest _before_ we delete files (and after we created files)
+        {
+            let kv = self.must_kv();
+            let mut manifest = kv.manifest.write().await;
+            manifest.add_changes(change_set)?;
+        }
+
+        // See comment earlier in this function about the ordering of these ops, and the order in which
+        // we access levels whe reading.
+        next_level.replace_tables(new_tables.clone())?;
+        this_level.replace_tables(cd.top.clone())?;
+
+        // Note: For level 0, while do_compact is running, it is possible that new tables are added.
+        // However, the tables are added only to the end, so it is ok to just delete the first table.
+        info!(
+            "LOG Compact {}->{}, del {} tables, add {} tables, took {}",
+            l,
+            l + 1,
+            cd.top.len() + cd.bot.len(),
+            new_tables.len(),
+            time_start.elapsed().unwrap().as_millis()
+        );
+
+        Ok(())
+    }
+
+    fn compact_build_tables(&self, l: usize, cd: &CompactDef) -> Result<Vec<Table>> {
         todo!()
     }
 
+    fn build_change_set(cd: &CompactDef, new_tables: &Vec<Table>) -> Vec<ManifestChange> {
+        let mut changes = vec![];
+        for table in new_tables {
+            changes.push(
+                ManifestChangeBuilder::new(table.id())
+                    .with_level(cd.next_level.level() as u32)
+                    .with_op(CREATE)
+                    .build(),
+            );
+        }
+
+        for table in cd.top.iter() {
+            changes.push(
+                ManifestChangeBuilder::new(table.id())
+                    .with_op(DELETE)
+                    .build(),
+            );
+        }
+
+        for table in cd.bot.iter() {
+            changes.push(
+                ManifestChangeBuilder::new(table.id())
+                    .with_op(DELETE)
+                    .build(),
+            );
+        }
+
+        changes
+    }
+
     fn fill_tables_l0(&self, cd: &mut CompactDef) -> bool {
-        cd.lock_levels();
+        cd.lock_shared_levels();
         let top = cd.this_level.to_ref().tables.read();
         // TODO here maybe have some issue that i don't understand
         let tables = top.to_vec();
         cd.top.extend(tables);
         if cd.top.is_empty() {
-            cd.unlock_levels();
+            cd.unlock_shared_levels();
             return false;
         }
         cd.this_range = INFO_RANGE;
@@ -180,18 +292,19 @@ impl LevelsController {
             cd.next_range = KeyRange::get_range(cd.bot.as_ref());
         }
         // if !self.c_status.
-        cd.unlock_levels();
+        cd.unlock_shared_levels();
         true
     }
 
     fn fill_tables(&self, cd: &mut CompactDef) -> bool {
-        cd.lock_levels();
+        // lock current level and next levels, So there is at most one compression process per layer
+        cd.lock_shared_levels();
         let mut tables = cd.this_level.to_ref().tables.read().to_vec();
         if tables.is_empty() {
-            cd.unlock_levels();
+            cd.unlock_shared_levels();
             return false;
         }
-        // Find the biggest table, and compact taht first.
+        // Find the biggest table, and compact that first.
         // TODO: Try other table picking strategies.
         tables.sort_by(|a, b| b.size().cmp(&a.size()));
         for t in tables {
@@ -208,21 +321,29 @@ impl LevelsController {
                 continue;
             }
 
-            cd.top.clear();
-            cd.top.push(t);
+            {
+                cd.top.clear();
+                cd.top.push(t);
+            }
+
+            // Find next overlap that will be compacted
+            // TODO [left, right)
             let (left, right) = cd.next_level.overlapping_tables(&cd.this_range);
             let bot = cd.next_level.to_ref().tables.read();
             let tables = bot.to_vec();
-            cd.bot.clear();
-            cd.bot.extend(tables[left..right].to_vec());
-
-            if cd.bot.is_empty() {
+            {
                 cd.bot.clear();
+                cd.bot.extend(tables[left..right].to_vec());
+            }
+
+            // not find any overlap at next levels, so sample insert it
+            if cd.bot.is_empty() {
                 cd.next_range = cd.this_range.clone();
                 if !self.c_status.compare_and_add(cd) {
+                    info!("find a conflict compacted, cd: {}", cd);
                     continue;
                 }
-                cd.unlock_levels();
+                cd.unlock_shared_levels();
                 return true;
             }
 
@@ -238,10 +359,10 @@ impl LevelsController {
             if !self.c_status.compare_and_add(&cd) {
                 continue;
             }
-            cd.unlock_levels();
+            cd.unlock_shared_levels();
             return true;
         }
-        cd.unlock_levels();
+        cd.unlock_shared_levels();
         false
     }
 
@@ -300,11 +421,35 @@ struct CompactionPriority {
 pub(crate) struct CompactDef {
     pub(crate) this_level: LevelHandler,
     pub(crate) next_level: LevelHandler,
-    pub(crate) top: Vec<Table>,
-    pub(crate) bot: Vec<Table>,
+    pub(crate) top: Vec<Table>, // if the level is not level0, it should be only one table
+    pub(crate) bot: Vec<Table>, // may be empty tables set
     pub(crate) this_range: KeyRange,
     pub(crate) next_range: KeyRange,
-    pub(crate) this_size: AtomicU64,
+    pub(crate) this_size: AtomicU64, // the compacted table's size(NOTE: this level compacted table is only one, not zero level)
+}
+
+impl Display for CompactDef {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let top = self
+            .top
+            .iter()
+            .map(|table| table.id().to_string())
+            .collect::<Vec<_>>();
+        let bot = self
+            .bot
+            .iter()
+            .map(|table| table.id().to_string())
+            .collect::<Vec<_>>();
+        write!(
+            f,
+            "(this_level: {}, next_level: {}, this_sz: {}, top: {:?}, bot: {:?})",
+            self.this_level.level(),
+            self.next_level.level(),
+            self.this_size.load(Ordering::Relaxed),
+            top,
+            bot
+        )
+    }
 }
 
 impl Default for CompactDef {
@@ -331,17 +476,27 @@ impl Default for CompactDef {
 }
 
 impl CompactDef {
-    fn lock_levels(&self) {
-        unsafe {
-            self.this_level.x.self_lock.raw().lock_shared();
-            self.next_level.x.self_lock.raw().lock_shared();
-        }
+    #[inline]
+    fn lock_shared_levels(&self) {
+        self.this_level.lock_shared();
+        self.next_level.lock_shared();
     }
 
-    fn unlock_levels(&self) {
-        unsafe {
-            self.next_level.x.self_lock.raw().unlock_shared();
-            self.this_level.x.self_lock.raw().unlock_shared();
-        }
+    #[inline]
+    fn unlock_shared_levels(&self) {
+        self.next_level.unlock_shared();
+        self.this_level.unlock_shared();
+    }
+
+    #[inline]
+    fn lock_exclusive_levels(&self) {
+        self.this_level.lock_exclusive();
+        self.next_level.lock_exclusive();
+    }
+
+    #[inline]
+    fn unlock_exclusive_levels(&self) {
+        self.next_level.unlock_exclusive();
+        self.this_level.unlock_exclusive();
     }
 }

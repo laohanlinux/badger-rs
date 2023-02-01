@@ -1,19 +1,21 @@
 use crate::compaction::KeyRange;
 use crate::kv::{WeakKV, KV};
-use crate::table::iterator::{IteratorImpl, IteratorItem};
-use crate::table::table::Table;
+use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
+use crate::table::table::{Table, TableCore};
 use crate::types::{XArc, XWeak};
 use crate::y::iterator::Xiterator;
 use crate::Result;
+use core::slice::SlicePattern;
 
+use crate::levels::CompactDef;
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::collections::HashSet;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub(crate) type LevelHandler = XArc<LevelHandlerInner>;
-// pub(crate) type WeakLevelHandler = XWeak<LevelHandlerInner>;
 
 impl From<LevelHandlerInner> for LevelHandler {
     fn from(value: LevelHandlerInner) -> Self {
@@ -99,7 +101,7 @@ impl LevelHandler {
 
     // Replace tables[left:right] with new_tables, Note this EXCLUDES tables[right].
     // You must be call decr() to delete the old tables _after_ writing the update to the manifest.
-    fn replace_tables(&self, new_tables: Vec<Table>) -> Result<()> {
+    pub(crate) fn replace_tables(&self, new_tables: Vec<Table>) -> Result<()> {
         // Need to re-search the range of tables in this level to be replaced as other goroutines might
         // be changing it as well. (They can't touch our tables, but if they add/remove other tables,
         // the indices get shifted around.)
@@ -215,6 +217,39 @@ impl LevelHandler {
     fn kv(&self) -> XArc<KV> {
         self.x.kv.upgrade().unwrap()
     }
+
+    // Merge top tables and bot tables to from a List of new tables.
+    pub(crate) fn compact_build_tables(&self, l: usize, cd: &CompactDef) -> Result<Table> {
+        let top_tables = &cd.top;
+        let bot_tables = &cd.bot;
+
+        // Create iterators across all the tables involved first.
+        let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        if l == 0 {
+            Self::append_iterators_reversed(&mut itr, top_tables, false);
+        } else {
+            assert_eq!(1, top_tables.len());
+            Self::append_iterators_reversed(&mut itr, &top_tables[..1].to_vec(), false);
+        }
+
+        // Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
+        // TODO
+        // itr.push(ConcatIterator::new(bot_tables, false));
+        todo!()
+    }
+
+    // TODO
+    fn append_iterators_reversed(
+        out: &mut Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+        th: &Vec<Table>,
+        reversed: bool,
+    ) {
+        // for itr_th in th.iter().rev() {
+        //     // This will increment the reference of the table handler.
+        //     let itr = IteratorImpl::new(itr_th, reversed);
+        //     out.push(Box::new(itr));
+        // }
+    }
 }
 
 pub(crate) struct LevelHandlerInner {
@@ -246,4 +281,55 @@ impl LevelHandlerInner {
             kv,
         }
     }
+
+    #[inline]
+    pub(crate) fn lock_shared(&self) {
+        use parking_lot::lock_api::RawRwLock;
+        unsafe { self.self_lock.raw().lock_shared() }
+    }
+
+    #[inline]
+    pub(crate) fn try_lock_share(&self) -> bool {
+        use parking_lot::lock_api::RawRwLock;
+        unsafe { self.self_lock.raw().try_lock_shared() }
+    }
+
+    #[inline]
+    pub(crate) fn unlock_shared(&self) {
+        use parking_lot::lock_api::RawRwLock;
+        unsafe { self.self_lock.raw().unlock_shared() }
+    }
+
+    #[inline]
+    pub(crate) fn lock_exclusive(&self) {
+        use parking_lot::lock_api::RawRwLock;
+        unsafe { self.self_lock.raw().lock_exclusive() }
+    }
+
+    #[inline]
+    pub(crate) fn try_lock_exclusive(&self) -> bool {
+        use parking_lot::lock_api::RawRwLock;
+        unsafe { self.self_lock.raw().try_lock_exclusive() }
+    }
+
+    #[inline]
+    pub(crate) fn unlock_exclusive(&self) {
+        use parking_lot::lock_api::RawRwLock;
+        unsafe { self.self_lock.raw().unlock_exclusive() }
+    }
+}
+
+#[test]
+fn raw_lock() {
+    let lock = LevelHandlerInner::new(WeakKV::new(), 10);
+    lock.lock_shared();
+    lock.lock_shared();
+    assert_eq!(false, lock.try_lock_exclusive());
+    lock.unlock_shared();
+    lock.unlock_shared();
+
+    assert_eq!(true, lock.try_lock_exclusive());
+    assert_eq!(false, lock.try_lock_share());
+    lock.unlock_exclusive();
+    assert_eq!(true, lock.try_lock_share());
 }

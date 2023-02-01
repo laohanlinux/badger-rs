@@ -182,7 +182,7 @@ impl Builder {
         if self.counter >= Self::RESTART_INTERVAL {
             self.finish_block();
             println!(
-                "create new block: base:{}, pre: {}, base-key {:?}",
+                "create new block, base:{:<10}, pre: {:5}, base-key: {:?}",
                 self.base_offset,
                 self.prev_offset,
                 String::from_utf8_lossy(&self.base_key)

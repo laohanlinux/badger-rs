@@ -35,7 +35,7 @@ impl CompactStatus {
 
         // Check whether this level really needs compaction or not. Otherwise, we'll end up
         // running parallel compactions for the same level.
-        // *NOTE*: We can directly call this_level.total_size, because we already have acquire a read lock
+        // *NOTE*: We can directly call this_level.total_size, because we already have acquired a read lock
         // over this and the next level.
         if cd.this_level.get_total_size() - this_level.get_del_size()
             < cd.this_level.get_max_total_size()
@@ -46,6 +46,18 @@ impl CompactStatus {
         next_level.ranges.write().push(cd.next_range.clone());
         this_level.incr_del_size(cd.this_size.load(Ordering::Relaxed));
         true
+    }
+
+    pub(crate) fn delete(&self, cd: &CompactDef) {
+        let level = cd.this_level.level();
+        let levels = self.wl();
+        assert!(
+            level < levels.len() - 1,
+            "Got level {}, Max levels {}",
+            level,
+            levels.len()
+        );
+
     }
 
     pub(crate) fn overlaps_with(&self, level: usize, this: &KeyRange) -> bool {
@@ -70,17 +82,20 @@ impl CompactStatus {
     }
 }
 
+// Every level compacted status(ranges).
 #[derive(Clone, Debug)]
 pub(crate) struct LevelCompactStatus {
-    ranges: Arc<RwLock<Vec<KeyRange>>>,
-    del_size: Arc<AtomicU64>,
+    ranges: Arc<RwLock<Vec<KeyRange>>>, // not any overlaps
+    del_size: Arc<AtomicU64>,           // all KeyRange size
 }
 
 impl LevelCompactStatus {
+    // returns true if self.ranges and dst has overlap, otherwise returns false
     fn overlaps_with(&self, dst: &KeyRange) -> bool {
         self.ranges.write().iter().any(|r| r.overlaps_with(dst))
     }
 
+    // remove dst from self.ranges
     fn remove(&mut self, dst: &KeyRange) -> bool {
         let mut rlock = self.ranges.write();
         let len = rlock.len();

@@ -42,7 +42,7 @@ pub struct TableManifest {
 }
 
 #[derive(Default)]
-pub(crate) struct ManifestFile {
+pub struct ManifestFile {
     fp: Option<File>,
     directory: String,
     // We make this configurable so that unit tests can hit rewrite() code quickly
@@ -357,14 +357,14 @@ pub(crate) fn open_or_create_manifest_file(dir: &str) -> Result<(ManifestFile, M
 }
 
 #[derive(Debug)]
-struct ManifestChangeBuilder {
+pub(crate) struct ManifestChangeBuilder {
     id: u64,
     level: u32,
     op: Operation,
 }
 
 impl ManifestChangeBuilder {
-    fn new(id: u64) -> Self {
+    pub(crate) fn new(id: u64) -> Self {
         ManifestChangeBuilder {
             id,
             level: 0,
@@ -377,17 +377,17 @@ impl ManifestChangeBuilder {
     //     self
     // }
 
-    fn with_level(mut self, level: u32) -> Self {
+    pub(crate) fn with_level(mut self, level: u32) -> Self {
         self.level = level;
         self
     }
 
-    fn with_op(mut self, op: Operation) -> Self {
+    pub(crate) fn with_op(mut self, op: Operation) -> Self {
         self.op = op;
         self
     }
 
-    fn build(self) -> ManifestChange {
+    pub(crate) fn build(self) -> ManifestChange {
         let mut mf = ManifestChange::new();
         mf.Id = self.id;
         mf.Level = self.level;
