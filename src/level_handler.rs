@@ -1,20 +1,28 @@
 use crate::compaction::KeyRange;
 use crate::kv::{WeakKV, KV};
-use crate::table::iterator::{IteratorImpl, IteratorItem};
-use crate::table::table::Table;
-use crate::types::{XArc, XWeak};
-use crate::y::iterator::Xiterator;
+use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
+use crate::table::table::{Table, TableCore};
+use crate::types::{Channel, XArc, XWeak};
+use crate::y::iterator::{MergeIterOverBuilder, Xiterator};
 use crate::Result;
 use core::slice::SlicePattern;
 
+use crate::levels::CompactDef;
+use drop_cell::defer;
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::collections::HashSet;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub(crate) type LevelHandler = XArc<LevelHandlerInner>;
-pub(crate) type WeakLevelHandler = XWeak<LevelHandlerInner>;
+
+impl From<LevelHandlerInner> for LevelHandler {
+    fn from(value: LevelHandlerInner) -> Self {
+        XArc::new(value)
+    }
+}
 
 impl LevelHandler {
     // Returns true if the non-zero level may be compacted. *del_size* provides the size of the tables
@@ -32,12 +40,13 @@ impl LevelHandler {
         self.x.max_total_size.load(Ordering::Relaxed)
     }
 
-    // TODO add deference table deleted
+    // delete current level's tables of to_del
     pub(crate) fn delete_tables(&self, to_del: Vec<u64>) {
         let to_del = to_del.iter().map(|id| *id).collect::<HashSet<_>>();
         let mut tb_wl = self.tables_wl();
         tb_wl.retain_mut(|tb| {
             if to_del.contains(&tb.x.id()) {
+                // delete table reference
                 tb.decr_ref();
                 return false;
             }
@@ -45,6 +54,7 @@ impl LevelHandler {
         });
     }
 
+    // init with tables
     pub(crate) fn init_tables(&self, tables: Vec<Table>) {
         let total_size = tables.iter().fold(0, |acc, table| acc + table.size());
         self.x
@@ -58,22 +68,23 @@ impl LevelHandler {
             tb_wl.sort_by_key(|tb| tb.x.id());
         } else {
             // Sort tables by keys.
-            // TODO avoid copy
             tb_wl.sort_by_key(|tb| tb.smallest().to_vec());
         }
     }
 
+    // Get table write lock guards.
     fn tables_wl(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<Table>> {
         self.x.tables.write()
     }
+
+    // Get table read lock guards
     fn tables_rd(&self) -> RwLockReadGuard<'_, RawRwLock, Vec<Table>> {
         self.x.tables.read()
     }
 
-    // Returns the tables that intersect with key range. Returns a half-interval.
+    // Returns the tables that intersect with key range. Returns a half-interval [left, right].
     // This function should already have acquired a read lock, and this is so important the caller must
     // pass an empty parameter declaring such.
-    // TODO Opz me
     pub(crate) fn overlapping_tables(&self, key_range: &KeyRange) -> (usize, usize) {
         let left = self
             .tables_rd()
@@ -91,13 +102,14 @@ impl LevelHandler {
 
     // Replace tables[left:right] with new_tables, Note this EXCLUDES tables[right].
     // You must be call decr() to delete the old tables _after_ writing the update to the manifest.
-    fn replace_tables(&self, new_tables: Vec<Table>) -> Result<()> {
+    pub(crate) fn replace_tables(&self, new_tables: Vec<Table>) -> Result<()> {
         // Need to re-search the range of tables in this level to be replaced as other goroutines might
         // be changing it as well. (They can't touch our tables, but if they add/remove other tables,
         // the indices get shifted around.)
         if new_tables.is_empty() {
             return Ok(());
         }
+        // TODO Add lock (think of level's sharing lock)
         // Increase total_size first.
         for tb in &new_tables {
             self.x
@@ -163,7 +175,7 @@ impl LevelHandler {
         Ok(())
     }
 
-    // Acquires a read-lock to access s.tables. It return a list of table_handlers.
+    // Acquires a read-lock to access s.tables. It returns a list of table_handlers.
     pub(crate) fn get_table_for_key(&self, key: &[u8]) -> Option<IteratorItem> {
         return if self.x.level.load(Ordering::Relaxed) == 0 {
             let tw = self.tables_rd();
@@ -174,6 +186,8 @@ impl LevelHandler {
                 tb.decr_ref();
                 if item.is_none() {
                     // todo add metrics
+                } else {
+                    return item;
                 }
             }
             None
@@ -196,12 +210,63 @@ impl LevelHandler {
         };
     }
 
+    // returns current level
     pub(crate) fn level(&self) -> usize {
         self.x.level.load(Ordering::Relaxed) as usize
     }
 
     fn kv(&self) -> XArc<KV> {
         self.x.kv.upgrade().unwrap()
+    }
+
+    // Merge top tables and bot tables to from a List of new tables.
+    pub(crate) async fn compact_build_tables(
+        &self,
+        l: usize,
+        cd: &'static CompactDef,
+    ) -> Result<Table> {
+        let top_tables = &cd.top;
+        let bot_tables = &cd.bot;
+
+        // Create iterators across all the tables involved first.
+        let mut itr: Vec<&dyn Xiterator<Output = IteratorItem>> = vec![];
+        if l == 0 {
+            Self::append_iterators_reversed(&mut itr, top_tables, false);
+        } else {
+            assert_eq!(1, top_tables.len());
+            Self::append_iterators_reversed(&mut itr, &top_tables[..1].to_vec(), false);
+        }
+
+        // Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
+        // TODO
+        let bot_tables = bot_tables.iter().map(|t| t.to_ref()).collect::<Vec<_>>();
+        let citr = ConcatIterator::new(bot_tables, false);
+        itr.push(&citr);
+        let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
+        // Important to close the iterator to do ref counting.
+        defer! {mitr.close()};
+        mitr.rewind();
+
+        // Start generating new tables.
+        struct NewTableResult {
+            table: Table,
+            err: Result<()>,
+        }
+        let result_ch: Channel<NewTableResult> = Channel::new(1);
+        todo!()
+    }
+
+    // TODO
+    fn append_iterators_reversed(
+        out: &mut Vec<&dyn Xiterator<Output = IteratorItem>>,
+        th: &Vec<Table>,
+        reversed: bool,
+    ) {
+        // for itr_th in th.iter().rev() {
+        //     // This will increment the reference of the table handler.
+        //     let itr = IteratorImpl::new(itr_th, reversed);
+        //     out.push(Box::new(itr));
+        // }
     }
 }
 
@@ -212,6 +277,7 @@ pub(crate) struct LevelHandlerInner {
     // For level >= 1, *tables* are sorted by key ranges, which do not overlap.
     // For level 0, *tables* are sorted by time.
     // For level 0, *newest* table are at the back. Compact the oldest one first, which is at the front.
+    // TODO tables and total_size maybe should be lock with same lock.
     pub(crate) tables: Arc<RwLock<Vec<Table>>>,
     pub(crate) total_size: AtomicU64,
     // The following are initialized once and const.
@@ -221,4 +287,67 @@ pub(crate) struct LevelHandlerInner {
     kv: WeakKV,
 }
 
-impl LevelHandlerInner {}
+impl LevelHandlerInner {
+    pub(crate) fn new(kv: WeakKV, level: usize) -> LevelHandlerInner {
+        LevelHandlerInner {
+            self_lock: Arc::new(Default::default()),
+            tables: Arc::new(Default::default()),
+            total_size: Default::default(),
+            level: Default::default(),
+            str_level: Arc::new(format!("L{}", level)),
+            max_total_size: Default::default(),
+            kv,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn lock_shared(&self) {
+        use parking_lot::lock_api::RawRwLock;
+        unsafe { self.self_lock.raw().lock_shared() }
+    }
+
+    #[inline]
+    pub(crate) fn try_lock_share(&self) -> bool {
+        use parking_lot::lock_api::RawRwLock;
+        unsafe { self.self_lock.raw().try_lock_shared() }
+    }
+
+    #[inline]
+    pub(crate) fn unlock_shared(&self) {
+        use parking_lot::lock_api::RawRwLock;
+        unsafe { self.self_lock.raw().unlock_shared() }
+    }
+
+    #[inline]
+    pub(crate) fn lock_exclusive(&self) {
+        use parking_lot::lock_api::RawRwLock;
+        unsafe { self.self_lock.raw().lock_exclusive() }
+    }
+
+    #[inline]
+    pub(crate) fn try_lock_exclusive(&self) -> bool {
+        use parking_lot::lock_api::RawRwLock;
+        unsafe { self.self_lock.raw().try_lock_exclusive() }
+    }
+
+    #[inline]
+    pub(crate) fn unlock_exclusive(&self) {
+        use parking_lot::lock_api::RawRwLock;
+        unsafe { self.self_lock.raw().unlock_exclusive() }
+    }
+}
+
+#[test]
+fn raw_lock() {
+    let lock = LevelHandlerInner::new(WeakKV::new(), 10);
+    lock.lock_shared();
+    lock.lock_shared();
+    assert_eq!(false, lock.try_lock_exclusive());
+    lock.unlock_shared();
+    lock.unlock_shared();
+
+    assert_eq!(true, lock.try_lock_exclusive());
+    assert_eq!(false, lock.try_lock_share());
+    lock.unlock_exclusive();
+    assert_eq!(true, lock.try_lock_share());
+}

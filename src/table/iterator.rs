@@ -347,6 +347,7 @@ impl<'a> Xiterator for IteratorImpl<'a> {
 
 impl<'a> IteratorImpl<'a> {
     pub fn new(table: &'a TableCore, reversed: bool) -> IteratorImpl<'a> {
+        table.incr_ref(); // Important
         IteratorImpl {
             table,
             bpos: RefCell::new(0),

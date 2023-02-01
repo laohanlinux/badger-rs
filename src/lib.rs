@@ -14,8 +14,6 @@
 #![feature(slice_pattern)]
 #![feature(slice_take)]
 
-extern crate core;
-
 use std::io;
 use std::mem::align_of;
 

@@ -1,16 +1,18 @@
 use parking_lot::*;
 use std::fmt::Debug;
-use std::ops::{Deref, RangeBounds};
-use std::sync::atomic::{AtomicI32, AtomicIsize, AtomicUsize, Ordering};
+use std::mem::ManuallyDrop;
+use std::ops::{Deref, DerefMut, RangeBounds};
+use std::sync::atomic::{AtomicI32, AtomicIsize, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, TryLockResult, Weak};
 use std::time::Duration;
-use std::{hint, thread};
+use std::{hint, mem, thread};
 
 use async_channel::{bounded, Receiver, RecvError, SendError, Sender, TryRecvError, TrySendError};
 
 use range_lock::{VecRangeLock, VecRangeLockGuard};
 use tokio::time::sleep;
 
+// Channel like to go's channel
 #[derive(Clone)]
 pub(crate) struct Channel<T> {
     rx: Option<Receiver<T>>,
@@ -18,6 +20,7 @@ pub(crate) struct Channel<T> {
 }
 
 impl<T> Channel<T> {
+    // create a *Channel* with n cap
     pub(crate) fn new(n: usize) -> Self {
         let (tx, rx) = bounded(n);
         Channel {
@@ -25,6 +28,8 @@ impl<T> Channel<T> {
             tx: Some(tx),
         }
     }
+
+    // try to send message T without blocking
     pub(crate) fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
         if let Some(tx) = &self.tx {
             return tx.try_send(msg);
@@ -32,6 +37,7 @@ impl<T> Channel<T> {
         Ok(())
     }
 
+    // try to receive a message without blocking
     pub(crate) fn try_recv(&self) -> Result<T, TryRecvError> {
         if let Some(rx) = &self.rx {
             return rx.try_recv();
@@ -39,29 +45,33 @@ impl<T> Channel<T> {
         Err(TryRecvError::Empty)
     }
 
+    // async receive a message with blocking
     pub(crate) async fn recv(&self) -> Result<T, async_channel::RecvError> {
         let rx = self.rx.as_ref().unwrap();
         rx.recv().await
     }
 
+    // async send a message with blocking
     pub(crate) async fn send(&self, msg: T) -> Result<(), SendError<T>> {
         let tx = self.tx.as_ref().unwrap();
         tx.send(msg).await
     }
 
+    // returns Sender
     pub(crate) fn tx(&self) -> Sender<T> {
         self.tx.as_ref().unwrap().clone()
     }
 
+    // consume tx and return it if exist
     pub(crate) fn take_tx(&mut self) -> Option<Sender<T>> {
         self.tx.take()
     }
 
+    // close *Channel*, Sender will be consumed
     pub(crate) fn close(&self) {
-        if self.tx.is_none() {
-            return;
+        if let Some(tx) = &self.tx {
+            tx.close();
         }
-        self.tx.as_ref().unwrap().close();
     }
 }
 
@@ -74,8 +84,16 @@ pub(crate) struct Closer {
     wait: Arc<AtomicIsize>,
 }
 
+impl Drop for Closer {
+    fn drop(&mut self) {
+        assert!(self.wait.load(Ordering::Relaxed) >= 0, "Sanity check!");
+    }
+}
+
 impl Closer {
+    // create a Closer with *initial* cap Workers
     pub(crate) fn new(initial: isize) -> Self {
+        assert!(initial >= 0, "Sanity check");
         let mut close = Closer {
             closed: Channel::new(1),
             wait: Arc::from(AtomicIsize::new(initial)),
@@ -83,33 +101,46 @@ impl Closer {
         close
     }
 
+    // Incr delta to the WaitGroup.
     pub(crate) fn add_running(&self, delta: isize) {
-        self.wait.fetch_add(delta, Ordering::Relaxed);
+        let old = self.wait.fetch_add(delta, Ordering::Relaxed);
+        assert!(old >= 0, "Sanity check");
     }
 
+    // Spawn a worker
+    pub(crate) fn spawn(&self) -> Self {
+        self.add_running(1);
+        self.clone()
+    }
+
+    // Decr delta to the WaitGroup(Note: must be call for every worker avoid leak).
+    pub(crate) fn done(&self) {
+        let old = self.wait.fetch_sub(1, Ordering::Relaxed);
+        assert!(old >= 0, "Sanity check");
+    }
+
+    // Signals the `has_been_closed` signal.
     pub(crate) fn signal(&self) {
         self.closed.close();
     }
 
-    // todo
+    // Gets signaled when signal() is called.
     pub(crate) fn has_been_closed(&self) -> Channel<()> {
         self.closed.clone()
     }
 
-    pub(crate) fn done(&self) {
-        self.wait.fetch_sub(1, Ordering::Relaxed);
-    }
-
+    // Waiting until done
     pub(crate) async fn wait(&self) {
         loop {
             if self.wait.load(Ordering::Relaxed) <= 0 {
                 break;
             }
-            println!("wait");
+            hint::spin_loop();
             sleep(Duration::from_millis(10)).await;
         }
     }
 
+    // Send a close signal and waiting util done
     pub(crate) async fn signal_and_wait(&self) {
         self.signal();
         self.wait().await;
@@ -126,6 +157,14 @@ pub struct XArc<T> {
     pub(crate) x: Arc<T>,
 }
 
+impl<T> Deref for XArc<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.x.deref()
+    }
+}
+
 impl<T> Clone for XArc<T> {
     fn clone(&self) -> Self {
         XArc { x: self.x.clone() }
@@ -133,7 +172,7 @@ impl<T> Clone for XArc<T> {
 }
 
 impl<T> XArc<T> {
-    fn new(x: T) -> XArc<T> {
+    pub fn new(x: T) -> XArc<T> {
         XArc { x: Arc::new(x) }
     }
 
@@ -166,6 +205,13 @@ impl<T> XVec<T> {
         XVec(Arc::new(VecRangeLock::new(v)))
     }
 
+    #[inline]
+    pub fn lock_all(&self) {
+        let right = self.0.data_len();
+        self.lock(0, right)
+    }
+
+    #[inline]
     pub fn lock(&self, left: usize, right: usize) {
         loop {
             let range = left..right;
@@ -177,13 +223,10 @@ impl<T> XVec<T> {
         }
     }
 
+    #[inline]
     pub fn try_lock(&self, range: impl RangeBounds<usize>) -> TryLockResult<VecRangeLockGuard<T>> {
         self.0.try_lock(range)
     }
-
-    // fn to_owned(self) -> Vec<T> {
-    //     self.0.into_inner()
-    // }
 }
 
 impl<T> Deref for XVec<T> {
@@ -193,35 +236,25 @@ impl<T> Deref for XVec<T> {
     }
 }
 
-// impl<T> DerefMut for XVec<T> {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         &mut self.0
-//     }
-// }
-
 #[test]
 fn it_closer() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
-        let closer = Closer::new(1);
-        let c = closer.clone();
-        tokio::spawn(async move {
-            sleep(Duration::from_millis(20000)).await;
-            println!("Hello Word1");
-            c.done();
-        });
+        let closer = Closer::new(0);
+        let count = Arc::new(AtomicUsize::new(100));
+        for i in 0..count.load(Ordering::Relaxed) {
+            let c = closer.spawn();
+            let n = count.clone();
+            tokio::spawn(async move {
+                sleep(Duration::from_millis(200)).await;
+                n.fetch_add(1, Ordering::Relaxed);
+                c.done();
+            });
+        }
         closer.signal_and_wait().await;
-        println!("Hello Word");
+        assert_eq!(count.load(Ordering::Relaxed), 200);
     });
 }
 
 #[test]
-fn lck() {
-    // let x: &'static [i32; 3] = Box::leak(Box::new([1, 2, 3]));
-    //  thread::spawn(move || dbg!(x));
-    //  thread::spawn(move || dbg!(x));
-    let v = Arc::new(RwLock::new(vec![Arc::new(AtomicI32::new(10))]));
-    let lck = v.write().to_vec();
-    lck[0].store(100, Ordering::Relaxed);
-    println!("{:?}", v.read());
-}
+fn lck() {}

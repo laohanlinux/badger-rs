@@ -13,7 +13,6 @@ use std::fs::{read_dir, remove_file, File};
 use std::io::{Cursor, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::Duration;
 use std::{fmt, io};
 
 #[cfg(target_os = "macos")]
@@ -36,12 +35,16 @@ pub(crate) struct KeyOffset {
     len: usize,
 }
 
-impl fmt::Display for KeyOffset {
+impl Display for KeyOffset {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let key = String::from_utf8(self.key.clone())
             .map_err(|_| "...")
             .unwrap();
-        write!(f, "key:{}, offset:{}, len:{}", key, self.offset, self.len)
+        write!(
+            f,
+            "key: {}  | offset:{:10}| len:{}",
+            key, self.offset, self.len
+        )
     }
 }
 
@@ -49,22 +52,23 @@ pub type Table = XArc<TableCore>;
 pub type WeakTable = XWeak<TableCore>;
 
 impl Table {
-    pub(crate) fn incr_ref(&self) {
+    pub fn incr_ref(&self) {
         self.x.incr_ref()
     }
 
-    pub(crate) fn decr_ref(&self) {
+    pub fn decr_ref(&self) {
         self.x.decr_ref()
     }
 
-    pub(crate) fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.x.size()
     }
 
-    pub(crate) fn biggest(&self) -> &[u8] {
+    pub fn biggest(&self) -> &[u8] {
         &self.x.biggest
     }
-    pub(crate) fn smallest(&self) -> &[u8] {
+
+    pub fn smallest(&self) -> &[u8] {
         &self.x.smallest
     }
 }
@@ -307,6 +311,7 @@ impl TableCore {
 
 impl Drop for TableCore {
     fn drop(&mut self) {
+        dbg!(self._ref.load(Ordering::Relaxed));
         // We can safely delete this file, because for all the current files, we always have
         // at least one reference pointing to them.
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -337,15 +342,18 @@ impl Display for TableCore {
         let biggest = String::from_utf8_lossy(self.biggest());
         writeln!(
             f,
-            "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}, index-size: {:?}, smallest: {}, biggest: {}",
+            "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}, smallest: {}, biggest: {}",
             self._ref.load(Ordering::Relaxed),
             self.file_name,
             self.block_index.len(),
             self.id,
             self.table_size,
-            index_str,
             smallest, biggest,
-        )
+        ).unwrap();
+        for index in index_str {
+            writeln!(f, "{}", index).unwrap();
+        }
+        Ok(())
     }
 }
 

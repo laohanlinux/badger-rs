@@ -10,9 +10,14 @@ pub trait Encode {
 pub trait Decode {
     fn dec(&mut self, rd: &mut dyn Read) -> Result<()>;
 }
+use tokio::io::{AsyncRead, AsyncWrite};
 
 #[async_trait]
-pub trait AsyncEncDec {
-    async fn enc(&self, wt: &mut dyn Write) -> Result<usize>;
-    async fn dec(&mut self, rd: &mut dyn Read) -> Result<()>;
+pub trait AsyncEncDec<R, W>
+where
+    R: AsyncRead,
+    W: AsyncWrite,
+{
+    async fn enc(&self, wt: &mut W) -> Result<usize>;
+    async fn dec(&mut self, rd: &R) -> Result<()>;
 }

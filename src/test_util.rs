@@ -1,8 +1,12 @@
+use chrono::Local;
 use log::{info, kv::source::as_map, kv::Source, Level};
 use rand::random;
 use std::collections::HashMap;
 use std::env::temp_dir;
 use std::fs::create_dir_all;
+use std::io;
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::time::FormatTime;
 
 #[cfg(test)]
 pub(crate) fn mock_log() {
@@ -54,9 +58,55 @@ pub(crate) fn mock_log_terminal() {
     console_log::init_with_level(Level::Debug);
 }
 
+#[cfg(test)]
+pub(crate) fn tracing_log() {
+    use tracing::{info, Level};
+    use tracing_subscriber;
+    struct LocalTimer;
+
+    impl FormatTime for LocalTimer {
+        fn format_time(&self, w: &mut Writer<'_>) -> std::fmt::Result {
+            write!(w, "{}", Local::now().format("%FT%T%.3f"))
+        }
+    }
+
+    let _ = tracing_log::LogTracer::init();
+    let format = tracing_subscriber::fmt::format()
+        .with_level(true)
+        .with_target(true)
+        .with_timer(LocalTimer);
+
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(io::stdout)
+        .with_ansi(true)
+        .event_format(format)
+        .try_init();
+    tracing::info!("log setting done");
+}
+
 pub fn random_tmp_dir() -> String {
     let id = random::<u32>();
     let path = temp_dir().join(id.to_string()).join("badger");
     // create_dir_all(&path).unwrap();
     path.to_str().unwrap().to_string()
+}
+
+#[test]
+fn itwork() {
+
+    #[tracing::instrument(skip_all)]
+    fn call() {
+        info!("call c");
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn my_function(my_arg: usize) {
+        info!("execute my function");
+        call();
+    }
+
+    tracing_log();
+    my_function(1000);
+    info!("Hello Body");
 }

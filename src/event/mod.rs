@@ -1,7 +1,5 @@
-
-
 /// An `EventLog` provides a log of events associated with a specific object.
-pub trait EventLog{
+pub trait EventLog {
     /// Formats its arguments with fmt.Sprintf and adds the
     /// result to the event log.
     fn printf(&self);

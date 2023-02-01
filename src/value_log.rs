@@ -23,12 +23,12 @@ use std::sync::Arc;
 use std::{fmt, fs, thread};
 use tabled::object::Entity::Cell;
 
-use crate::kv::KV;
+use crate::kv::{ArcKV, KV, WeakKV};
 use crate::log_file::LogFile;
 use crate::options::Options;
 use crate::skl::BlockBytes;
 use crate::table::iterator::BlockSlice;
-use crate::types::Channel;
+use crate::types::{Channel, XArc};
 use crate::y::{
     create_synced_file, is_eof, open_existing_synced_file, read_at, sync_directory, Decode, Encode,
 };
@@ -40,12 +40,12 @@ use crate::{Error, Result};
 bitflags! {
     pub struct MetaBit: u8{
         /// Set if the key has been deleted.
-        const BitDelete = 1;
+        const BIT_DELETE = 1;
         /// Set if the value is NOT stored directly next to key.
-        const BitValuePointer = 2;
-        const BitUnused = 4;
+        const BIT_VALUE_POINTER = 2;
+        const BIT_UNUSED = 4;
         /// Set if the key is set using SetIfAbsent.
-        const BitSetIfAbsent = 8;
+        const BIT_SET_IF_ABSENT = 8;
     }
 }
 
@@ -116,7 +116,6 @@ impl Entry {
 
 impl Encode for Entry {
     fn enc(&self, wt: &mut dyn Write) -> Result<usize> {
-        use crc32fast::Hasher;
         let mut h = Header::default();
         h.k_len = self.key.len() as u32;
         h.v_len = self.value.len() as u32;
@@ -387,7 +386,7 @@ impl ValueLogCore {
             let mut cursor = Cursor::new(buffer);
             let mut h = Header::default();
             h.dec(&mut cursor)?;
-            if (h.meta & MetaBit::BitDelete.bits()) != 0 {
+            if (h.meta & MetaBit::BIT_DELETE.bits()) != 0 {
                 // Tombstone key
                 return consumer(&vec![]);
             }

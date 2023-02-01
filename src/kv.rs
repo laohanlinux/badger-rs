@@ -1,10 +1,11 @@
-use crate::manifest::{open_or_create_manifest_file, Manifest};
+use crate::manifest::{open_or_create_manifest_file, Manifest, ManifestFile};
 use crate::options::Options;
 use crate::table::builder::Builder;
 use crate::table::iterator::IteratorImpl;
 use crate::types::{Channel, Closer, XArc, XWeak};
 use crate::value_log::{Request, ValueLogCore, ValuePointer};
 use crate::y::{Encode, Result, ValueStruct};
+use crate::Error::Unexpected;
 use crate::{Error, Node, SkipList};
 use fs2::FileExt;
 use log::info;
@@ -15,6 +16,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
+use tokio::sync::{RwLock, RwLockWriteGuard};
 
 const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
 // Prefix for internal keys used by badger.
@@ -36,7 +38,7 @@ struct FlushTask {
 pub struct KV {
     pub opt: Options,
     pub vlog: Option<ValueLogCore>,
-    pub manifest: Manifest,
+    pub manifest: Arc<RwLock<ManifestFile>>,
     flush_chan: Channel<FlushTask>,
     // write_chan: Channel<Request>,
     dir_lock_guard: File,
@@ -51,19 +53,12 @@ pub struct KV {
     last_used_cas_counter: AtomicU64,
 }
 
-impl Drop for KV {
-    fn drop(&mut self) {
-        self.dir_lock_guard.unlock().unwrap();
-        self.value_dir_guard.unlock().unwrap();
-        self.closers.compactors.signal_and_wait();
-        self.closers.mem_table.signal_and_wait();
-        self.closers.writes.signal_and_wait();
-        self.closers.update_size.signal_and_wait();
-    }
-}
+// TODO not add bellow lines
+unsafe impl Send for KV {}
+unsafe impl Sync for KV {}
 
 impl KV {
-    pub fn new(opt: Options) -> Result<KV> {
+    pub fn new(opt: Options) -> Result<XArc<KV>> {
         let mut _opt = opt.clone();
         _opt.max_batch_size = (15 * opt.max_table_size) / 100;
         _opt.max_batch_count = opt.max_batch_size / Node::size() as u64;
@@ -94,11 +89,11 @@ impl KV {
             value_gc: Closer::new(0),
         };
         // go out.updateSize(out.closers.updateSize)
-        let mut mt = SkipList::new(arena_size(&opt));
+        let mt = SkipList::new(arena_size(&opt));
         let mut out = KV {
             opt: opt.clone(),
             vlog: None,
-            manifest,
+            manifest: Arc::new(RwLock::new(manifest_file)),
             flush_chan: Channel::new(1),
             // write_chan: Channel::new(1),
             dir_lock_guard,
@@ -110,16 +105,32 @@ impl KV {
         };
         let mut vlog = ValueLogCore::default();
         vlog.open(&out, opt)?;
+
         out.vlog = Some(vlog);
-        Ok(out)
+        Ok(XArc::new(out))
     }
 
-    pub fn must_vlog(&self) -> &ValueLogCore {
-        self.vlog.as_ref().unwrap()
-    }
+    // pub fn must_vlog(&self) -> &ValueLogCore {
+    //     self.vlog.as_ref().unwrap()
+    // }
 
-    pub fn must_mut_vlog(&mut self) -> &mut ValueLogCore {
-        self.vlog.as_mut().unwrap()
+    // pub fn must_mut_vlog(&mut self) -> &mut ValueLogCore {
+    //     self.vlog.as_mut().unwrap()
+    // }
+
+    /// close kv, should be call only once
+    pub async fn close(&self) -> Result<()> {
+        self.dir_lock_guard
+            .unlock()
+            .map_err(|err| Unexpected(err.to_string()))?;
+        self.value_dir_guard
+            .unlock()
+            .map_err(|err| Unexpected(err.to_string()))?;
+        self.closers.compactors.signal_and_wait().await;
+        self.closers.mem_table.signal_and_wait().await;
+        self.closers.writes.signal_and_wait().await;
+        self.closers.update_size.signal_and_wait().await;
+        Ok(())
     }
 }
 
@@ -251,6 +262,12 @@ impl KV {
 pub type WeakKV = XWeak<KV>;
 
 pub type ArcKV = XArc<KV>;
+
+impl ArcKV {
+    pub async fn manifest_wl(&self) -> RwLockWriteGuard<'_, ManifestFile> {
+        self.manifest.write().await
+    }
+}
 
 impl Clone for WeakKV {
     fn clone(&self) -> Self {
