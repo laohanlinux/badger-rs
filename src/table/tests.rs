@@ -575,7 +575,7 @@ mod utils {
         format!("{}{:04}", prefix, n)
     }
 
-    struct TableBuilder {
+    pub(crate) struct TableBuilder {
         path: String,
         key_value: Vec<(Vec<u8>, Vec<u8>)>,
         mode: FileLoadingMode,

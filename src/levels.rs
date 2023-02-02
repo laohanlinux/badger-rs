@@ -5,8 +5,11 @@ use crate::manifest::{Manifest, ManifestChangeBuilder, ManifestFile};
 use crate::options::Options;
 use crate::pb::badgerpb3::manifest_change::Operation::{CREATE, DELETE};
 use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet};
+use crate::table::builder::Builder;
+use crate::table::iterator::{ConcatIterator, IteratorItem};
 use crate::table::table::{new_file_name, Table, TableCore};
-use crate::types::{Closer, XArc, XWeak};
+use crate::types::{Channel, Closer, XArc, XWeak};
+use crate::y::iterator::{MergeIterOverBuilder, Xiterator};
 use crate::Error::Unexpected;
 use crate::Result;
 use atomic::Ordering;
@@ -14,7 +17,7 @@ use awaitgroup::WaitGroup;
 use drop_cell::defer;
 use log::{error, info};
 use parking_lot::lock_api::RawRwLock;
-use parking_lot::{RwLock, RwLockReadGuard};
+use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
@@ -205,10 +208,13 @@ impl LevelsController {
             return Ok(());
         }
 
+        let cd = Arc::new(tokio::sync::RwLock::new(cd));
         // NOTE: table deref
-        let new_tables = self.compact_build_tables(l, &cd)?;
+        let new_tables = self.compact_build_tables(l, cd.clone()).await?;
         let deref_tables = || new_tables.iter().for_each(|tb| tb.decr_ref());
         defer! {deref_tables();}
+
+        let cd = cd.write().await;
         let change_set = Self::build_change_set(&cd, &new_tables);
 
         // We write to the manifest _before_ we delete files (and after we created files)
@@ -237,8 +243,90 @@ impl LevelsController {
         Ok(())
     }
 
-    fn compact_build_tables(&self, l: usize, cd: &CompactDef) -> Result<Vec<Table>> {
+    // Merge top tables and bot tables to from a List of new tables.
+    pub(crate) async fn compact_build_tables(
+        &self,
+        l: usize,
+        cd: Arc<tokio::sync::RwLock<CompactDef>>,
+    ) -> Result<Vec<Table>> {
+        let cd = cd.read().await;
+        let top_tables = &cd.top;
+        let bot_tables = &cd.bot;
+
+        // Create iterators across all the tables involved first.
+        let mut itr: Vec<&dyn Xiterator<Output = IteratorItem>> = vec![];
+        if l == 0 {
+            Self::append_iterators_reversed(&mut itr, top_tables, false);
+        } else {
+            assert_eq!(1, top_tables.len());
+            Self::append_iterators_reversed(&mut itr, &top_tables[..1].to_vec(), false);
+        }
+
+        // Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
+        // TODO
+        let bot_tables = bot_tables.iter().map(|t| t.to_ref()).collect::<Vec<_>>();
+        let citr = ConcatIterator::new(bot_tables, false);
+        itr.push(&citr);
+        let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
+        // Important to close the iterator to do ref counting.
+        defer! {mitr.close()};
+        mitr.rewind();
+
+        // Start generating new tables.
+        struct NewTableResult {
+            table: Table,
+            err: Result<()>,
+        }
+        let result_ch: Channel<NewTableResult> = Channel::new(1);
+
+        // TODO
+        loop {
+            let start_time = SystemTime::now();
+            let mut builder = Builder::default();
+            for value in mitr.next() {
+                if builder.reached_capacity(self.must_kv().opt.max_table_size) {
+                    break;
+                }
+                assert!(builder.add(value.key(), value.value()).is_ok());
+            }
+            if builder.empty() {
+                break;
+            }
+            // It was true that it.Valid() at least once in the loop above, which means we
+            // called Add() at least once, and builder is not Empty().
+            info!(
+                "LOG Compacted: Iteration to generate one table took: {}",
+                start_time.elapsed().unwrap().as_millis()
+            );
+
+            // TODO
+            let file_id = self.reserve_file_id();
+            // async
+        }
+        let mut new_tables = vec![];
+        let mut first_err = Ok(());
+        // Wait for all table builders to finished.
+
+        while let Ok(ret) = result_ch.recv().await {
+            new_tables.push(ret.table.clone());
+            if ret.err.is_err() {
+                first_err = ret.err;
+            }
+        }
         todo!()
+    }
+
+    // TODO
+    fn append_iterators_reversed(
+        out: &mut Vec<&dyn Xiterator<Output = IteratorItem>>,
+        th: &Vec<Table>,
+        reversed: bool,
+    ) {
+        // for itr_th in th.iter().rev() {
+        //     // This will increment the reference of the table handler.
+        //     let itr = IteratorImpl::new(itr_th, reversed);
+        //     out.push(Box::new(itr));
+        // }
     }
 
     fn build_change_set(cd: &CompactDef, new_tables: &Vec<Table>) -> Vec<ManifestChange> {
@@ -411,6 +499,11 @@ impl LevelsController {
 
     fn must_kv(&self) -> Arc<KV> {
         self.kv.x.upgrade().unwrap()
+    }
+
+    fn reserve_file_id(&self) -> i64 {
+        let id = self.next_file_id.fetch_add(1, Ordering::Relaxed);
+        id
     }
 }
 
