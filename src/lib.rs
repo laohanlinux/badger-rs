@@ -13,6 +13,7 @@
 #![feature(unwrap_infallible)]
 #![feature(slice_pattern)]
 #![feature(slice_take)]
+#![feature(arc_into_inner)]
 
 use std::io;
 use std::mem::align_of;

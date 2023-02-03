@@ -179,6 +179,10 @@ impl<T> XArc<T> {
     pub fn to_ref(&self) -> &T {
         self.x.as_ref()
     }
+
+    pub fn to_inner(self) -> Option<T> {
+        Arc::into_inner(self.x)
+    }
 }
 
 impl<T> XWeak<T> {

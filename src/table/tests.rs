@@ -8,6 +8,7 @@ mod utils {
     use crate::y::{open_synced_file, read_at, ValueStruct};
     use memmap::MmapOptions;
     use rand::random;
+    use serde_json::ser::CharEscape::Tab;
     use std::borrow::Borrow;
     use std::cell::RefCell;
     use std::cmp::Ordering;
@@ -54,7 +55,7 @@ mod utils {
         for n in vec![101, 199, 200, 250, 9999, 10000] {
             let (mut fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
-            let iter = crate::table::iterator::IteratorImpl::new(&table, false);
+            let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
             let value = iter.seek_to_last();
             assert!(value.is_some());
             let v = value.as_ref().unwrap().value();
@@ -75,7 +76,7 @@ mod utils {
         let (mut fp, path) = build_test_table("k", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
 
-        let iter = crate::table::iterator::IteratorImpl::new(&table, false);
+        let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
 
         let data = vec![
             ("abc", true, "k0000"),
@@ -101,7 +102,7 @@ mod utils {
         let (mut fp, path) = build_test_table("k", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
 
-        let iter = crate::table::iterator::IteratorImpl::new(&table, false);
+        let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
         let data = vec![
             ("abc", false, ""),
             ("k0100", true, "k0100"),
@@ -126,7 +127,7 @@ mod utils {
         for n in vec![101, 199, 200, 250, 9999, 10000] {
             let (mut fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
-            let iter = crate::table::iterator::IteratorImpl::new(&table, false);
+            let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
             iter.reset();
             let mut count = 0;
             let value = iter.seek(b"");
@@ -150,7 +151,7 @@ mod utils {
         for n in vec![101, 199, 200, 250, 9999, 10000] {
             let (mut fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
-            let iter = crate::table::iterator::IteratorImpl::new(&table, false);
+            let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
             iter.reset();
             let value = iter.seek(b"zzzzzz");
             assert!(value.is_none());
@@ -173,7 +174,7 @@ mod utils {
     fn table() {
         let (fp, path) = build_test_table("key", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
-        let iter = crate::table::iterator::IteratorImpl::new(&table, false);
+        let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
         let mut kid = 1010;
         let seek = key("key", kid);
         iter.seek(seek.as_bytes());
@@ -197,7 +198,7 @@ mod utils {
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
 
         let seek = key("key", 1010);
-        let iter = crate::table::iterator::IteratorImpl::new(&table, false);
+        let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
         let item = iter.seek(seek.as_bytes());
         assert!(item.is_some());
         assert_eq!(item.as_ref().unwrap().key(), seek.as_bytes().to_vec());
@@ -232,10 +233,11 @@ mod utils {
     #[test]
     fn uni_iterator() {
         let (fp, path) = build_test_table("key", 10000);
-        let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
+        let table =
+            Table::new(TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap());
 
         {
-            let iter = crate::table::iterator::IteratorImpl::new(&table, false);
+            let iter = crate::table::iterator::IteratorImpl::new(table.clone(), false);
             iter.rewind();
             let mut count = 0;
             while let Some(item) = iter.next() {
@@ -249,7 +251,7 @@ mod utils {
         }
 
         {
-            let iter = crate::table::iterator::IteratorImpl::new(&table, true);
+            let iter = crate::table::iterator::IteratorImpl::new(table.clone(), true);
             iter.rewind();
             let mut count = 0;
             while let Some(item) = iter.next() {
@@ -273,8 +275,8 @@ mod utils {
             (b"k2".to_vec(), b"a2".to_vec()),
         ]);
 
-        let t1 = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
-        let table_iter = ConcatIterator::new(vec![&t1], false);
+        let t1 = Table::new(TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap());
+        let table_iter = ConcatIterator::new(vec![t1], false);
         let v = table_iter.rewind().unwrap();
         assert_eq!(v.key(), b"k1");
         assert_eq!(v.value().value, b"a1".to_vec());
@@ -294,7 +296,7 @@ mod utils {
             .build_n("keyc", 10000);
 
         {
-            let iter = ConcatIterator::new(vec![&f1, &f2, &f3], false);
+            let iter = ConcatIterator::new(vec![f1.clone(), f2.clone(), f3.clone()], false);
             assert!(iter.rewind().is_some());
             let mut count = 0;
             while let Some(item) = iter.next() {
@@ -321,7 +323,8 @@ mod utils {
         }
 
         {
-            let iter = ConcatIterator::new(vec![&f1, &f2, &f3], true);
+            let iter =
+                ConcatIterator::new(vec![f1.clone(), f2.clone(), f3.clone()], true);
             assert!(iter.rewind().is_some());
         }
     }
@@ -343,8 +346,8 @@ mod utils {
             ])
             .build();
 
-        let itr1 = &IteratorImpl::new(&f1, false);
-        let itr2 = &ConcatIterator::new(vec![&f2], false);
+        let itr1 = &IteratorImpl::new(f1, false);
+        let itr2 = &ConcatIterator::new(vec![f2], false);
         let mut miter = MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
@@ -382,8 +385,8 @@ mod utils {
             ])
             .build();
 
-        let itr1 = &IteratorImpl::new(&f1, true);
-        let itr2 = &ConcatIterator::new(vec![&f2], true);
+        let itr1 = &IteratorImpl::new(f1, true);
+        let itr2 = &ConcatIterator::new(vec![f2], true);
         let mut miter = MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
@@ -409,8 +412,8 @@ mod utils {
             .build();
         let f2 = TableBuilder::new().mode(FileLoadingMode::MemoryMap).build();
 
-        let itr1 = &ConcatIterator::new(vec![&f1], false);
-        let itr2 = &ConcatIterator::new(vec![&f2], false);
+        let itr1 = &ConcatIterator::new(vec![f1], false);
+        let itr2 = &ConcatIterator::new(vec![f2], false);
         let mut miter = MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
@@ -439,8 +442,8 @@ mod utils {
                 (b"k2".to_vec(), b"a2".to_vec()),
             ])
             .build();
-        let itr1 = &ConcatIterator::new(vec![&f1], false);
-        let itr2 = &ConcatIterator::new(vec![&f2], false);
+        let itr1 = &ConcatIterator::new(vec![f1], false);
+        let itr2 = &ConcatIterator::new(vec![f2], false);
         let mut miter = MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
@@ -468,7 +471,7 @@ mod utils {
                 (b"k2".to_vec(), b"a2".to_vec()),
             ])
             .build();
-        let itr = IteratorImpl::new(&f1, false);
+        let itr = IteratorImpl::new(f1, false);
         let mut mitr = MergeIterOverBuilder::default().add(&itr).build();
         assert_eq!(mitr.next().unwrap().key(), b"k1");
         assert_eq!(mitr.next().unwrap().key(), b"k2");
@@ -506,10 +509,7 @@ mod utils {
                 (b"k2".to_vec(), b"a2".to_vec()),
             ])
             .build();
-        let x_table = Table::new(f1);
-        let core = x_table.to_ref();
-        let cores = vec![core];
-        let itr = ConcatIterator::new(cores, false);
+        let itr = ConcatIterator::new(vec![f1], false);
     }
 
     fn build_table(mut key_value: Vec<(Vec<u8>, Vec<u8>)>) -> (File, String) {
@@ -611,20 +611,20 @@ mod utils {
         //     self
         // }
 
-        fn build(&mut self) -> TableCore {
+        fn build(&mut self) -> Table {
             let table = build_table(self.key_value.clone());
             self.path = table.1.clone();
             let t1 = TableCore::open_table(table.0, self.path.as_ref(), FileLoadingMode::MemoryMap)
                 .unwrap();
-            t1
+            Table::new(t1)
         }
 
-        fn build_n(&mut self, prefix: &str, n: isize) -> TableCore {
+        fn build_n(&mut self, prefix: &str, n: isize) -> Table {
             let table = build_test_table(prefix, n);
             self.path = table.1.clone();
             let t1 = TableCore::open_table(table.0, self.path.as_ref(), FileLoadingMode::MemoryMap)
                 .unwrap();
-            t1
+            Table::new(t1)
         }
     }
 }

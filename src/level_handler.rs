@@ -184,7 +184,7 @@ impl LevelHandler {
             let tw = self.tables_rd();
             for tb in tw.iter().rev() {
                 tb.incr_ref();
-                let it = IteratorImpl::new(tb.to_ref(), false);
+                let it = IteratorImpl::new(tb.clone(), false);
                 let item = it.seek(key);
                 tb.decr_ref();
                 if item.is_none() {
@@ -203,7 +203,7 @@ impl LevelHandler {
             }
             let tb = tw.get(ok.unwrap()).unwrap();
             tb.incr_ref();
-            let it = IteratorImpl::new(tb.to_ref(), false);
+            let it = IteratorImpl::new(tb.clone(), false);
             let item = it.seek(key);
             tb.decr_ref();
             if item.is_none() {
@@ -228,21 +228,20 @@ impl LevelHandler {
         l: usize,
         cd: &'static CompactDef,
     ) -> Result<Table> {
-        let top_tables = &cd.top;
-        let bot_tables = &cd.bot;
+        let top_tables = cd.top.clone();
+        let bot_tables = cd.bot.clone();
 
         // Create iterators across all the tables involved first.
         let mut itr: Vec<&dyn Xiterator<Output = IteratorItem>> = vec![];
         if l == 0 {
-            Self::append_iterators_reversed(&mut itr, top_tables, false);
+            // Self::append_iterators_reversed(&mut itr, top_tables, false);
         } else {
             assert_eq!(1, top_tables.len());
-            Self::append_iterators_reversed(&mut itr, &top_tables[..1].to_vec(), false);
+            // Self::append_iterators_reversed(&mut itr, &top_tables[..1].to_vec(), false);
         }
 
         // Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
         // TODO
-        let bot_tables = bot_tables.iter().map(|t| t.to_ref()).collect::<Vec<_>>();
         let citr = ConcatIterator::new(bot_tables, false);
         itr.push(&citr);
         let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
