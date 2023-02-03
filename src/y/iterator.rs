@@ -294,7 +294,7 @@ impl<'a> IterOverXIterator<'a> {
 }
 
 impl dyn Xiterator<Output = IteratorItem> + '_ {
-    fn get_iter<'a>(&'a self) -> IterOverXIterator<'a> {
+    fn get_iter(&self) -> IterOverXIterator {
         IterOverXIterator::new(self)
     }
 }

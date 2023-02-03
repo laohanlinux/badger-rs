@@ -1,3 +1,7 @@
+use std::mem;
+use std::pin::pin;
+use std::sync::Arc;
+
 #[cfg(test)]
 mod utils {
     use crate::options::FileLoadingMode;
@@ -323,8 +327,7 @@ mod utils {
         }
 
         {
-            let iter =
-                ConcatIterator::new(vec![f1.clone(), f2.clone(), f3.clone()], true);
+            let iter = ConcatIterator::new(vec![f1.clone(), f2.clone(), f3.clone()], true);
             assert!(iter.rewind().is_some());
         }
     }
@@ -627,4 +630,27 @@ mod utils {
             Table::new(t1)
         }
     }
+}
+
+#[test]
+fn await_() {
+    use async_trait;
+    use tokio; // 1.24.1 // 0.1.61
+
+    pub trait XIterator {}
+
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async move {
+            tokio::spawn(async move {
+                {
+                    let v: Vec<Box<dyn XIterator>> = vec![];
+                }
+
+                let v: Vec<Box<dyn XIterator + Send + Sync + 'static>> = vec![];
+                let c = tokio::sync::mpsc::channel::<i32>(100);
+                c.0.send(100).await;
+                100
+            });
+        });
 }
