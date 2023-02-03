@@ -250,68 +250,71 @@ impl LevelsController {
         l: usize,
         cd: Arc<tokio::sync::RwLock<CompactDef>>,
     ) -> Result<Vec<Table>> {
+
         let cd = cd.read().await;
-        let top_tables = &cd.top;
-        let bot_tables = &cd.bot;
+        let top_tables = cd.top.clone();
+        let bot_tables = cd.bot.clone();
 
         // Create iterators across all the tables involved first.
-        let mut itr: Vec<&dyn Xiterator<Output = IteratorItem>> = vec![];
-        if l == 0 {
-            Self::append_iterators_reversed(&mut itr, top_tables, false);
-        } else {
-            assert_eq!(1, top_tables.len());
-            Self::append_iterators_reversed(&mut itr, &top_tables[..1].to_vec(), false);
-        }
-
-        // Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
-        // TODO
-        let bot_tables = bot_tables.iter().map(|t| t.to_ref()).collect::<Vec<_>>();
-        let citr = ConcatIterator::new(bot_tables, false);
-        itr.push(&citr);
-        let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
-        // Important to close the iterator to do ref counting.
-        defer! {mitr.close()};
-        mitr.rewind();
-
-        // Start generating new tables.
+        let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        // if l == 0 {
+        //     Self::append_iterators_reversed(&mut itr, &top_tables, false);
+        // } else {
+        //     assert_eq!(1, top_tables.len());
+        //     Self::append_iterators_reversed(&mut itr, &top_tables[..1].to_vec(), false);
+        // }
+        //
+        // // Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
+        // // TODO
+        // let bot_tables = bot_tables.iter().map(|t| t.to_ref()).collect::<Vec<_>>();
+        // let citr = ConcatIterator::new(bot_tables, false);
+        // itr.push(Box::new(citr));
+        // // let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
+        // let mitr = MergeIterOverBuilder::default().build();
+        //
+        // // Important to close the iterator to do ref counting.
+        // defer! {mitr.close()};
+        // mitr.rewind();
+        //
+        // // Start generating new tables.
         struct NewTableResult {
             table: Table,
             err: Result<()>,
         }
         let result_ch: Channel<NewTableResult> = Channel::new(1);
-
-        // TODO
-        loop {
-            let start_time = SystemTime::now();
-            let mut builder = Builder::default();
-            for value in mitr.next() {
-                if builder.reached_capacity(self.must_kv().opt.max_table_size) {
-                    break;
-                }
-                assert!(builder.add(value.key(), value.value()).is_ok());
-            }
-            if builder.empty() {
-                break;
-            }
-            // It was true that it.Valid() at least once in the loop above, which means we
-            // called Add() at least once, and builder is not Empty().
-            info!(
-                "LOG Compacted: Iteration to generate one table took: {}",
-                start_time.elapsed().unwrap().as_millis()
-            );
-
-            // TODO
-            let file_id = self.reserve_file_id();
-            // async
-        }
-        // let mut new_tables = vec![];
-        // let mut first_err = Ok(());
-        // // Wait for all table builders to finished.
         //
-        // while let Ok(ret) = result_ch.recv().await {
-        //     new_tables.push(ret.table.clone());
-        //     if ret.err.is_err() {
-        //         first_err = ret.err;
+        // // TODO
+        // loop {
+        //     let start_time = SystemTime::now();
+        //     let mut builder = Builder::default();
+        //     for value in mitr.next() {
+        //         if builder.reached_capacity(self.must_kv().opt.max_table_size) {
+        //             break;
+        //         }
+        //         assert!(builder.add(value.key(), value.value()).is_ok());
+        //     }
+        //     if builder.empty() {
+        //         break;
+        //     }
+        //     // It was true that it.Valid() at least once in the loop above, which means we
+        //     // called Add() at least once, and builder is not Empty().
+        //     info!(
+        //         "LOG Compacted: Iteration to generate one table took: {}",
+        //         start_time.elapsed().unwrap().as_millis()
+        //     );
+        //
+        //     // TODO
+        //     let file_id = self.reserve_file_id();
+        //     // async
+        // }
+        // // let mut new_tables = vec![];
+        // // let mut first_err = Ok(());
+        // // // Wait for all table builders to finished.
+        // //
+        // // while let Ok(ret) = result_ch.recv().await {
+        // //     new_tables.push(ret.table.clone());
+        // //     if ret.err.is_err() {
+        // //         first_err = ret.err;
         //     }
         // }
         todo!()
@@ -319,7 +322,7 @@ impl LevelsController {
 
     // TODO
     fn append_iterators_reversed(
-        out: &mut Vec<&dyn Xiterator<Output = IteratorItem>>,
+        out: &mut Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
         th: &Vec<Table>,
         reversed: bool,
     ) {
