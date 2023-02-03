@@ -7,6 +7,7 @@ use crate::pb::badgerpb3::manifest_change::Operation::{CREATE, DELETE};
 use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet};
 use crate::table::builder::Builder;
 use crate::table::iterator::{ConcatIterator, IteratorItem};
+
 use crate::table::table::{new_file_name, Table, TableCore};
 use crate::types::{Channel, Closer, XArc, XWeak};
 use crate::y::iterator::{MergeIterOverBuilder, Xiterator};
@@ -303,16 +304,16 @@ impl LevelsController {
             let file_id = self.reserve_file_id();
             // async
         }
-        let mut new_tables = vec![];
-        let mut first_err = Ok(());
-        // Wait for all table builders to finished.
-
-        while let Ok(ret) = result_ch.recv().await {
-            new_tables.push(ret.table.clone());
-            if ret.err.is_err() {
-                first_err = ret.err;
-            }
-        }
+        // let mut new_tables = vec![];
+        // let mut first_err = Ok(());
+        // // Wait for all table builders to finished.
+        //
+        // while let Ok(ret) = result_ch.recv().await {
+        //     new_tables.push(ret.table.clone());
+        //     if ret.err.is_err() {
+        //         first_err = ret.err;
+        //     }
+        // }
         todo!()
     }
 
