@@ -221,56 +221,6 @@ impl LevelHandler {
     fn kv(&self) -> XArc<KV> {
         self.x.kv.upgrade().unwrap()
     }
-
-    // Merge top tables and bot tables to from a List of new tables.
-    pub(crate) async fn compact_build_tables(
-        &self,
-        l: usize,
-        cd: &'static CompactDef,
-    ) -> Result<Table> {
-        let top_tables = cd.top.clone();
-        let bot_tables = cd.bot.clone();
-
-        // Create iterators across all the tables involved first.
-        let mut itr: Vec<&dyn Xiterator<Output = IteratorItem>> = vec![];
-        if l == 0 {
-            // Self::append_iterators_reversed(&mut itr, top_tables, false);
-        } else {
-            assert_eq!(1, top_tables.len());
-            // Self::append_iterators_reversed(&mut itr, &top_tables[..1].to_vec(), false);
-        }
-
-        // Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
-        // TODO
-        let citr = ConcatIterator::new(bot_tables, false);
-        itr.push(&citr);
-        let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
-        // Important to close the iterator to do ref counting.
-        defer! {mitr.close()};
-        mitr.rewind();
-
-        // Start generating new tables.
-        struct NewTableResult {
-            table: Table,
-            err: Result<()>,
-        }
-        let result_ch: Channel<NewTableResult> = Channel::new(1);
-        todo!()
-    }
-
-    // TODO
-    // fn append_iterators_reversed(
-    //     mut out: Vec<dyn Xiterator<Output = IteratorItem> + '_>,
-    //     th: Vec<Table>,
-    //     reversed: bool,
-    // ) -> Vec<dyn Xiterator<Output = IteratorItem>> {
-    //     for itr_th in th.iter().rev() {
-    //         // This will increment the reference of the table handler.
-    //         let itr = IteratorImpl::new(itr_th, reversed);
-    //         out.push(Box::new(itr));
-    //     }
-    //     out
-    // }
 }
 
 pub(crate) struct LevelHandlerInner {

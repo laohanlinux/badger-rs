@@ -349,8 +349,8 @@ mod utils {
             ])
             .build();
 
-        let itr1 = &IteratorImpl::new(f1, false);
-        let itr2 = &ConcatIterator::new(vec![f2], false);
+        let itr1 = Box::new(IteratorImpl::new(f1, false));
+        let itr2 = Box::new(ConcatIterator::new(vec![f2], false));
         let mut miter = MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
@@ -388,8 +388,8 @@ mod utils {
             ])
             .build();
 
-        let itr1 = &IteratorImpl::new(f1, true);
-        let itr2 = &ConcatIterator::new(vec![f2], true);
+        let itr1 = Box::new(IteratorImpl::new(f1, true));
+        let itr2 = Box::new(ConcatIterator::new(vec![f2], true));
         let mut miter = MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
@@ -415,8 +415,8 @@ mod utils {
             .build();
         let f2 = TableBuilder::new().mode(FileLoadingMode::MemoryMap).build();
 
-        let itr1 = &ConcatIterator::new(vec![f1], false);
-        let itr2 = &ConcatIterator::new(vec![f2], false);
+        let itr1 = Box::new(ConcatIterator::new(vec![f1], false));
+        let itr2 = Box::new(ConcatIterator::new(vec![f2], false));
         let mut miter = MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
@@ -445,8 +445,8 @@ mod utils {
                 (b"k2".to_vec(), b"a2".to_vec()),
             ])
             .build();
-        let itr1 = &ConcatIterator::new(vec![f1], false);
-        let itr2 = &ConcatIterator::new(vec![f2], false);
+        let itr1 = Box::new(ConcatIterator::new(vec![f1], false));
+        let itr2 = Box::new(ConcatIterator::new(vec![f2], false));
         let mut miter = MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
@@ -475,7 +475,7 @@ mod utils {
             ])
             .build();
         let itr = IteratorImpl::new(f1, false);
-        let mut mitr = MergeIterOverBuilder::default().add(&itr).build();
+        let mut mitr = MergeIterOverBuilder::default().add(Box::new(itr)).build();
         assert_eq!(mitr.next().unwrap().key(), b"k1");
         assert_eq!(mitr.next().unwrap().key(), b"k2");
         assert!(mitr.next().is_none());

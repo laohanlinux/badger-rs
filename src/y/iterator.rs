@@ -203,29 +203,29 @@ impl MergeIterOverIterator<'_> {
 }
 
 #[derive(Default)]
-pub struct MergeIterOverBuilder<'a> {
-    all: Vec<&'a dyn Xiterator<Output = IteratorItem>>,
+pub struct MergeIterOverBuilder {
+    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     reverse: bool,
     top: bool,
 }
 
-impl<'a> MergeIterOverBuilder<'a> {
-    pub fn add(mut self, x: &'a dyn Xiterator<Output = IteratorItem>) -> MergeIterOverBuilder<'_> {
+impl<'a> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<&'a dyn Xiterator<Output = IteratorItem>>,
+        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     ) -> MergeIterOverBuilder {
-        self.all.extend_from_slice(&iters);
+        self.all.extend(iters);
         self
     }
 
     pub fn build(mut self) -> MergeIterOverIterator<'a> {
         let mut all = vec![];
-        for (index, e) in self.all.iter().enumerate() {
+        for (index, e) in self.all.into_iter().enumerate() {
             let mut itr = e.get_iter();
             itr.nice = index as isize + 1;
             all.push(itr);
@@ -342,20 +342,20 @@ fn merge_iter_element() {
         }
     }
 
-    let t1 = TestIterator {
+    let t1 = Box::new(TestIterator {
         key: b"abd".to_vec(),
-    };
-    let t2 = TestIterator {
+    });
+    let t2 = Box::new(TestIterator {
         key: b"abc".to_vec(),
-    };
-    let t3 = TestIterator {
+    });
+    let t3 = Box::new(TestIterator {
         key: b"abc".to_vec(),
-    };
-    let t4 = TestIterator {
+    });
+    let t4 = Box::new(TestIterator {
         key: b"abc".to_vec(),
-    };
+    });
 
-    let builder = MergeIterOverBuilder::default().add_batch(vec![&t3, &t1, &t4, &t2]);
+    let builder = MergeIterOverBuilder::default().add_batch(vec![t3, t1, t4, t2]);
     let miter = builder.build();
     miter.elements.borrow_mut().sort();
     miter.elements.borrow().iter().for_each(|e| {
