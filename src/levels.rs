@@ -10,9 +10,10 @@ use crate::table::iterator::{ConcatIterator, IteratorItem};
 
 use crate::table::table::{new_file_name, Table, TableCore};
 use crate::types::{Channel, Closer, XArc, XWeak};
+use crate::y::create_synced_file;
 use crate::y::iterator::{MergeIterOverBuilder, Xiterator};
 use crate::Error::Unexpected;
-use crate::Result;
+use crate::{Error, Result};
 use atomic::Ordering;
 use awaitgroup::WaitGroup;
 use drop_cell::defer;
@@ -23,6 +24,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::fs::remove_file;
+use std::io::Write;
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64};
@@ -30,13 +32,14 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::vec;
 use tokio::macros::support::thread_rng_n;
+use tracing_subscriber::fmt::format;
 
 #[derive(Clone)]
 pub(crate) struct LevelsController {
     // The following are initialized once and const
     levels: Arc<Vec<LevelHandler>>,
     kv: WeakKV,
-    next_file_id: Arc<AtomicI64>,
+    next_file_id: Arc<AtomicU64>,
     // For ending compactions.
     compact_worker_wg: Arc<WaitGroup>,
     // Store compact status that will be run or has running
@@ -252,7 +255,7 @@ impl LevelsController {
     ) -> Result<Vec<Table>> {
         // Start generating new tables.
         struct NewTableResult {
-            table: Table,
+            table: Option<Table>,
             err: Result<()>,
         }
         let result_ch: Channel<NewTableResult> = Channel::new(1);
@@ -300,7 +303,49 @@ impl LevelsController {
 
                 // TODO
                 let file_id = self.reserve_file_id();
-                // async
+                let dir = self.must_kv().opt.dir.clone();
+                let file_name = new_file_name(file_id, dir.to_string());
+                let tx = result_ch.tx();
+                let kv = self.must_kv();
+                tokio::spawn(async move {
+                    let fd = create_synced_file(&file_name, true);
+                    if fd.is_err() {
+                        tx.send(NewTableResult {
+                            table: None,
+                            err: Err(format!("While opening new table: {}", file_id).into()),
+                        })
+                        .await
+                        .unwrap();
+                        return;
+                    }
+                    if let Err(err) = fd.as_ref().unwrap().write_all(&builder.finish()) {
+                        tx.send(NewTableResult {
+                            table: None,
+                            err: Err(format!("Unable to write to file: {}", file_id).into()),
+                        })
+                        .await
+                        .unwrap();
+                        return;
+                    }
+
+                    let tbl =
+                        TableCore::open_table(fd.unwrap(), &file_name, kv.opt.table_loading_mode);
+                    if tbl.is_err() {
+                        tx.send(NewTableResult {
+                            table: None,
+                            err: Err(format!("Unable to open table: {}", file_name).into()),
+                        })
+                        .await
+                        .unwrap();
+                    } else {
+                        tx.send(NewTableResult {
+                            table: Some(Table::new(tbl.unwrap())),
+                            err: Ok(()),
+                        })
+                        .await
+                        .unwrap();
+                    }
+                });
             }
         }
 
@@ -501,7 +546,7 @@ impl LevelsController {
         self.kv.x.upgrade().unwrap()
     }
 
-    fn reserve_file_id(&self) -> i64 {
+    fn reserve_file_id(&self) -> u64 {
         let id = self.next_file_id.fetch_add(1, Ordering::Relaxed);
         id
     }

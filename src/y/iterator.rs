@@ -368,4 +368,6 @@ fn merge_iter_element() {
 }
 
 #[test]
-fn merge_iter_e() {}
+fn merge_iter_e() {
+    let v = vec![1];
+}
