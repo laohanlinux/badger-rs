@@ -6,18 +6,19 @@ use crate::options::Options;
 use crate::pb::badgerpb3::manifest_change::Operation::{CREATE, DELETE};
 use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet};
 use crate::table::builder::Builder;
-use crate::table::iterator::{ConcatIterator, IteratorItem};
+use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
 
 use crate::table::table::{new_file_name, Table, TableCore};
 use crate::types::{Channel, Closer, XArc, XWeak};
-use crate::y::create_synced_file;
 use crate::y::iterator::{MergeIterOverBuilder, Xiterator};
+use crate::y::{create_synced_file, sync_directory};
 use crate::Error::Unexpected;
 use crate::{Error, Result};
 use atomic::Ordering;
 use awaitgroup::WaitGroup;
 use drop_cell::defer;
 use log::{error, info};
+use num_cpus::get;
 use parking_lot::lock_api::RawRwLock;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use std::cell::RefCell;
@@ -254,34 +255,31 @@ impl LevelsController {
         cd: Arc<tokio::sync::RwLock<CompactDef>>,
     ) -> Result<Vec<Table>> {
         // Start generating new tables.
-        struct NewTableResult {
-            table: Option<Table>,
-            err: Result<()>,
-        }
-        let result_ch: Channel<NewTableResult> = Channel::new(1);
+        let (tx, mut rv) = tokio::sync::mpsc::unbounded_channel::<Result<Table>>();
         {
             let cd = cd.read().await;
             let top_tables = cd.top.clone();
             let bot_tables = cd.bot.clone();
             // Create iterators across all the tables involved first.
             let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
-            if l == 0 {
-                // Self::append_iterators_reversed(&mut itr, &top_tables, false);
-            } else {
+            if l != 0 {
                 assert_eq!(1, top_tables.len());
-                // Self::append_iterators_reversed(&mut itr, &top_tables[..1].to_vec(), false);
             }
-
+            for tb in top_tables {
+                let iter = Box::new(IteratorImpl::new(tb, false));
+                itr.push(iter);
+            }
             // Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
             // TODO
             let citr = ConcatIterator::new(bot_tables, false);
             itr.push(Box::new(citr));
-            // let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
+            // let mitr = MergeIterOverBuilder::default().add_batch(itr.iter().ma).build();
             let mitr = MergeIterOverBuilder::default().build();
 
             // Important to close the iterator to do ref counting.
             defer! {mitr.close()};
             mitr.rewind();
+            let mut g = WaitGroup::new();
             loop {
                 let start_time = SystemTime::now();
                 let mut builder = Builder::default();
@@ -301,64 +299,69 @@ impl LevelsController {
                     start_time.elapsed().unwrap().as_millis()
                 );
 
-                // TODO
                 let file_id = self.reserve_file_id();
                 let dir = self.must_kv().opt.dir.clone();
                 let file_name = new_file_name(file_id, dir.to_string());
-                let tx = result_ch.tx();
                 let kv = self.must_kv();
+                let worker = g.worker();
+                let tx = tx.clone();
                 tokio::spawn(async move {
+                    defer! {worker.done();}
                     let fd = create_synced_file(&file_name, true);
                     if fd.is_err() {
-                        tx.send(NewTableResult {
-                            table: None,
-                            err: Err(format!("While opening new table: {}", file_id).into()),
-                        })
-                        .await
-                        .unwrap();
+                        let _ = tx.send(Err(format!("While opening new table: {}", file_id).into()));
                         return;
                     }
                     if let Err(err) = fd.as_ref().unwrap().write_all(&builder.finish()) {
-                        tx.send(NewTableResult {
-                            table: None,
-                            err: Err(format!("Unable to write to file: {}", file_id).into()),
-                        })
-                        .await
-                        .unwrap();
+                        let _ =  tx.send(Err(format!("Unable to write to file: {}", file_id).into()));
                         return;
                     }
-
                     let tbl =
                         TableCore::open_table(fd.unwrap(), &file_name, kv.opt.table_loading_mode);
                     if tbl.is_err() {
-                        tx.send(NewTableResult {
-                            table: None,
-                            err: Err(format!("Unable to open table: {}", file_name).into()),
-                        })
-                        .await
-                        .unwrap();
+                        let _ =  tx.send(Err(format!("Unable to open table: {}", file_name).into()));
                     } else {
-                        tx.send(NewTableResult {
-                            table: Some(Table::new(tbl.unwrap())),
-                            err: Ok(()),
-                        })
-                        .await
-                        .unwrap();
+                        let _ = tx.send(Ok(Table::new(tbl.unwrap())));
                     }
                 });
             }
+            g.wait();
         }
-
-        let mut new_tables = vec![];
-        let mut first_err = Ok(());
+        drop(tx);
+        let mut new_tables = Vec::with_capacity(20);
+        let mut first_err: Result<()> = Ok(());
         // Wait for all table builders to finished.
-        while let Ok(ret) = result_ch.recv().await {
-            new_tables.push(ret.table.clone());
-            if ret.err.is_err() {
-                first_err = ret.err;
+        loop {
+            let tb = rv.recv().await;
+            if tb.is_none() {
+                break;
+            }
+            match tb.unwrap() {
+                Ok(tb) => {
+                    new_tables.push(tb);
+                }
+                Err(err) => {
+                    error!("{}", err);
+                    if first_err.is_ok() {
+                        first_err = Err(err);
+                    }
+                }
             }
         }
-        todo!()
+        if first_err.is_ok() {
+            // Ensure created files's directory entries are visible, We don't mind the extra latency
+            // from not doing this ASAP after all file creation has finished because this is a
+            // background operation
+            first_err = sync_directory(&self.must_kv().opt.dir);
+        }
+        new_tables.sort_by(|a, b| a.to_ref().biggest().cmp(b.to_ref().biggest()));
+        if first_err.is_err() {
+            // An error happened. Delete all the newly created table files (by calling Decref
+            // -- we're the only holders of a ref).
+            let _ = new_tables.iter().map(|tb| tb.decr_ref());
+            return Err(format!("While running compaction for: {}", cd.read().await).into());
+        }
+        Ok(new_tables)
     }
 
     // TODO

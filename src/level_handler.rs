@@ -259,17 +259,18 @@ impl LevelHandler {
     }
 
     // TODO
-    fn append_iterators_reversed(
-        out: &mut Vec<&dyn Xiterator<Output = IteratorItem>>,
-        th: &Vec<Table>,
-        reversed: bool,
-    ) {
-        // for itr_th in th.iter().rev() {
-        //     // This will increment the reference of the table handler.
-        //     let itr = IteratorImpl::new(itr_th, reversed);
-        //     out.push(Box::new(itr));
-        // }
-    }
+    // fn append_iterators_reversed(
+    //     mut out: Vec<dyn Xiterator<Output = IteratorItem> + '_>,
+    //     th: Vec<Table>,
+    //     reversed: bool,
+    // ) -> Vec<dyn Xiterator<Output = IteratorItem>> {
+    //     for itr_th in th.iter().rev() {
+    //         // This will increment the reference of the table handler.
+    //         let itr = IteratorImpl::new(itr_th, reversed);
+    //         out.push(Box::new(itr));
+    //     }
+    //     out
+    // }
 }
 
 pub(crate) struct LevelHandlerInner {

@@ -260,5 +260,5 @@ fn it_closer() {
     });
 }
 
-#[test]
-fn lck() {}
+#[tokio::test]
+async fn lck() {}
