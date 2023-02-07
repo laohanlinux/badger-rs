@@ -1,6 +1,11 @@
 use crate::table::iterator::IteratorItem;
-use crate::y::iterator::Xiterator;
-use std::cell::RefCell;
+use crate::test_util::{mock_log, mock_log_terminal};
+use crate::y::iterator::{KeyValue, Xiterator};
+use crate::y::ValueStruct;
+use log::info;
+use std::cell::{Ref, RefCell};
+use std::fmt;
+use std::fmt::Formatter;
 
 pub struct MergeIterElement {
     index: usize,
@@ -11,7 +16,6 @@ pub struct MergeIterCursor {
     cur_item: Option<IteratorItem>,
 }
 
-#[derive(Default)]
 pub struct MergeIterOverIterator {
     pub reverse: bool,
     pub all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
@@ -23,15 +27,32 @@ impl Xiterator for MergeIterOverIterator {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
-        todo!()
+        if self.cursor.borrow().is_dummy {
+            self.store_key(None);
+            return self.rewind();
+        }
+        if self.elements.borrow().is_empty() {
+            self.store_key(None);
+            return None;
+        }
+        println!("elements size: {}", self.elements.borrow().len());
+        self.move_cursor()
     }
 
     fn rewind(&self) -> Option<Self::Output> {
-        todo!()
+        for itr in self.all.iter() {
+            itr.rewind();
+        }
+        self.reset();
+        self.move_cursor()
     }
 
     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-        todo!()
+        for iter in self.all.iter() {
+            iter.seek(key);
+        }
+        self.reset();
+        self.peek()
     }
 
     fn peek(&self) -> Option<Self::Output> {
@@ -46,7 +67,21 @@ impl Xiterator for MergeIterOverIterator {
 impl MergeIterOverIterator {
     fn reset(&self) {
         self.elements.borrow_mut().clear();
+        for (index, itr) in self.all.iter().enumerate() {
+            if itr.peek().is_none() {
+                continue;
+            }
+            self.elements.borrow_mut().push(index);
+        }
 
+        self.elements.borrow_mut().sort_unstable_by(|a, b| {
+            let a_itr = self.all.get(*a).unwrap();
+            let b_itr = self.all.get(*b).unwrap();
+            if a_itr.peek().unwrap().key() == b_itr.peek().unwrap().key() {
+                return a.cmp(b);
+            }
+            a_itr.peek().unwrap().key().cmp(b_itr.peek().unwrap().key())
+        })
     }
 
     fn move_cursor(&self) -> Option<IteratorItem> {
@@ -81,4 +116,107 @@ impl MergeIterOverIterator {
         self.cursor.borrow_mut().is_dummy = item.is_none();
         self.cursor.borrow_mut().cur_item = item;
     }
+}
+
+#[derive(Default)]
+pub struct MergeIterOverBuilder {
+    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    reverse: bool,
+    top: bool,
+}
+
+impl MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
+        self.all.push(x);
+        self
+    }
+
+    pub fn add_batch(
+        mut self,
+        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    ) -> MergeIterOverBuilder {
+        self.all.extend(iters);
+        self
+    }
+
+    pub fn build(mut self) -> MergeIterOverIterator {
+        MergeIterOverIterator {
+            all: self.all,
+            reverse: self.reverse,
+            cursor: RefCell::new(MergeIterCursor {
+                is_dummy: true,
+                cur_item: None,
+            }),
+            elements: RefCell::new(vec![]),
+        }
+    }
+}
+
+#[test]
+fn merge_iter_element() {
+    #[derive(Debug)]
+    struct TestIterator {
+        key: Vec<u8>,
+    }
+
+    impl fmt::Display for TestIterator {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            write!(f, "key: {}", String::from_utf8_lossy(&self.key))
+        }
+    }
+
+    impl Xiterator for TestIterator {
+        type Output = IteratorItem;
+
+        fn next(&self) -> Option<Self::Output> {
+            self.peek()
+        }
+
+        fn rewind(&self) -> Option<Self::Output> {
+            self.peek()
+        }
+
+        fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+            self.peek()
+        }
+
+        fn peek(&self) -> Option<Self::Output> {
+            Some(IteratorItem::new(self.key.clone(), ValueStruct::default()))
+        }
+    }
+
+    impl KeyValue<ValueStruct> for TestIterator {
+        fn key(&self) -> &[u8] {
+            &self.key
+        }
+
+        fn value(&self) -> ValueStruct {
+            todo!()
+        }
+    }
+
+    let t1 = Box::new(TestIterator {
+        key: b"abd".to_vec(),
+    });
+    let t2 = Box::new(TestIterator {
+        key: b"abc".to_vec(),
+    });
+    let t3 = Box::new(TestIterator {
+        key: b"abc".to_vec(),
+    });
+    let t4 = Box::new(TestIterator {
+        key: b"abc".to_vec(),
+    });
+
+    let builder = MergeIterOverBuilder::default().add_batch(vec![t3, t1, t4, t2]);
+    let miter = builder.build();
+    miter.reset();
+    miter.next();
+    assert_eq!(miter.peek().unwrap().key(), b"abc");
+    miter.next();
+    assert_eq!(miter.peek().unwrap().key(), b"abd");
+    // println!("{:?}", miter.peek().unwrap().key());
+    // while let Some(item) = miter.next() {
+    //     println!("{}", item);
+    // }
 }
