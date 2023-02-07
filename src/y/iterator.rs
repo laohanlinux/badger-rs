@@ -224,22 +224,23 @@ impl<'a> MergeIterOverBuilder {
     }
 
     pub fn build(mut self) -> MergeIterOverIterator<'a> {
-        let mut all = vec![];
-        for (index, e) in self.all.into_iter().enumerate() {
-            let mut itr = e.get_iter();
-            itr.nice = index as isize + 1;
-            all.push(itr);
-        }
-        let m = MergeIterOverIterator {
-            all,
-            reverse: self.reverse,
-            cursor: RefCell::new(MergeIterCursor {
-                is_dummy: true,
-                cur_item: None,
-            }),
-            elements: RefCell::new(vec![]),
-        };
-        m
+        // let mut all = vec![];
+        // for (index, e) in self.all.into_iter().enumerate() {
+        //     let mut itr = e.get_iter();
+        //     itr.nice = index as isize + 1;
+        //     all.push(itr);
+        // }
+        // let m = MergeIterOverIterator {
+        //     all,
+        //     reverse: self.reverse,
+        //     cursor: RefCell::new(MergeIterCursor {
+        //         is_dummy: true,
+        //         cur_item: None,
+        //     }),
+        //     elements: RefCell::new(vec![]),
+        // };
+        // m
+        todo!()
     }
 }
 

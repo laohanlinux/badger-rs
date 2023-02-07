@@ -1,6 +1,7 @@
 mod codec;
 pub(crate) mod iterator;
 mod metrics;
+mod merge_iterator;
 
 pub use codec::{Decode, Encode, AsyncEncDec};
 pub use iterator::ValueStruct;
