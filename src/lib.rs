@@ -13,6 +13,7 @@
 #![feature(unwrap_infallible)]
 #![feature(slice_pattern)]
 #![feature(slice_take)]
+#![feature(arc_into_inner)]
 
 use std::io;
 use std::mem::align_of;
@@ -37,8 +38,8 @@ mod pb;
 #[cfg(test)]
 mod test_util;
 
-pub use skl::{Arena, Node, SkipList};
-pub use y::{Error, Result};
+pub use skl::*;
+pub use y::*;
 
 #[allow(dead_code)]
 #[inline]

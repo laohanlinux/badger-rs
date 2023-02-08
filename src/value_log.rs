@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::{fmt, fs, thread};
 use tabled::object::Entity::Cell;
 
-use crate::kv::{ArcKV, KV, WeakKV};
+use crate::kv::{ArcKV, WeakKV, KV};
 use crate::log_file::LogFile;
 use crate::options::Options;
 use crate::skl::BlockBytes;

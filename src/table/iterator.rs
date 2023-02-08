@@ -270,8 +270,8 @@ impl IteratorItem {
 }
 
 /// An iterator for a table.
-pub struct IteratorImpl<'a> {
-    table: &'a TableCore,
+pub struct IteratorImpl {
+    table: Table,
     bpos: RefCell<usize>, // block chunk index
     // start 0 to block.len() - 1
     bi: RefCell<Option<BlockIterator>>,
@@ -280,7 +280,7 @@ pub struct IteratorImpl<'a> {
     reversed: bool,
 }
 
-impl<'a> std::iter::Iterator for IteratorImpl<'a> {
+impl<'a> std::iter::Iterator for IteratorImpl {
     type Item = IteratorItem;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -292,7 +292,7 @@ impl<'a> std::iter::Iterator for IteratorImpl<'a> {
     }
 }
 
-impl<'a> fmt::Display for IteratorImpl<'a> {
+impl fmt::Display for IteratorImpl {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let bi = self.bi.borrow().as_ref().map(|b| format!("{}", b)).unwrap();
         write!(
@@ -305,7 +305,7 @@ impl<'a> fmt::Display for IteratorImpl<'a> {
     }
 }
 
-impl<'a> Xiterator for IteratorImpl<'a> {
+impl Xiterator for IteratorImpl {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
@@ -345,8 +345,8 @@ impl<'a> Xiterator for IteratorImpl<'a> {
     }
 }
 
-impl<'a> IteratorImpl<'a> {
-    pub fn new(table: &'a TableCore, reversed: bool) -> IteratorImpl<'a> {
+impl IteratorImpl {
+    pub fn new(table: Table, reversed: bool) -> IteratorImpl {
         table.incr_ref(); // Important
         IteratorImpl {
             table,
@@ -443,7 +443,7 @@ impl<'a> IteratorImpl<'a> {
     }
 
     // brings us to a key that is >= input key.
-    fn seek(&self, key: &[u8]) -> Option<IteratorItem> {
+    pub(crate) fn seek(&self, key: &[u8]) -> Option<IteratorItem> {
         self.seek_from(key, IteratorSeek::Origin)
     }
 
@@ -570,21 +570,22 @@ impl<'a> From<BlockIteratorItem<'a>> for IteratorItem {
 
 /// concatenates the sequences defined by several iterators.  (It only works with
 /// TableIterators, probably just because it's faster to not be so generic.)
-pub struct ConcatIterator<'a> {
+pub struct ConcatIterator {
     index: RefCell<isize>,
     // Which iterator is active now. todo use usize
-    iters: Vec<IteratorImpl<'a>>,
+    iters: Vec<IteratorImpl>,
     // Corresponds to `tables`.
-    tables: Vec<&'a TableCore>,
+    tables: Vec<Table>,
     // Disregarding `reversed`, this is in ascending order.
     reversed: bool,
 }
 
-impl<'a> ConcatIterator<'a> {
+impl ConcatIterator {
     /// Note: new ConcatIterator is invalid(Not pointer first element)
-    pub fn new(tables: Vec<&'a TableCore>, reversed: bool) -> ConcatIterator<'a> {
+    pub fn new(tables: Vec<Table>, reversed: bool) -> ConcatIterator {
         let iters = tables
-            .iter()
+            .clone()
+            .into_iter()
             .map(|tb| IteratorImpl::new(tb, reversed))
             .collect::<Vec<_>>();
         Self {
@@ -613,7 +614,7 @@ impl<'a> ConcatIterator<'a> {
     }
 }
 
-impl<'a> Xiterator for ConcatIterator<'a> {
+impl Xiterator for ConcatIterator {
     type Output = IteratorItem;
 
     /// advances our concat iterator.
@@ -701,7 +702,7 @@ impl<'a> Xiterator for ConcatIterator<'a> {
     }
 }
 
-impl<'a> fmt::Display for ConcatIterator<'a> {
+impl fmt::Display for ConcatIterator {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let cur = self
             .get_cur()
@@ -711,7 +712,7 @@ impl<'a> fmt::Display for ConcatIterator<'a> {
         let table_str = self
             .tables
             .iter()
-            .map(|t| format!("{}", t))
+            .map(|t| format!("{}", t.to_ref()))
             .collect::<Vec<_>>()
             .join(",");
         f.write_fmt(format_args!(
