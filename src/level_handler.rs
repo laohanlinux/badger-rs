@@ -3,7 +3,7 @@ use crate::kv::{WeakKV, KV};
 use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
 use crate::table::table::{Table, TableCore};
 use crate::types::{Channel, XArc, XWeak};
-use crate::y::iterator::{MergeIterOverBuilder, Xiterator};
+use crate::y::merge_iterator::MergeIterOverBuilder;
 use crate::Result;
 use core::slice::SlicePattern;
 

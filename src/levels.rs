@@ -1,39 +1,32 @@
 use crate::compaction::{CompactStatus, KeyRange, INFO_RANGE};
 use crate::kv::{ArcKV, WeakKV, KV};
 use crate::level_handler::{LevelHandler, LevelHandlerInner};
-use crate::manifest::{Manifest, ManifestChangeBuilder, ManifestFile};
-use crate::options::Options;
+use crate::manifest::{Manifest, ManifestChangeBuilder};
 use crate::pb::badgerpb3::manifest_change::Operation::{CREATE, DELETE};
-use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet};
+use crate::pb::badgerpb3::ManifestChange;
 use crate::table::builder::Builder;
 use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
-
 use crate::table::table::{new_file_name, Table, TableCore};
-use crate::types::{Channel, Closer, XArc, XWeak};
-use crate::y::iterator::{MergeIterOverBuilder, Xiterator};
+use crate::types::{Closer, XArc, XWeak};
 use crate::y::{create_synced_file, sync_directory};
-use crate::Error::Unexpected;
-use crate::{Error, Result};
+use crate::Result;
+use crate::Xiterator;
+use crate::{MergeIterOverBuilder, MergeIterOverIterator};
 use atomic::Ordering;
 use awaitgroup::WaitGroup;
 use drop_cell::defer;
 use log::{error, info};
-use num_cpus::get;
 use parking_lot::lock_api::RawRwLock;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
-use std::fs::remove_file;
 use std::io::Write;
-use std::ops::Deref;
-use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::vec;
 use tokio::macros::support::thread_rng_n;
-use tracing_subscriber::fmt::format;
 
 #[derive(Clone)]
 pub(crate) struct LevelsController {
@@ -256,6 +249,7 @@ impl LevelsController {
     ) -> Result<Vec<Table>> {
         // Start generating new tables.
         let (tx, mut rv) = tokio::sync::mpsc::unbounded_channel::<Result<Table>>();
+        let mut g = WaitGroup::new();
         {
             let cd = cd.read().await;
             let top_tables = cd.top.clone();
@@ -270,20 +264,16 @@ impl LevelsController {
                 itr.push(iter);
             }
             // Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
-            // TODO
             let citr = ConcatIterator::new(bot_tables, false);
             itr.push(Box::new(citr));
-            // let mitr = MergeIterOverBuilder::default().add_batch(itr.iter().ma).build();
-            let mitr = MergeIterOverBuilder::default().build();
-
+            let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
             // Important to close the iterator to do ref counting.
             defer! {mitr.close()};
             mitr.rewind();
-            let mut g = WaitGroup::new();
             loop {
                 let start_time = SystemTime::now();
                 let mut builder = Builder::default();
-                for value in mitr.next() {
+                while let Some(value) = mitr.next() {
                     if builder.reached_capacity(self.must_kv().opt.max_table_size) {
                         break;
                     }
@@ -309,24 +299,26 @@ impl LevelsController {
                     defer! {worker.done();}
                     let fd = create_synced_file(&file_name, true);
                     if fd.is_err() {
-                        let _ = tx.send(Err(format!("While opening new table: {}", file_id).into()));
+                        let _ =
+                            tx.send(Err(format!("While opening new table: {}", file_id).into()));
                         return;
                     }
-                    if let Err(err) = fd.as_ref().unwrap().write_all(&builder.finish()) {
-                        let _ =  tx.send(Err(format!("Unable to write to file: {}", file_id).into()));
+                    if let Err(_) = fd.as_ref().unwrap().write_all(&builder.finish()) {
+                        let _ =
+                            tx.send(Err(format!("Unable to write to file: {}", file_id).into()));
                         return;
                     }
                     let tbl =
                         TableCore::open_table(fd.unwrap(), &file_name, kv.opt.table_loading_mode);
                     if tbl.is_err() {
-                        let _ =  tx.send(Err(format!("Unable to open table: {}", file_name).into()));
+                        let _ = tx.send(Err(format!("Unable to open table: {}", file_name).into()));
                     } else {
                         let _ = tx.send(Ok(Table::new(tbl.unwrap())));
                     }
                 });
             }
-            g.wait();
         }
+        g.wait().await;
         drop(tx);
         let mut new_tables = Vec::with_capacity(20);
         let mut first_err: Result<()> = Ok(());
@@ -362,19 +354,6 @@ impl LevelsController {
             return Err(format!("While running compaction for: {}", cd.read().await).into());
         }
         Ok(new_tables)
-    }
-
-    // TODO
-    fn append_iterators_reversed(
-        out: &mut Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
-        th: &Vec<Table>,
-        reversed: bool,
-    ) {
-        // for itr_th in th.iter().rev() {
-        //     // This will increment the reference of the table handler.
-        //     let itr = IteratorImpl::new(itr_th, reversed);
-        //     out.push(Box::new(itr));
-        // }
     }
 
     fn build_change_set(cd: &CompactDef, new_tables: &Vec<Table>) -> Vec<ManifestChange> {

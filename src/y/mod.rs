@@ -1,12 +1,13 @@
 mod codec;
 pub(crate) mod iterator;
+pub mod merge_iterator;
 mod metrics;
-mod merge_iterator;
 
-pub use codec::{Decode, Encode, AsyncEncDec};
-pub use iterator::ValueStruct;
+pub use codec::{AsyncEncDec, Decode, Encode};
+pub use iterator::*;
 use libc::{O_DSYNC, O_WRONLY};
 use memmap::MmapMut;
+pub use merge_iterator::*;
 use std::collections::hash_map::DefaultHasher;
 use std::error::Error as _;
 use std::fs::{File, OpenOptions, Permissions};
@@ -96,7 +97,6 @@ impl Error {
             _ => false,
         }
     }
-
 
     pub fn is_io_notfound(&self) -> bool {
         match self {

@@ -443,7 +443,7 @@ impl IteratorImpl {
     }
 
     // brings us to a key that is >= input key.
-    fn seek(&self, key: &[u8]) -> Option<IteratorItem> {
+    pub(crate) fn seek(&self, key: &[u8]) -> Option<IteratorItem> {
         self.seek_from(key, IteratorSeek::Origin)
     }
 
@@ -583,7 +583,8 @@ pub struct ConcatIterator {
 impl ConcatIterator {
     /// Note: new ConcatIterator is invalid(Not pointer first element)
     pub fn new(tables: Vec<Table>, reversed: bool) -> ConcatIterator {
-        let iters = tables.clone()
+        let iters = tables
+            .clone()
             .into_iter()
             .map(|tb| IteratorImpl::new(tb, reversed))
             .collect::<Vec<_>>();

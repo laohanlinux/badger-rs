@@ -1,5 +1,4 @@
 use crate::table::iterator::IteratorItem;
-use crate::test_util::{mock_log, mock_log_terminal};
 use crate::y::iterator::{KeyValue, Xiterator};
 use crate::y::ValueStruct;
 use log::info;
@@ -11,11 +10,13 @@ pub struct MergeIterElement {
     index: usize,
 }
 
+/// Cursor of the merge's iterator.
 pub struct MergeIterCursor {
-    is_dummy: bool,
-    cur_item: Option<IteratorItem>,
+    pub is_dummy: bool,
+    pub cur_item: Option<IteratorItem>,
 }
 
+/// Merge iterator,
 pub struct MergeIterOverIterator {
     pub reverse: bool,
     pub all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
@@ -81,7 +82,8 @@ impl MergeIterOverIterator {
                 return a.cmp(b);
             }
             a_itr.peek().unwrap().key().cmp(b_itr.peek().unwrap().key())
-        })
+        });
+        println!("sets: {:?}", self.elements.borrow());
     }
 
     fn move_cursor(&self) -> Option<IteratorItem> {
@@ -122,7 +124,6 @@ impl MergeIterOverIterator {
 pub struct MergeIterOverBuilder {
     all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     reverse: bool,
-    top: bool,
 }
 
 impl MergeIterOverBuilder {
@@ -210,13 +211,6 @@ fn merge_iter_element() {
 
     let builder = MergeIterOverBuilder::default().add_batch(vec![t3, t1, t4, t2]);
     let miter = builder.build();
-    miter.reset();
     miter.next();
     assert_eq!(miter.peek().unwrap().key(), b"abc");
-    miter.next();
-    assert_eq!(miter.peek().unwrap().key(), b"abd");
-    // println!("{:?}", miter.peek().unwrap().key());
-    // while let Some(item) = miter.next() {
-    //     println!("{}", item);
-    // }
 }

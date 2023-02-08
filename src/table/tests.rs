@@ -8,8 +8,8 @@ mod utils {
     use crate::table::builder::Builder;
     use crate::table::iterator::{BlockIterator, ConcatIterator, IteratorImpl, IteratorItem};
     use crate::table::table::{Table, TableCore, FILE_SUFFIX};
-    use crate::y::iterator::{MergeIterOverBuilder, MergeIterOverIterator, Xiterator};
     use crate::y::{open_synced_file, read_at, ValueStruct};
+    use crate::{MergeIterOverBuilder, MergeIterOverIterator, Xiterator};
     use memmap::MmapOptions;
     use rand::random;
     use serde_json::ser::CharEscape::Tab;
@@ -351,7 +351,7 @@ mod utils {
 
         let itr1 = Box::new(IteratorImpl::new(f1, false));
         let itr2 = Box::new(ConcatIterator::new(vec![f2], false));
-        let mut miter = MergeIterOverBuilder::default()
+        let mut miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
         let item = miter.next().unwrap();
@@ -390,7 +390,7 @@ mod utils {
 
         let itr1 = Box::new(IteratorImpl::new(f1, true));
         let itr2 = Box::new(ConcatIterator::new(vec![f2], true));
-        let mut miter = MergeIterOverBuilder::default()
+        let mut miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
         let item = miter.rewind().unwrap();
@@ -417,7 +417,7 @@ mod utils {
 
         let itr1 = Box::new(ConcatIterator::new(vec![f1], false));
         let itr2 = Box::new(ConcatIterator::new(vec![f2], false));
-        let mut miter = MergeIterOverBuilder::default()
+        let mut miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
 
@@ -447,7 +447,7 @@ mod utils {
             .build();
         let itr1 = Box::new(ConcatIterator::new(vec![f1], false));
         let itr2 = Box::new(ConcatIterator::new(vec![f2], false));
-        let mut miter = MergeIterOverBuilder::default()
+        let mut miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
 
@@ -475,7 +475,9 @@ mod utils {
             ])
             .build();
         let itr = IteratorImpl::new(f1, false);
-        let mut mitr = MergeIterOverBuilder::default().add(Box::new(itr)).build();
+        let mut mitr = crate::y::merge_iterator::MergeIterOverBuilder::default()
+            .add(Box::new(itr))
+            .build();
         assert_eq!(mitr.next().unwrap().key(), b"k1");
         assert_eq!(mitr.next().unwrap().key(), b"k2");
         assert!(mitr.next().is_none());
