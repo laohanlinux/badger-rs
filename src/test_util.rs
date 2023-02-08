@@ -94,7 +94,6 @@ pub fn random_tmp_dir() -> String {
 
 #[test]
 fn itwork() {
-
     #[tracing::instrument(skip_all)]
     fn call() {
         info!("call c");

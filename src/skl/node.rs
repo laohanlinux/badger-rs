@@ -1,7 +1,7 @@
 use crate::skl::arena::Arena;
-use crate::y::ValueStruct;
-use crate::skl::MAX_HEIGHT;
 use crate::skl::HEIGHT_INCREASE;
+use crate::skl::MAX_HEIGHT;
+use crate::y::ValueStruct;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 

@@ -25,6 +25,7 @@ use serde_json::to_vec;
 use std::os::windows::fs::FileExt;
 use std::process::id;
 use std::str::pattern::Pattern;
+use std::sync::Arc;
 
 pub(crate) const FILE_SUFFIX: &str = ".sst";
 
@@ -123,8 +124,9 @@ impl TableCore {
         table.load_to_ram()?;
 
         table.read_index()?;
+        let table_ref = Table::new(table);
         let biggest = {
-            let iter1 = super::iterator::IteratorImpl::new(&table, true);
+            let iter1 = super::iterator::IteratorImpl::new(table_ref.clone(), true);
             iter1
                 .rewind()
                 .map(|item| item.key().to_vec())
@@ -133,13 +135,14 @@ impl TableCore {
         .unwrap();
 
         let smallest = {
-            let iter1 = super::iterator::IteratorImpl::new(&table, false);
+            let iter1 = super::iterator::IteratorImpl::new(table_ref.clone(), false);
             iter1
                 .rewind()
                 .map(|item| item.key().to_vec())
                 .or_else(|| Some(vec![]))
         }
         .unwrap();
+        let mut table = Arc::into_inner(table_ref.x).unwrap();
         table.biggest = biggest;
         table.smallest = smallest;
         println!("open table ==> {}", table);

@@ -113,7 +113,7 @@ pub struct Builder {
 impl Builder {
     const RESTART_INTERVAL: usize = 100;
 
-    fn empty(&self) -> bool {
+    pub(crate) fn empty(&self) -> bool {
         self.buf.is_empty()
     }
 
@@ -205,7 +205,7 @@ impl Builder {
     // at the end. The diff can vary.
 
     // ReachedCapacity returns true if we... roughly (?) reached capacity?
-    fn reached_capacity(&self, cap: u64) -> bool {
+    pub(crate) fn reached_capacity(&self, cap: u64) -> bool {
         let estimate_sz =
             self.buf.get_ref().len() + 8 /* empty header */ + 4*self.restarts.len() + 8;
         // 8 = end of buf offset + len(restarts).
