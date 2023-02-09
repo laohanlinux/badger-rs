@@ -9,7 +9,15 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub(crate) struct CompactStatus {
     // every level has a *CompactionStatus* that includes multipart *KeyRange*
-    levels: RwLock<Vec<LevelCompactStatus>>,
+    pub(crate) levels: RwLock<Vec<LevelCompactStatus>>,
+}
+
+impl Default for CompactStatus {
+    fn default() -> Self {
+        CompactStatus {
+            levels: RwLock::new(vec![]),
+        }
+    }
 }
 
 impl CompactStatus {
@@ -86,6 +94,15 @@ impl CompactStatus {
 pub(crate) struct LevelCompactStatus {
     ranges: Arc<RwLock<Vec<KeyRange>>>, // not any overlaps
     del_size: Arc<AtomicU64>,           // all KeyRange size
+}
+
+impl Default for LevelCompactStatus {
+    fn default() -> Self {
+        LevelCompactStatus {
+            ranges: Arc::new(RwLock::new(Vec::new())),
+            del_size: Arc::new(AtomicU64::new(0)),
+        }
+    }
 }
 
 impl LevelCompactStatus {

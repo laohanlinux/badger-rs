@@ -28,6 +28,53 @@ impl From<LevelHandlerInner> for LevelHandler {
 }
 
 impl LevelHandler {
+    // Check does some sanity check on one level of data or in-memory index.
+    pub(crate) fn validate(&self) -> Result<()> {
+        self.lock_exclusive();
+        defer! {self.unlock_exclusive();}
+        if self.level() == 0 {
+            return Ok(());
+        }
+        let tables = self.tables.write();
+        let num_tables = tables.len();
+        for j in 1..num_tables {
+            if j >= tables.len() {
+                return Err(format!(
+                    "Level={}, j={}, number_tables={}",
+                    self.level(),
+                    j,
+                    num_tables
+                )
+                .into());
+            }
+
+            if tables[j - 1].biggest() >= tables[j].smallest() {
+                return Err(format!(
+                    "Inter: {} vs {}: level={} j={} numTables={}",
+                    String::from_utf8_lossy(tables[j - 1].biggest()),
+                    String::from_utf8_lossy(tables[j].smallest()),
+                    self.level(),
+                    j,
+                    num_tables
+                )
+                .into());
+            }
+            if tables[j].smallest() > tables[j].biggest() {
+                return Err(format!(
+                    "Intra: {} vs {}: level={} j={} numTables={}",
+                    String::from_utf8_lossy(tables[j].smallest()),
+                    String::from_utf8_lossy(tables[j].biggest()),
+                    self.level(),
+                    j,
+                    num_tables
+                )
+                .into());
+            }
+        }
+
+        Ok(())
+    }
+
     // Returns true if the non-zero level may be compacted. *del_size* provides the size of the tables
     // which are currently being compacted so that we treat them as already having started being
     // compacted (because they have been, yet their size is already counted in get_total_size).

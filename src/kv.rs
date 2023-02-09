@@ -10,12 +10,13 @@ use crate::{Error, Node, SkipList};
 use fs2::FileExt;
 use log::info;
 use std::borrow::BorrowMut;
-use std::fs::{create_dir_all, read_dir, File};
+use std::fs::{read_dir, File};
 use std::fs::{try_exists, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
+use tokio::fs::create_dir_all;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
 const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
@@ -58,17 +59,15 @@ unsafe impl Send for KV {}
 unsafe impl Sync for KV {}
 
 impl KV {
-    pub fn new(opt: Options) -> Result<XArc<KV>> {
-        let mut _opt = opt.clone();
-        _opt.max_batch_size = (15 * opt.max_table_size) / 100;
-        _opt.max_batch_count = opt.max_batch_size / Node::size() as u64;
-        create_dir_all(opt.dir.as_str())?;
-        create_dir_all(opt.value_dir.as_str())?;
-        // todo add directory lock
+    pub async fn Open(mut opt: Options) -> Result<XArc<KV>> {
+        opt.max_batch_size = (15 * opt.max_table_size) / 100;
+        opt.max_batch_count = opt.max_batch_size / Node::size() as u64;
+        create_dir_all(opt.dir.as_str()).await?;
+        create_dir_all(opt.value_dir.as_str()).await?;
         if !(opt.value_log_file_size <= 2 << 30 && opt.value_log_file_size >= 1 << 20) {
             return Err(Error::ValueLogSize);
         }
-        let (manifest_file, manifest) = open_or_create_manifest_file(opt.dir.as_str())?;
+        let manifest_file = open_or_create_manifest_file(opt.dir.as_str()).await?;
         let dir_lock_guard = OpenOptions::new()
             .write(true)
             .append(true)
@@ -81,7 +80,7 @@ impl KV {
             .create(true)
             .open(Path::new(opt.value_dir.as_str()).join("value_dir_guard.lock"))?;
         value_dir_guard.lock_exclusive()?;
-        let mut closers = Closers {
+        let closers = Closers {
             update_size: Closer::new(0),
             compactors: Closer::new(0),
             mem_table: Closer::new(0),
@@ -266,6 +265,16 @@ pub type ArcKV = XArc<KV>;
 impl ArcKV {
     pub async fn manifest_wl(&self) -> RwLockWriteGuard<'_, ManifestFile> {
         self.manifest.write().await
+    }
+
+    pub async fn close(&self) -> Result<()> {
+        info!("Closing database");
+        // Stop value GC first;
+        self.to_ref().closers.value_gc.signal_and_wait().await;
+        // Stop writes next.
+        self.to_ref().closers.writes.signal_and_wait().await;
+
+        Ok(())
     }
 }
 
