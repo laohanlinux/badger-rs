@@ -29,7 +29,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::vec;
 use tokio::macros::support::thread_rng_n;
-use tracing_subscriber::fmt::format;
 
 #[derive(Clone)]
 pub(crate) struct LevelsController {

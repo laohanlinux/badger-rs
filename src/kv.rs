@@ -67,7 +67,7 @@ impl KV {
         if !(opt.value_log_file_size <= 2 << 30 && opt.value_log_file_size >= 1 << 20) {
             return Err(Error::ValueLogSize);
         }
-        let (manifest_file, manifest) = open_or_create_manifest_file(opt.dir.as_str()).await?;
+        let manifest_file = open_or_create_manifest_file(opt.dir.as_str()).await?;
         let dir_lock_guard = OpenOptions::new()
             .write(true)
             .append(true)
@@ -80,7 +80,7 @@ impl KV {
             .create(true)
             .open(Path::new(opt.value_dir.as_str()).join("value_dir_guard.lock"))?;
         value_dir_guard.lock_exclusive()?;
-        let mut closers = Closers {
+        let closers = Closers {
             update_size: Closer::new(0),
             compactors: Closer::new(0),
             mem_table: Closer::new(0),
