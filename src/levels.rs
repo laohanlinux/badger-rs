@@ -1,4 +1,4 @@
-use crate::compaction::{CompactStatus, KeyRange, INFO_RANGE};
+use crate::compaction::{CompactStatus, KeyRange, LevelCompactStatus, INFO_RANGE};
 use crate::kv::{ArcKV, WeakKV, KV};
 use crate::level_handler::{LevelHandler, LevelHandlerInner};
 use crate::manifest::{Manifest, ManifestChangeBuilder};
@@ -6,9 +6,9 @@ use crate::pb::badgerpb3::manifest_change::Operation::{CREATE, DELETE};
 use crate::pb::badgerpb3::ManifestChange;
 use crate::table::builder::Builder;
 use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
-use crate::table::table::{new_file_name, Table, TableCore};
+use crate::table::table::{get_id_map, new_file_name, Table, TableCore};
 use crate::types::{Closer, XArc, XWeak};
-use crate::y::{create_synced_file, sync_directory};
+use crate::y::{create_synced_file, open_existing_synced_file, sync_directory};
 use crate::Result;
 use crate::Xiterator;
 use crate::{MergeIterOverBuilder, MergeIterOverIterator};
@@ -18,15 +18,18 @@ use drop_cell::defer;
 use log::{error, info};
 use parking_lot::lock_api::RawRwLock;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
+use serde_json::ser::CharEscape::Tab;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
+use std::fs::remove_file;
 use std::io::Write;
 use std::sync::atomic::{AtomicI64, AtomicU64};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::vec;
 use tokio::macros::support::thread_rng_n;
+use tracing_subscriber::fmt::format;
 
 #[derive(Clone)]
 pub(crate) struct LevelsController {
@@ -54,15 +57,87 @@ impl LevelsController {
     fn new(kv: ArcKV, mf: &Manifest) -> Result<LevelsController> {
         assert!(kv.x.opt.num_level_zero_tables_stall > kv.x.opt.num_level_zero_tables);
         let mut levels = vec![];
+        let cstatus = CompactStatus::default();
         for i in 0..kv.x.opt.max_levels {
             let lh = LevelHandlerInner::new(WeakKV::from(&kv), i);
             levels.push(LevelHandler::from(lh));
             if i == 0 {
+                // Do nothing
             } else if i == 1 {
+                // Level 1 probably shouldn't be too much bigger than level 0.
+                levels[i]
+                    .max_total_size
+                    .store(kv.opt.level_one_size, Ordering::Relaxed);
             } else {
+                levels[i].max_total_size.store(
+                    levels[i - 1].max_total_size.load(Ordering::Relaxed)
+                        * kv.opt.level_size_multiplier,
+                    Ordering::Relaxed,
+                );
+            }
+            cstatus.levels.write().push(LevelCompactStatus::default());
+        }
+        // Compare manifest against directory, check for existent/non-existent files, and remove.
+        revert_to_manifest(&kv, mf, get_id_map(&kv.opt.dir))?;
+
+        // Some files may be deleted. Let's reload.
+        let mut tables: Vec<Vec<Table>> = vec![vec![]; levels.len()];
+        let mut max_file_id = 0;
+        for (file_id, table_manifest) in &mf.tables {
+            let file_name = new_file_name(*file_id, kv.opt.dir.as_str());
+            let fd = open_existing_synced_file(&file_name, true);
+            if fd.is_err() {
+                return Err(
+                    format!("Openfile file: {}, err: {:?}", file_name, fd.unwrap_err()).into(),
+                );
+            }
+
+            let tb = TableCore::open_table(fd.unwrap(), &file_name, kv.opt.table_loading_mode);
+            if let Err(err) = tb {
+                return Err(format!("Openfile file: {}, err: {:?}", file_name, err).into());
+            }
+            let table = Table::new(tb.unwrap());
+            tables[table_manifest.level as usize].push(table);
+            if *file_id > max_file_id {
+                max_file_id = *file_id;
             }
         }
-        todo!()
+
+        let next_file_id = max_file_id + 1;
+        for (i, tbls) in tables.into_iter().enumerate() {
+            levels[i].init_tables(tbls);
+        }
+
+        // Make sure key ranges do not overlap etc.
+        let level_controller = LevelsController {
+            levels: Arc::new(levels),
+            kv: WeakKV::from(&kv),
+            next_file_id: Arc::new(AtomicU64::new(next_file_id)),
+            compact_worker_wg: Arc::new(Default::default()),
+            c_status: Arc::new(cstatus),
+        };
+        if let Err(err) = level_controller.validate() {
+            let _ = level_controller.cleanup_levels();
+            return Err(format!("Level validation, err:{}", err).into());
+        }
+        // Sync directory (because we have at least removed some files, or previously created the manifest file).
+        if let Err(err) = sync_directory(kv.opt.dir.as_str()) {
+            let _ = level_controller.close();
+            return Err(err);
+        }
+
+        Ok(level_controller)
+    }
+
+    fn validate(&self) -> Result<()> {
+        for level in self.levels.iter() {
+            level.validate()?;
+        }
+        Ok(())
+    }
+
+    fn close(&self) -> Result<()> {
+        self.cleanup_levels()
     }
 
     // cleanup all level's handler
@@ -185,7 +260,7 @@ impl LevelsController {
             let changes = vec![delete_change, create_change];
             let kv = self.must_kv();
             let mut manifest = kv.manifest.write().await;
-            manifest.add_changes(changes)?;
+            manifest.add_changes(changes).await?;
             // We have to add to next_level before we remove from this_level, not after. This way, we
             // don't have a bug where reads would see keys missing from both levels.
             //
@@ -219,7 +294,7 @@ impl LevelsController {
         {
             let kv = self.must_kv();
             let mut manifest = kv.manifest.write().await;
-            manifest.add_changes(change_set)?;
+            manifest.add_changes(change_set).await?;
         }
 
         // See comment earlier in this function about the ordering of these ops, and the order in which
@@ -291,7 +366,7 @@ impl LevelsController {
 
                 let file_id = self.reserve_file_id();
                 let dir = self.must_kv().opt.dir.clone();
-                let file_name = new_file_name(file_id, dir.to_string());
+                let file_name = new_file_name(file_id, &dir);
                 let kv = self.must_kv();
                 let worker = g.worker();
                 let tx = tx.clone();
@@ -635,4 +710,28 @@ impl CompactDef {
         self.next_level.unlock_exclusive();
         self.this_level.unlock_exclusive();
     }
+}
+
+// Checks that all necessary table files exist and removes all table files not
+// referenced by the manifest. id_map is a set of table file id's that were read from the directory
+// listing.
+fn revert_to_manifest(kv: &XArc<KV>, mf: &Manifest, id_map: HashSet<u64>) -> Result<()> {
+    // 1. Check all files in manifest exist.
+    for id in &mf.tables {
+        if !id_map.contains(id.0) {
+            return Err(format!("file does not exist for table {}", id.0).into());
+        }
+    }
+
+    // 2. Delete files that shouldn't exist.
+    for id in &id_map {
+        if !mf.tables.contains_key(id) {
+            error!("table file {} not referenced in MANIFEST", id);
+            let file_name = new_file_name(*id, &kv.opt.dir);
+            if let Err(err) = remove_file(file_name) {
+                error!("While removing table {}, err: {}", id, err);
+            }
+        }
+    }
+    Ok(())
 }

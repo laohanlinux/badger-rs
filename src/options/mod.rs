@@ -36,7 +36,7 @@ pub struct Options {
     /// Each table (or file) is at most this size.
     pub max_table_size: u64,
     /// Equals SizeOf(Li+1)/SizeOf(Li).
-    pub level_size_multiplier: usize,
+    pub level_size_multiplier: u64,
     /// Maximum number of levels of compaction.
     pub max_levels: usize,
     /// If value size >= this threshold, only store value offsets in tree.

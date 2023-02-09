@@ -403,8 +403,8 @@ pub fn id_to_filename(id: u64) -> String {
     format!("{}{}", id, FILE_SUFFIX)
 }
 
-pub fn new_file_name(id: u64, dir: String) -> String {
-    Path::new(&dir)
+pub fn new_file_name(id: u64, dir: &str) -> String {
+    Path::new(dir)
         .join(&id_to_filename(id))
         .to_str()
         .unwrap()

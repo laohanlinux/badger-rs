@@ -269,7 +269,7 @@ pub(crate) fn create_synced_file(file_name: &str, synce: bool) -> Result<File> {
         .map_err(|err| err.into())
 }
 
-pub(crate) fn sync_directory(d: &String) -> Result<()> {
+pub(crate) fn sync_directory(d: &str) -> Result<()> {
     let mut fp = File::open(d)?;
     fp.sync_all().map_err(|err| err.into())
 }
