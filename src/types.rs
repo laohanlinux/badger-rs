@@ -14,14 +14,14 @@ use tokio::time::sleep;
 
 // Channel like to go's channel
 #[derive(Clone)]
-pub(crate) struct Channel<T> {
+pub struct Channel<T> {
     rx: Option<Receiver<T>>,
     tx: Option<Sender<T>>,
 }
 
 impl<T> Channel<T> {
-    // create a *Channel* with n cap
-    pub(crate) fn new(n: usize) -> Self {
+    /// create a *Channel* with n cap
+    pub fn new(n: usize) -> Self {
         let (tx, rx) = bounded(n);
         Channel {
             rx: Some(rx),
@@ -29,46 +29,46 @@ impl<T> Channel<T> {
         }
     }
 
-    // try to send message T without blocking
-    pub(crate) fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
+    /// try to send message T without blocking
+    pub fn try_send(&self, msg: T) -> Result<(), TrySendError<T>> {
         if let Some(tx) = &self.tx {
             return tx.try_send(msg);
         }
         Ok(())
     }
 
-    // try to receive a message without blocking
-    pub(crate) fn try_recv(&self) -> Result<T, TryRecvError> {
+    /// try to receive a message without blocking
+    pub fn try_recv(&self) -> Result<T, TryRecvError> {
         if let Some(rx) = &self.rx {
             return rx.try_recv();
         }
         Err(TryRecvError::Empty)
     }
 
-    // async receive a message with blocking
-    pub(crate) async fn recv(&self) -> Result<T, async_channel::RecvError> {
+    /// async receive a message with blocking
+    pub async fn recv(&self) -> Result<T, async_channel::RecvError> {
         let rx = self.rx.as_ref().unwrap();
         rx.recv().await
     }
 
-    // async send a message with blocking
-    pub(crate) async fn send(&self, msg: T) -> Result<(), SendError<T>> {
+    /// async send a message with blocking
+    pub async fn send(&self, msg: T) -> Result<(), SendError<T>> {
         let tx = self.tx.as_ref().unwrap();
         tx.send(msg).await
     }
 
-    // returns Sender
-    pub(crate) fn tx(&self) -> Sender<T> {
+    /// returns Sender
+    pub fn tx(&self) -> Sender<T> {
         self.tx.as_ref().unwrap().clone()
     }
 
-    // consume tx and return it if exist
-    pub(crate) fn take_tx(&mut self) -> Option<Sender<T>> {
+    /// consume tx and return it if exist
+    pub fn take_tx(&mut self) -> Option<Sender<T>> {
         self.tx.take()
     }
 
-    // close *Channel*, Sender will be consumed
-    pub(crate) fn close(&self) {
+    /// close *Channel*, Sender will be consumed
+    pub fn close(&self) {
         if let Some(tx) = &self.tx {
             tx.close();
         }
@@ -79,7 +79,7 @@ impl<T> Channel<T> {
 /// to tell the routine to shut down, and a wait_group with which to wait for it to finish shutting
 /// down.
 #[derive(Clone)]
-pub(crate) struct Closer {
+pub struct Closer {
     closed: Channel<()>,
     wait: Arc<AtomicIsize>,
 }
@@ -91,8 +91,8 @@ impl Drop for Closer {
 }
 
 impl Closer {
-    // create a Closer with *initial* cap Workers
-    pub(crate) fn new(initial: isize) -> Self {
+    /// create a Closer with *initial* cap Workers
+    pub fn new(initial: isize) -> Self {
         assert!(initial >= 0, "Sanity check");
         let mut close = Closer {
             closed: Channel::new(1),
@@ -101,36 +101,36 @@ impl Closer {
         close
     }
 
-    // Incr delta to the WaitGroup.
-    pub(crate) fn add_running(&self, delta: isize) {
+    /// Incr delta to the WaitGroup.
+    pub fn add_running(&self, delta: isize) {
         let old = self.wait.fetch_add(delta, Ordering::Relaxed);
         assert!(old >= 0, "Sanity check");
     }
 
-    // Spawn a worker
-    pub(crate) fn spawn(&self) -> Self {
+    /// Spawn a worker
+    pub fn spawn(&self) -> Self {
         self.add_running(1);
         self.clone()
     }
 
-    // Decr delta to the WaitGroup(Note: must be call for every worker avoid leak).
-    pub(crate) fn done(&self) {
+    /// Decr delta to the WaitGroup(Note: must be call for every worker avoid leak).
+    pub fn done(&self) {
         let old = self.wait.fetch_sub(1, Ordering::Relaxed);
         assert!(old >= 0, "Sanity check");
     }
 
-    // Signals the `has_been_closed` signal.
-    pub(crate) fn signal(&self) {
+    /// Signals the `has_been_closed` signal.
+    pub fn signal(&self) {
         self.closed.close();
     }
 
-    // Gets signaled when signal() is called.
-    pub(crate) fn has_been_closed(&self) -> Channel<()> {
+    /// Gets signaled when signal() is called.
+    pub fn has_been_closed(&self) -> Channel<()> {
         self.closed.clone()
     }
 
-    // Waiting until done
-    pub(crate) async fn wait(&self) {
+    /// Waiting until done
+    pub async fn wait(&self) {
         loop {
             if self.wait.load(Ordering::Relaxed) <= 0 {
                 break;
@@ -140,8 +140,8 @@ impl Closer {
         }
     }
 
-    // Send a close signal and waiting util done
-    pub(crate) async fn signal_and_wait(&self) {
+    /// Send a close signal and waiting util done
+    pub async fn signal_and_wait(&self) {
         self.signal();
         self.wait().await;
     }

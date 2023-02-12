@@ -1,3 +1,4 @@
+use crate::levels::{LevelsController, XLevelsController};
 use crate::manifest::{open_or_create_manifest_file, Manifest, ManifestFile};
 use crate::options::Options;
 use crate::table::builder::Builder;
@@ -6,14 +7,15 @@ use crate::types::{Channel, Closer, XArc, XWeak};
 use crate::value_log::{Request, ValueLogCore, ValuePointer};
 use crate::y::{Encode, Result, ValueStruct};
 use crate::Error::Unexpected;
-use crate::{Error, Node, SkipList};
+use crate::{Decode, Error, Node, SkipList};
+use drop_cell::defer;
 use fs2::FileExt;
-use log::info;
+use log::{info, Log};
 use std::borrow::BorrowMut;
 use std::fs::{read_dir, File};
 use std::fs::{try_exists, OpenOptions};
-use std::io::Write;
-use std::path::Path;
+use std::io::{Cursor, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use tokio::fs::create_dir_all;
@@ -40,6 +42,7 @@ pub struct KV {
     pub opt: Options,
     pub vlog: Option<ValueLogCore>,
     pub manifest: Arc<RwLock<ManifestFile>>,
+    // lc: XWeak<LevelsController>,
     flush_chan: Channel<FlushTask>,
     // write_chan: Channel<Request>,
     dir_lock_guard: File,
@@ -93,6 +96,7 @@ impl KV {
             opt: opt.clone(),
             vlog: None,
             manifest: Arc::new(RwLock::new(manifest_file)),
+            // lc: Default::default(),
             flush_chan: Channel::new(1),
             // write_chan: Channel::new(1),
             dir_lock_guard,
@@ -102,20 +106,55 @@ impl KV {
             imm: Vec::new(),
             last_used_cas_counter: Default::default(),
         };
+
+        let manifest = out.manifest.clone();
+
+        // handle levels_controller
+        let lc = LevelsController::new(manifest.clone(), out.opt.clone()).await?;
+        lc.start_compact(out.closers.compactors.clone());
+
         let mut vlog = ValueLogCore::default();
         vlog.open(&out, opt)?;
-
         out.vlog = Some(vlog);
-        Ok(XArc::new(out))
+
+        let xout = XArc::new(out);
+        // update size
+        {
+            let _out = xout.clone();
+            tokio::spawn(async move {
+                _out.spawn_update_size().await;
+            });
+        }
+        // memtable closer
+        {
+            let _out = xout.clone();
+            tokio::spawn(async move {
+                _out.flush_mem_table(_out.closers.mem_table.clone()).await;
+            });
+        }
+
+        let item = xout.get(_HEAD);
+        if item.is_err() {
+            return Err("Retrieving head".into());
+        }
+        let item = item.unwrap();
+
+        let value = &item.value;
+        if value != _HEAD {
+            return Err("Retrieving head".into());
+        }
+
+        // lastUsedCasCounter will either be the value stored in !badger!head, or some subsequently
+        // written value log entry that we replay.  (Subsequent value log entries might be _less_
+        // than lastUsedCasCounter, if there was value log gc so we have to max() values while
+        // replaying.)
+        xout.last_used_cas_counter
+            .store(item.cas_counter, Ordering::Relaxed);
+
+        let mut vptr = ValuePointer::default();
+        vptr.dec(&mut Cursor::new(value))?;
+        Ok(xout)
     }
-
-    // pub fn must_vlog(&self) -> &ValueLogCore {
-    //     self.vlog.as_ref().unwrap()
-    // }
-
-    // pub fn must_mut_vlog(&mut self) -> &mut ValueLogCore {
-    //     self.vlog.as_mut().unwrap()
-    // }
 
     /// close kv, should be call only once
     pub async fn close(&self) -> Result<()> {
@@ -134,6 +173,24 @@ impl KV {
 }
 
 impl KV {
+    async fn walk_dir(dir: &str) -> Result<(u64, u64)> {
+        let mut lsm_size = 0;
+        let mut vlog_size = 0;
+        let mut entries = tokio::fs::read_dir("dir").await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let meta = entry.metadata().await?;
+            if meta.is_dir() {
+                continue;
+            }
+            if entry.file_name().to_str().unwrap().ends_with(".sst") {
+                lsm_size += meta.len();
+            } else if entry.file_name().to_str().unwrap().ends_with(".vlog") {
+                vlog_size += meta.len();
+            }
+        }
+        Ok((lsm_size, vlog_size))
+    }
+
     // get returns the value in `mem_table` or disk for given key.
     // Note that value will include meta byte.
     pub(crate) fn get(&self, key: &[u8]) -> Result<ValueStruct> {
@@ -218,7 +275,7 @@ impl KV {
         Arc::new(Ok(()))
     }
 
-    async fn flush_mem_table(&self, lc: &Closer) -> Result<()> {
+    async fn flush_mem_table(&self, lc: Closer) -> Result<()> {
         while let Ok(task) = self.flush_chan.recv().await {
             if task.mt.is_none() {
                 break;
@@ -263,6 +320,36 @@ pub type WeakKV = XWeak<KV>;
 pub type ArcKV = XArc<KV>;
 
 impl ArcKV {
+    /// data size stats
+    /// TODO
+    pub async fn spawn_update_size(&self) {
+        let lc = self.closers.update_size.spawn();
+        defer! {
+            lc.done();
+            info!("exit update size worker");
+        }
+
+        let mut tk = tokio::time::interval(tokio::time::Duration::from_secs(5 * 60));
+        let dir = self.opt.dir.clone();
+        let vdir = self.opt.value_dir.clone();
+        loop {
+            let c = lc.has_been_closed();
+            tokio::select! {
+                _ = tk.tick() => {
+                    info!("ready to update size");
+                    // If value directory is different from dir, we'd have to do another walk.
+                    let (lsm_sz, vlog_sz) = KV::walk_dir(dir.as_str()).await.unwrap();
+                    if dir != vdir {
+                         let (_, vlog_sz) = KV::walk_dir(dir.as_str()).await.unwrap();
+                    }
+                },
+                _ = c.recv() => {
+
+                },
+            }
+        }
+    }
+
     pub async fn manifest_wl(&self) -> RwLockWriteGuard<'_, ManifestFile> {
         self.manifest.write().await
     }
@@ -275,6 +362,15 @@ impl ArcKV {
         self.to_ref().closers.writes.signal_and_wait().await;
 
         Ok(())
+    }
+}
+
+impl ArcKV {
+    async fn do_writes(&self) {
+        // TODO add metrics
+        loop {
+
+        }
     }
 }
 

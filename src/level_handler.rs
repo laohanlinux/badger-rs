@@ -8,6 +8,7 @@ use crate::Result;
 use core::slice::SlicePattern;
 
 use crate::levels::CompactDef;
+use crate::options::Options;
 use crate::table::builder::Builder;
 use drop_cell::defer;
 use log::info;
@@ -203,7 +204,7 @@ impl LevelHandler {
     pub(crate) fn try_add_level0_table(&self, t: Table) -> bool {
         assert_eq!(self.x.level.load(Ordering::Relaxed), 0);
         let tw = self.tables_wl();
-        if tw.len() >= self.kv().x.opt.num_level_zero_tables_stall {
+        if tw.len() >= self.opt.num_level_zero_tables_stall {
             return false;
         }
         t.incr_ref();
@@ -264,10 +265,6 @@ impl LevelHandler {
     pub(crate) fn level(&self) -> usize {
         self.x.level.load(Ordering::Relaxed) as usize
     }
-
-    fn kv(&self) -> XArc<KV> {
-        self.x.kv.upgrade().unwrap()
-    }
 }
 
 pub(crate) struct LevelHandlerInner {
@@ -284,11 +281,11 @@ pub(crate) struct LevelHandlerInner {
     pub(crate) level: AtomicI32,
     str_level: Arc<String>,
     pub(crate) max_total_size: AtomicU64,
-    kv: WeakKV,
+    opt: Options,
 }
 
 impl LevelHandlerInner {
-    pub(crate) fn new(kv: WeakKV, level: usize) -> LevelHandlerInner {
+    pub(crate) fn new(opt: Options, level: usize) -> LevelHandlerInner {
         LevelHandlerInner {
             self_lock: Arc::new(Default::default()),
             tables: Arc::new(Default::default()),
@@ -296,7 +293,7 @@ impl LevelHandlerInner {
             level: Default::default(),
             str_level: Arc::new(format!("L{}", level)),
             max_total_size: Default::default(),
-            kv,
+            opt,
         }
     }
 
@@ -339,7 +336,7 @@ impl LevelHandlerInner {
 
 #[test]
 fn raw_lock() {
-    let lock = LevelHandlerInner::new(WeakKV::new(), 10);
+    let lock = LevelHandlerInner::new(Options::default(), 10);
     lock.lock_shared();
     lock.lock_shared();
     assert_eq!(false, lock.try_lock_exclusive());
