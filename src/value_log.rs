@@ -21,6 +21,7 @@ use std::process::id;
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::{fmt, fs, thread};
+use protobuf::well_known_types::api::Mixin;
 use tabled::object::Entity::Cell;
 
 use crate::kv::{ArcKV, WeakKV, KV};
@@ -205,12 +206,11 @@ impl Decode for ValuePointer {
 }
 
 pub(crate) struct Request {
-    // Input values
-    pub(crate) entries: Vec<RefCell<Entry>>,
+    // Input values, NOTE: RefCell<Entry> is called concurrency
+    pub(crate) entries: RwLock<Vec<RefCell<Entry>>>,
     // Output Values and wait group stuff below
-    pub(crate) ptrs: RefCell<Vec<Option<ValuePointer>>>,
-    pub(crate) wait_group: RefCell<Option<Worker>>,
-    pub(crate) err: RefCell<Arc<Result<()>>>,
+    pub(crate) ptrs: Mutex<Vec<Option<ValuePointer>>>,
+    pub(crate) wait_group: Mutex<RefCell<Option<Worker>>>,
 }
 
 pub struct ValueLogCore {
@@ -462,7 +462,7 @@ impl ValueLogCore {
     }
 
     // write is thread-unsafe by design and should not be called concurrently.
-    pub(crate) fn write(&self, reqs: &[Request]) -> Result<()> {
+    pub(crate) fn write(&self, reqs: &Vec<Request>) -> Result<()> {
         let cur_vlog_file = self.pick_log_by_vlog_id(&self.max_fid.load(Ordering::Acquire));
         let to_disk = || -> Result<()> {
             if self.buf.borrow().buffer().is_empty() {
@@ -502,10 +502,10 @@ impl ValueLogCore {
         };
 
         for req in reqs {
-            for (idx, entry) in req.entries.iter().enumerate() {
+            for (idx, entry) in req.entries.read().iter().enumerate() {
                 if !self.opt.sync_writes && entry.borrow().value.len() < self.opt.value_threshold {
                     // No need to write to value log.
-                    req.ptrs.borrow_mut()[idx] = None;
+                    req.ptrs.lock()[idx] = None;
                     continue;
                 }
 

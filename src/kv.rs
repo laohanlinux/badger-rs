@@ -228,17 +228,20 @@ impl KV {
         tables
     }
 
-    fn write_requests(&self, reqs: &[Request]) -> Arc<Result<()>> {
+    // Called serially by only on goroutine
+    fn write_requests(&self, reqs: &Vec<Request>) -> Result<()> {
         if reqs.is_empty() {
-            return Arc::new(Ok(()));
+            return Ok(());
         }
-        let done = |res: Arc<Result<()>>| {
+        defer! {
+           for req in reqs {
+                let worker = req.wait_group.lock().borrow_mut().take().unwrap();
+                worker.done();
+            }
+        }
+        let done = |res: Result<()>| {
             for req in reqs {
-                if res.is_err() {
-                    // todo
-                    *req.err.borrow_mut() = res.clone();
-                }
-                let worker = req.wait_group.borrow_mut().take().unwrap();
+                let worker = req.wait_group.lock().borrow_mut().take().unwrap();
                 worker.done();
             }
         };
@@ -251,28 +254,22 @@ impl KV {
         // There is code (in flush_mem_table) whose correctness depends on us generating CAS Counter
         // values _before_ we modify s.vptr here.
         for req in reqs {
-            let counter_base = self.new_cas_counter(req.entries.len() as u64);
-            for (idx, entry) in req.entries.iter().enumerate() {
+            let counter_base = self.new_cas_counter(req.entries.read().len() as u64);
+            for (idx, entry) in req.entries.read().iter().enumerate() {
                 entry.borrow_mut().cas_counter = counter_base + idx as u64;
             }
         }
 
-        let ok = self.vlog.as_ref().unwrap().write(reqs);
-        if ok.is_err() {
-            let _ok = Arc::new(ok);
-            done(_ok.clone());
-            return _ok.clone();
-        }
-
+        self.vlog.as_ref().unwrap().write(reqs)?;
         info!("Writing to memory table");
         let mut count = 0;
         for req in reqs {
-            if req.entries.is_empty() {
+            if req.entries.read().is_empty() {
                 continue;
             }
-            count += req.entries.len();
+            count += req.entries.read().len();
         }
-        Arc::new(Ok(()))
+        Ok(())
     }
 
     async fn flush_mem_table(&self, lc: Closer) -> Result<()> {
@@ -368,9 +365,7 @@ impl ArcKV {
 impl ArcKV {
     async fn do_writes(&self) {
         // TODO add metrics
-        loop {
-
-        }
+        loop {}
     }
 }
 
