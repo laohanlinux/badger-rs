@@ -7,9 +7,13 @@ use std::sync::{Arc, TryLockResult, Weak};
 use std::time::Duration;
 use std::{hint, mem, thread};
 
-use async_channel::{bounded, Receiver, RecvError, SendError, Sender, TryRecvError, TrySendError};
+use async_channel::{
+    bounded, unbounded, Receiver, Recv, RecvError, SendError, Sender, TryRecvError, TrySendError,
+};
+use log::info;
 
 use range_lock::{VecRangeLock, VecRangeLockGuard};
+use tokio::sync::mpsc::{UnboundedSender, WeakUnboundedSender};
 use tokio::time::sleep;
 
 // Channel like to go's channel
@@ -75,6 +79,40 @@ impl<T> Channel<T> {
     }
 }
 
+#[derive(Clone)]
+pub struct UnChannel<T> {
+    rx: Option<Receiver<T>>,
+    tx: Option<Sender<T>>,
+}
+
+impl<T> UnChannel<T> {
+    pub fn new() -> UnChannel<T> {
+        let (tx, rx) = unbounded();
+        UnChannel {
+            rx: Some(rx),
+            tx: Some(tx),
+        }
+    }
+
+    /// returns Sender
+    pub fn tx(&self) -> Option<&Sender<T>> {
+        self.tx.as_ref()
+    }
+
+    // /// async receive a message with blocking
+    pub async fn recv(&mut self) -> Result<T, RecvError> {
+        let rx = self.rx.as_ref().unwrap();
+        rx.recv().await
+    }
+
+    /// close *Channel*, Sender will be consumed
+    pub fn close(&self) {
+        if let Some(tx) = &self.tx {
+            tx.close();
+        }
+    }
+}
+
 /// Holds the two things we need to close a routine and wait for it to finish: a chan
 /// to tell the routine to shut down, and a wait_group with which to wait for it to finish shutting
 /// down.
@@ -92,11 +130,10 @@ impl Drop for Closer {
 
 impl Closer {
     /// create a Closer with *initial* cap Workers
-    pub fn new(initial: isize) -> Self {
-        assert!(initial >= 0, "Sanity check");
+    pub fn new() -> Self {
         let mut close = Closer {
             closed: Channel::new(1),
-            wait: Arc::from(AtomicIsize::new(initial)),
+            wait: Arc::from(AtomicIsize::new(0)),
         };
         close
     }
@@ -135,7 +172,7 @@ impl Closer {
             if self.wait.load(Ordering::Relaxed) <= 0 {
                 break;
             }
-            hint::spin_loop();
+            // hint::spin_loop();
             sleep(Duration::from_millis(10)).await;
         }
     }
@@ -244,19 +281,19 @@ impl<T> Deref for XVec<T> {
 fn it_closer() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
-        let closer = Closer::new(0);
+        let closer = Closer::new();
         let count = Arc::new(AtomicUsize::new(100));
         for i in 0..count.load(Ordering::Relaxed) {
             let c = closer.spawn();
             let n = count.clone();
             tokio::spawn(async move {
-                sleep(Duration::from_millis(200)).await;
-                n.fetch_add(1, Ordering::Relaxed);
+                sleep(Duration::from_millis(10000)).await;
+                n.fetch_sub(1, Ordering::Relaxed);
                 c.done();
             });
         }
         closer.signal_and_wait().await;
-        assert_eq!(count.load(Ordering::Relaxed), 200);
+        assert_eq!(count.load(Ordering::Relaxed), 0);
     });
 }
 

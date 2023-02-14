@@ -1,11 +1,14 @@
+use async_channel::RecvError;
 use awaitgroup::{WaitGroup, Worker};
 use bitflags::bitflags;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crc32fast::Hasher;
+use libc::difftime;
 use log::info;
 use log::kv::Source;
 use memmap::MmapMut;
 use parking_lot::*;
+use protobuf::well_known_types::api::Mixin;
 use rand::random;
 use serde_json::to_vec;
 use std::cell::{Ref, RefCell, RefMut};
@@ -21,7 +24,6 @@ use std::process::id;
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::{fmt, fs, thread};
-use protobuf::well_known_types::api::Mixin;
 use tabled::object::Entity::Cell;
 
 use crate::kv::{ArcKV, WeakKV, KV};
@@ -29,7 +31,7 @@ use crate::log_file::LogFile;
 use crate::options::Options;
 use crate::skl::BlockBytes;
 use crate::table::iterator::BlockSlice;
-use crate::types::{Channel, XArc};
+use crate::types::{Channel, Closer, XArc};
 use crate::y::{
     create_synced_file, is_eof, open_existing_synced_file, read_at, sync_directory, Decode, Encode,
 };
@@ -210,7 +212,49 @@ pub(crate) struct Request {
     pub(crate) entries: RwLock<Vec<RefCell<Entry>>>,
     // Output Values and wait group stuff below
     pub(crate) ptrs: Mutex<Vec<Option<ValuePointer>>>,
-    pub(crate) wait_group: Mutex<RefCell<Option<Worker>>>,
+    pub(crate) res: Channel<Result<()>>,
+}
+
+impl Request {
+    pub(crate) async fn get_resp(&self) -> Result<()> {
+        self.res.recv().await.unwrap()
+    }
+
+    pub(crate) async fn set_resp(&self, ret: Result<()>) {
+        self.res.send(ret).await.unwrap()
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ArcRequest {
+    inner: Arc<Request>,
+    err: Arc<Mutex<Arc<Result<()>>>>,
+}
+
+unsafe impl Send for ArcRequest {}
+
+unsafe impl Sync for ArcRequest {}
+
+impl ArcRequest {
+    pub(crate) fn get_req(&self) -> Arc<Request> {
+        self.inner.clone()
+    }
+    pub(crate) fn set_err(&self, err: Arc<Result<()>>) {
+        *self.err.lock() = err;
+    }
+
+    pub(crate) fn to_inner(self) -> Request {
+        Arc::into_inner(self.inner).unwrap()
+    }
+}
+
+impl From<Request> for ArcRequest {
+    fn from(value: Request) -> Self {
+        ArcRequest {
+            inner: Arc::new(value),
+            err: Arc::new(Mutex::new(Arc::new(Ok(())))),
+        }
+    }
 }
 
 pub struct ValueLogCore {
@@ -462,7 +506,7 @@ impl ValueLogCore {
     }
 
     // write is thread-unsafe by design and should not be called concurrently.
-    pub(crate) fn write(&self, reqs: &Vec<Request>) -> Result<()> {
+    pub(crate) fn write(&self, reqs: Arc<Vec<ArcRequest>>) -> Result<()> {
         let cur_vlog_file = self.pick_log_by_vlog_id(&self.max_fid.load(Ordering::Acquire));
         let to_disk = || -> Result<()> {
             if self.buf.borrow().buffer().is_empty() {
@@ -501,11 +545,11 @@ impl ValueLogCore {
             Ok(())
         };
 
-        for req in reqs {
-            for (idx, entry) in req.entries.read().iter().enumerate() {
+        for req in reqs.iter() {
+            for (idx, entry) in req.get_req().entries.read().iter().enumerate() {
                 if !self.opt.sync_writes && entry.borrow().value.len() < self.opt.value_threshold {
                     // No need to write to value log.
-                    req.ptrs.lock()[idx] = None;
+                    req.get_req().ptrs.lock()[idx] = None;
                     continue;
                 }
 
@@ -713,6 +757,16 @@ fn it() {
     // flock.df.write().insert(3, RwLock::new("ok!".to_string()));
     // let value = RwLockReadGuard::try_map(lock1.read(), |df| Some(df));
     // println!("WHat??? {:?}", value);
+}
+
+#[tokio::test]
+async fn lock1() {
+
+    let req: RwLock<Vec<RefCell<Entry>>> = RwLock::new(Vec::new());
+
+    tokio::spawn(async move {
+        let _a = &req.write()[0];
+    });
 }
 
 #[tokio::test]

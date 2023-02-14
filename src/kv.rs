@@ -4,13 +4,15 @@ use crate::options::Options;
 use crate::table::builder::Builder;
 use crate::table::iterator::IteratorImpl;
 use crate::types::{Channel, Closer, XArc, XWeak};
-use crate::value_log::{Request, ValueLogCore, ValuePointer};
+use crate::value_log::{ArcRequest, Request, ValueLogCore, ValuePointer};
 use crate::y::{Encode, Result, ValueStruct};
 use crate::Error::Unexpected;
 use crate::{Decode, Error, Node, SkipList};
+use bytes::BufMut;
 use drop_cell::defer;
 use fs2::FileExt;
 use log::{info, Log};
+use parking_lot::Mutex;
 use std::borrow::BorrowMut;
 use std::fs::{read_dir, File};
 use std::fs::{try_exists, OpenOptions};
@@ -19,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use tokio::fs::create_dir_all;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
 const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
@@ -52,6 +55,7 @@ pub struct KV {
     mt: SkipList,
     // Add here only AFTER pushing to flush_ch
     imm: Vec<SkipList>,
+    write_ch: Channel<ArcRequest>,
     // Incremented in the non-concurrently accessed write loop.  But also accessed outside. So
     // we use an atomic op.
     last_used_cas_counter: AtomicU64,
@@ -84,11 +88,11 @@ impl KV {
             .open(Path::new(opt.value_dir.as_str()).join("value_dir_guard.lock"))?;
         value_dir_guard.lock_exclusive()?;
         let closers = Closers {
-            update_size: Closer::new(0),
-            compactors: Closer::new(0),
-            mem_table: Closer::new(0),
-            writes: Closer::new(0),
-            value_gc: Closer::new(0),
+            update_size: Closer::new(),
+            compactors: Closer::new(),
+            mem_table: Closer::new(),
+            writes: Closer::new(),
+            value_gc: Closer::new(),
         };
         // go out.updateSize(out.closers.updateSize)
         let mt = SkipList::new(arena_size(&opt));
@@ -104,6 +108,7 @@ impl KV {
             closers,
             mt,
             imm: Vec::new(),
+            write_ch: Channel::new(1),
             last_used_cas_counter: Default::default(),
         };
 
@@ -153,6 +158,14 @@ impl KV {
 
         let mut vptr = ValuePointer::default();
         vptr.dec(&mut Cursor::new(value))?;
+
+        let replay_closer = Closer::new();
+        {
+            let _out = xout.clone();
+            tokio::spawn(async move {
+                _out.do_writes(replay_closer).await;
+            });
+        }
         Ok(xout)
     }
 
@@ -229,22 +242,10 @@ impl KV {
     }
 
     // Called serially by only on goroutine
-    fn write_requests(&self, reqs: &Vec<Request>) -> Result<()> {
+    async fn write_requests(&self, reqs: Arc<Vec<ArcRequest>>) -> Result<()> {
         if reqs.is_empty() {
             return Ok(());
         }
-        defer! {
-           for req in reqs {
-                let worker = req.wait_group.lock().borrow_mut().take().unwrap();
-                worker.done();
-            }
-        }
-        let done = |res: Result<()>| {
-            for req in reqs {
-                let worker = req.wait_group.lock().borrow_mut().take().unwrap();
-                worker.done();
-            }
-        };
         info!("write_requests called. Writing to value log");
         // CAS counter for all operations has to go onto value log. Otherwise, if it is just in
         // memtable for a long time, and following CAS operations use that as a check, when
@@ -253,21 +254,21 @@ impl KV {
 
         // There is code (in flush_mem_table) whose correctness depends on us generating CAS Counter
         // values _before_ we modify s.vptr here.
-        for req in reqs {
-            let counter_base = self.new_cas_counter(req.entries.read().len() as u64);
-            for (idx, entry) in req.entries.read().iter().enumerate() {
+        for req in reqs.iter() {
+            let counter_base = self.new_cas_counter(req.get_req().entries.read().len() as u64);
+            for (idx, entry) in req.get_req().entries.read().iter().enumerate() {
                 entry.borrow_mut().cas_counter = counter_base + idx as u64;
             }
         }
 
-        self.vlog.as_ref().unwrap().write(reqs)?;
+        self.vlog.as_ref().unwrap().write(reqs.clone())?;
         info!("Writing to memory table");
         let mut count = 0;
-        for req in reqs {
-            if req.entries.read().is_empty() {
+        for req in reqs.iter() {
+            if req.get_req().entries.read().is_empty() {
                 continue;
             }
-            count += req.entries.read().len();
+            count += req.get_req().entries.read().len();
         }
         Ok(())
     }
@@ -363,9 +364,57 @@ impl ArcKV {
 }
 
 impl ArcKV {
-    async fn do_writes(&self) {
+    async fn do_writes(&self, lc: Closer) {
         // TODO add metrics
-        loop {}
+        let has_been_close = lc.has_been_closed();
+        let write_ch = self.write_ch.clone();
+        let reqs = Arc::new(Mutex::new(vec![]));
+        loop {
+            tokio::select! {
+                _ = has_been_close.recv() => {
+                    break;
+                },
+                req = write_ch.recv() => {
+                    reqs.lock().push(req.unwrap());
+                }
+            }
+            // TODO avoid memory allocate again
+            if reqs.lock().len() == 100 {
+                let to_reqs = reqs
+                    .lock()
+                    .clone()
+                    .into_iter()
+                    .map(|req| req.clone())
+                    .collect::<Vec<_>>();
+                let to_reqs = Arc::new(to_reqs);
+                if let Err(err) = self.write_requests(to_reqs).await {
+                    let ret = Arc::new(Err(err));
+                    reqs.lock().iter().for_each(|req| req.set_err(ret.clone()));
+                }
+                reqs.lock().clear();
+            }
+        }
+
+        // clear future requests
+        write_ch.close();
+        loop {
+            let req = write_ch.try_recv();
+            if req.is_err() {
+                break;
+            }
+            let req = req.unwrap();
+            reqs.lock().push(req);
+            let to_reqs = reqs
+                .lock()
+                .clone()
+                .into_iter()
+                .map(|req| req.clone())
+                .collect::<Vec<_>>();
+            if let Err(err) = self.write_requests(Arc::new(to_reqs)).await {
+                let ret = Arc::new(Err(err));
+                reqs.lock().iter().for_each(|req| req.set_err(ret.clone()));
+            }
+        }
     }
 }
 
