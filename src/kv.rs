@@ -134,7 +134,9 @@ impl KV {
         {
             let _out = xout.clone();
             tokio::spawn(async move {
-                _out.flush_mem_table(_out.closers.mem_table.clone()).await;
+                _out.flush_mem_table(_out.closers.mem_table.clone())
+                    .await
+                    .expect("TODO: panic message");
             });
         }
 
@@ -162,10 +164,32 @@ impl KV {
         let replay_closer = Closer::new();
         {
             let _out = xout.clone();
+            let replay_closer = replay_closer.clone();
             tokio::spawn(async move {
                 _out.do_writes(replay_closer).await;
             });
         }
+
+        let mut first = true;
+        xout.vlog.as_ref().unwrap().replay(&vptr, |entry, vptr| {
+            if first {
+                info!("First key={}", String::from_utf8_lossy(&entry.key));
+            }
+            first = false;
+            if xout.last_used_cas_counter.load(Ordering::Relaxed) < entry.cas_counter {
+                xout.last_used_cas_counter
+                    .store(entry.cas_counter, Ordering::Relaxed);
+            }
+            if entry.cas_counter_check != 0 {
+                let old_value = xout.get(&entry.key)?;
+                if old_value.cas_counter != entry.cas_counter_check {
+                    return Ok(true);
+                }
+            }
+            todo!()
+        })?;
+        // Wait for replay to be applied first.
+        replay_closer.signal_and_wait().await;
         Ok(xout)
     }
 
