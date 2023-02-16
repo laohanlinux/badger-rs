@@ -274,6 +274,12 @@ pub(crate) fn sync_directory(d: &str) -> Result<()> {
     fp.sync_all().map_err(|err| err.into())
 }
 
+pub(crate) async fn async_sync_directory(d: String) -> Result<()> {
+    let fp = tokio::fs::File::open(d).await?;
+    fp.sync_all().await?;
+    Ok(())
+}
+
 #[test]
 fn it_cpu() {
     println!("{:?}", num_cpu());

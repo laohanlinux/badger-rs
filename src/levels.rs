@@ -614,7 +614,7 @@ impl LevelsController {
         self.levels[0].num_tables() >= self.opt.num_level_zero_tables
     }
 
-    fn reserve_file_id(&self) -> u64 {
+    pub(crate) fn reserve_file_id(&self) -> u64 {
         let id = self.next_file_id.fetch_add(1, Ordering::Relaxed);
         id
     }

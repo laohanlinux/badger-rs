@@ -3,9 +3,12 @@ use crate::manifest::{open_or_create_manifest_file, Manifest, ManifestFile};
 use crate::options::Options;
 use crate::table::builder::Builder;
 use crate::table::iterator::IteratorImpl;
+use crate::table::table::{new_file_name, TableCore};
 use crate::types::{Channel, Closer, XArc, XWeak};
 use crate::value_log::{ArcRequest, Request, ValueLogCore, ValuePointer};
-use crate::y::{Encode, Result, ValueStruct};
+use crate::y::{
+    async_sync_directory, create_synced_file, sync_directory, Encode, Result, ValueStruct,
+};
 use crate::Error::Unexpected;
 use crate::{Decode, Error, Node, SkipList};
 use bytes::BufMut;
@@ -17,9 +20,11 @@ use std::borrow::BorrowMut;
 use std::fs::{read_dir, File};
 use std::fs::{try_exists, OpenOptions};
 use std::io::{Cursor, Write};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
+use tabled::Table;
 use tokio::fs::create_dir_all;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{RwLock, RwLockWriteGuard};
@@ -41,11 +46,17 @@ struct FlushTask {
     vptr: ValuePointer,
 }
 
+impl FlushTask {
+    fn must_mt(&self) -> &SkipList {
+        self.mt.as_ref().unwrap()
+    }
+}
+
 pub struct KV {
     pub opt: Options,
     pub vlog: Option<ValueLogCore>,
     pub manifest: Arc<RwLock<ManifestFile>>,
-    // lc: XWeak<LevelsController>,
+    lc: XWeak<LevelsController>,
     flush_chan: Channel<FlushTask>,
     // write_chan: Channel<Request>,
     dir_lock_guard: File,
@@ -101,6 +112,7 @@ impl KV {
             vlog: None,
             manifest: Arc::new(RwLock::new(manifest_file)),
             // lc: Default::default(),
+            lc: XWeak::new(),
             flush_chan: Channel::new(1),
             // write_chan: Channel::new(1),
             dir_lock_guard,
@@ -297,35 +309,50 @@ impl KV {
         Ok(())
     }
 
+    // async to flush memory table into zero level
     async fn flush_mem_table(&self, lc: Closer) -> Result<()> {
         while let Ok(task) = self.flush_chan.recv().await {
             if task.mt.is_none() {
                 break;
             }
 
-            if task.vptr.is_zero() {
-                continue;
+            // TODO if is zero?
+            if !task.vptr.is_zero() {
+                info!("Storing offset: {:?}", task.vptr);
+                let mut offset = vec![0u8; ValuePointer::value_pointer_encoded_size()];
+                task.vptr.enc(&mut offset).unwrap();
+                // CAS counter is needed and is desirable -- it's the first value log entry
+                // we replay, so to speak, perhaps the only, and we use it to re-initialize
+                // the CAS counter.
+                //
+                // The write loop generates CAS counter values _before_ it sets vptr.  It
+                // is crucial that we read the cas counter here _after_ reading vptr.  That
+                // way, our value here is guaranteed to be >= the CASCounter values written
+                // before vptr (because they don't get replayed).
+                let value = ValueStruct {
+                    meta: 0,
+                    user_meta: 0,
+                    cas_counter: self.last_used_cas_counter.load(Ordering::Acquire),
+                    value: offset,
+                };
+                task.must_mt().put(_HEAD, value);
             }
+            let fid = self.must_lc().reserve_file_id();
+            let f_name = new_file_name(fid, &self.opt.dir);
+            let fp = create_synced_file(&f_name, true)?;
+            // Don't block just to sync the directory entry.
+            // TODO use currency
+            async_sync_directory(self.opt.dir.clone().to_string()).await?;
+            let mut fp = tokio::fs::File::from_std(fp);
+            write_level0_table(
+                &task.mt.as_ref().unwrap(),
+                &mut fp,
+            )
+            .await?;
 
-            info!("Storing offset: {:?}", task.vptr);
-            let mut offset = vec![0u8; ValuePointer::value_pointer_encoded_size()];
-            task.vptr.enc(&mut offset).unwrap();
-            // CAS counter is needed and is desirable -- it's the first value log entry
-            // we replay, so to speak, perhaps the only, and we use it to re-initialize
-            // the CAS counter.
-            //
-            // The write loop generates CAS counter values _before_ it sets vptr.  It
-            // is crucial that we read the cas counter here _after_ reading vptr.  That
-            // way, our value here is guaranteed to be >= the CASCounter values written
-            // before vptr (because they don't get replayed).
-            let value = ValueStruct {
-                meta: 0,
-                user_meta: 0,
-                cas_counter: self.last_used_cas_counter.load(Ordering::Acquire),
-                value: offset,
-            };
-            // todo
-            task.mt.as_ref().unwrap().put(_HEAD, value);
+            let table = TableCore::open_table(fp.into_std(), &f_name, self.opt.table_loading_mode)?;
+            // We own a ref on tbl.
+            // task.must_mt()..try_add_level0_table(Table::from(table));
         }
 
         Ok(())
@@ -334,6 +361,13 @@ impl KV {
     fn new_cas_counter(&self, how_many: u64) -> u64 {
         self.last_used_cas_counter
             .fetch_add(how_many, Ordering::Relaxed)
+    }
+}
+
+impl KV {
+    fn must_lc(&self) -> XArc<LevelsController> {
+        let lc = self.lc.upgrade().unwrap();
+        lc
     }
 }
 
@@ -448,7 +482,7 @@ impl Clone for WeakKV {
     }
 }
 
-fn write_level0_table(st: &SkipList, mut f: &File) -> Result<()> {
+async fn write_level0_table(st: &SkipList, f: &mut tokio::fs::File) -> Result<()> {
     let cur = st.new_cursor();
     let mut builder = Builder::default();
     while let Some(_) = cur.next() {
@@ -456,7 +490,7 @@ fn write_level0_table(st: &SkipList, mut f: &File) -> Result<()> {
         let value = cur.value();
         builder.add(key, &value)?;
     }
-    f.write_all(&builder.finish())?;
+    f.write_all(&builder.finish()).await?;
     Ok(())
 }
 
