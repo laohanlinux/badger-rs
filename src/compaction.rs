@@ -105,6 +105,12 @@ impl Default for LevelCompactStatus {
     }
 }
 
+impl Display for LevelCompactStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        todo!()
+    }
+}
+
 impl LevelCompactStatus {
     // returns true if self.ranges and dst has overlap, otherwise returns false
     fn overlaps_with(&self, dst: &KeyRange) -> bool {
@@ -119,7 +125,7 @@ impl LevelCompactStatus {
         len > rlock.len()
     }
 
-    fn get_del_size(&self) -> u64 {
+    pub(crate) fn get_del_size(&self) -> u64 {
         self.del_size.load(Ordering::Relaxed)
     }
 

@@ -201,7 +201,7 @@ impl LevelHandler {
     }
 
     // Return true if ok and no stalling.
-    pub(crate) fn try_add_level0_table(&self, t: Table) -> bool {
+    pub(crate) async fn try_add_level0_table(&self, t: Table) -> bool {
         assert_eq!(self.x.level.load(Ordering::Relaxed), 0);
         let tw = self.tables_wl();
         if tw.len() >= self.opt.num_level_zero_tables_stall {

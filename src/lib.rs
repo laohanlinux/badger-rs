@@ -14,6 +14,7 @@
 #![feature(slice_pattern)]
 #![feature(slice_take)]
 #![feature(arc_into_inner)]
+#![feature(async_closure)]
 
 use std::io;
 use std::mem::align_of;

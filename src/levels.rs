@@ -42,6 +42,7 @@ pub(crate) struct LevelsController {
     c_status: Arc<CompactStatus>,
     manifest: Arc<tokio::sync::RwLock<ManifestFile>>,
     opt: Options,
+    last_unstalled: Arc<tokio::sync::RwLock<SystemTime>>,
 }
 
 pub(crate) type XLevelsController = XArc<LevelHandler>;
@@ -120,6 +121,7 @@ impl LevelsController {
             c_status: Arc::new(cstatus),
             manifest,
             opt: opt.clone(),
+            last_unstalled: Arc::new(SystemTime::now()),
         };
         if let Err(err) = level_controller.validate() {
             let _ = level_controller.cleanup_levels();
@@ -316,6 +318,50 @@ impl LevelsController {
             time_start.elapsed().unwrap().as_millis()
         );
 
+        Ok(())
+    }
+
+    async fn add_level0_table(&self, table: Table) -> Result<()> {
+        // We update the manifest _before_ the table becomes part of a levelHandler, because at that
+        // point it could get used in some compaction.  This ensures the manifest file gets updated in
+        // the proper order. (That means this update happens before that of some compaction which
+        // deletes the table.)
+        self.manifest
+            .write()
+            .await
+            .add_changes(vec![ManifestChangeBuilder::new(table.id())
+                .with_level(0)
+                .build()])
+            .await?;
+        while !self.levels[0].try_add_level0_table(table.clone()).await {
+            // Stall. Make sure all levels are healthy before we unstall.
+            let mut time = SystemTime::now();
+            {
+                info!(
+                    "STALLED STALLED STALLED STALLED STALLED STALLED STALLED STALLED: {}ms",
+                    self.last_unstalled.read().await.elapsed().unwrap().as_millis()
+                );
+                let c_status = self.c_status.levels.write();
+                for i in 0..self.opt.max_levels {
+                    info!(
+                        "level={}, status={}, size={}",
+                        i,
+                        c_status[i],
+                        c_status[i].get_del_size()
+                    )
+                }
+                time = SystemTime::now();
+            }
+            // Before we unstall, we need to make sure that level 0 and 1 are healthy. Otherwise, we
+            // will very quickly fill up level 0 again and if the compaction strategy favors level 0,
+            // then level 1 is going to super full.
+            loop {
+                // Passing 0 for delSize to compactable means we're treating incomplete compactions as
+                // not having finished -- we wait for them to finish.  Also, it's crucial this behavior
+                // replicates pickCompactLevels' behavior in computing compactability in order to
+                // guarantee progress.
+            }
+        }
         Ok(())
     }
 

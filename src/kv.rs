@@ -350,9 +350,10 @@ impl KV {
             )
             .await?;
 
-            let table = TableCore::open_table(fp.into_std(), &f_name, self.opt.table_loading_mode)?;
+            let fp = fp.into_std().await;
+            let table = TableCore::open_table(fp, &f_name, self.opt.table_loading_mode)?;
             // We own a ref on tbl.
-            // task.must_mt()..try_add_level0_table(Table::from(table));
+            // task.must_mt().try_add_level0_table(Table::from(table));
         }
 
         Ok(())
