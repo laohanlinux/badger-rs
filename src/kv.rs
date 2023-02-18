@@ -3,9 +3,9 @@ use crate::manifest::{open_or_create_manifest_file, Manifest, ManifestFile};
 use crate::options::Options;
 use crate::table::builder::Builder;
 use crate::table::iterator::IteratorImpl;
-use crate::table::table::{new_file_name, TableCore};
+use crate::table::table::{new_file_name, Table, TableCore};
 use crate::types::{Channel, Closer, XArc, XWeak};
-use crate::value_log::{ArcRequest, Request, ValueLogCore, ValuePointer};
+use crate::value_log::{ArcRequest, Entry, MetaBit, Request, ValueLogCore, ValuePointer};
 use crate::y::{
     async_sync_directory, create_synced_file, sync_directory, Encode, Result, ValueStruct,
 };
@@ -24,7 +24,6 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
-use tabled::Table;
 use tokio::fs::create_dir_all;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{RwLock, RwLockWriteGuard};
@@ -63,9 +62,9 @@ pub struct KV {
     value_dir_guard: File,
     closers: Closers,
     // Our latest (actively written) in-memory table.
-    mt: SkipList,
+    mt: Option<Arc<SkipList>>,
     // Add here only AFTER pushing to flush_ch
-    imm: Vec<SkipList>,
+    imm: Vec<Arc<SkipList>>,
     write_ch: Channel<ArcRequest>,
     // Incremented in the non-concurrently accessed write loop.  But also accessed outside. So
     // we use an atomic op.
@@ -106,7 +105,6 @@ impl KV {
             value_gc: Closer::new(),
         };
         // go out.updateSize(out.closers.updateSize)
-        let mt = SkipList::new(arena_size(&opt));
         let mut out = KV {
             opt: opt.clone(),
             vlog: None,
@@ -118,7 +116,7 @@ impl KV {
             dir_lock_guard,
             value_dir_guard,
             closers,
-            mt,
+            mt: None,
             imm: Vec::new(),
             write_ch: Channel::new(1),
             last_used_cas_counter: Default::default(),
@@ -142,7 +140,7 @@ impl KV {
                 _out.spawn_update_size().await;
             });
         }
-        // memtable closer
+        // mem_table closer
         {
             let _out = xout.clone();
             tokio::spawn(async move {
@@ -198,6 +196,22 @@ impl KV {
                     return Ok(true);
                 }
             }
+            let mut nv = vec![];
+            let mut meta = entry.meta;
+            if xout.should_write_value_to_lsm(entry) {
+                nv = entry.value.clone();
+            } else {
+                nv = Vec::with_capacity(ValuePointer::value_pointer_encoded_size());
+                vptr.enc(&mut nv).unwrap();
+                meta = meta | MetaBit::BIT_VALUE_POINTER.bits();
+            }
+            let v = ValueStruct {
+                meta,
+                user_meta: entry.user_meta,
+                cas_counter: entry.cas_counter,
+                value: nv,
+            };
+            while let Err(err) = xout.ensure_room_for_write() {}
             todo!()
         })?;
         // Wait for replay to be applied first.
@@ -262,17 +276,17 @@ impl KV {
     }
 
     // Returns the current `mem_tables` and get references.
-    fn get_mem_tables(&self) -> Vec<&SkipList> {
+    fn get_mem_tables(&self) -> Vec<Arc<SkipList>> {
         // TODO add kv lock
         let mut tables = Vec::with_capacity(self.imm.len() + 1);
         // Get mutable `mem_tables`.
-        tables.push(&self.mt);
+        tables.push(self.mt.as_ref().unwrap().clone());
         tables[0].incr_ref();
 
         // Get immutable `mem_tables`.
         for tb in self.imm.iter().rev() {
             tb.incr_ref();
-            tables.push(tb);
+            tables.push(tb.clone());
         }
         tables
     }
@@ -315,7 +329,6 @@ impl KV {
             if task.mt.is_none() {
                 break;
             }
-
             // TODO if is zero?
             if !task.vptr.is_zero() {
                 info!("Storing offset: {:?}", task.vptr);
@@ -344,18 +357,21 @@ impl KV {
             // TODO use currency
             async_sync_directory(self.opt.dir.clone().to_string()).await?;
             let mut fp = tokio::fs::File::from_std(fp);
-            write_level0_table(
-                &task.mt.as_ref().unwrap(),
-                &mut fp,
-            )
-            .await?;
+            write_level0_table(&task.mt.as_ref().unwrap(), &mut fp).await?;
 
             let fp = fp.into_std().await;
-            let table = TableCore::open_table(fp, &f_name, self.opt.table_loading_mode)?;
-            // We own a ref on tbl.
-            // task.must_mt().try_add_level0_table(Table::from(table));
-        }
 
+            let tc = TableCore::open_table(fp, &f_name, self.opt.table_loading_mode)?;
+            let tb = Table::new(tc);
+            // We own a ref on tbl.
+            self.must_lc().add_level0_table(tb.clone()).await?; // This will incr_ref (if we don't error, sure)
+            tb.decr_ref(); // releases our ref.
+
+            // Update s.imm, need a lock.
+            // assert!(task.mt.as_ref().unwrap(), "{}", self.imm[0]);
+            // TODO
+            task.mt.as_ref().unwrap().decr_ref(); // Return memory
+        }
         Ok(())
     }
 
@@ -369,6 +385,10 @@ impl KV {
     fn must_lc(&self) -> XArc<LevelsController> {
         let lc = self.lc.upgrade().unwrap();
         lc
+    }
+
+    fn must_mt(&self) -> &Arc<SkipList> {
+        self.mt.as_ref().unwrap()
     }
 }
 
@@ -474,6 +494,23 @@ impl ArcKV {
                 reqs.lock().iter().for_each(|req| req.set_err(ret.clone()));
             }
         }
+    }
+
+    fn should_write_value_to_lsm(&self, entry: &Entry) -> bool {
+        entry.value.len() < self.opt.value_threshold
+    }
+
+    // Always called serially.
+    fn ensure_room_for_write(&self) -> Result<()> {
+        // TODO a special global lock for this function
+        if self.must_mt().mem_size() < self.opt.max_table_size as u32 {
+            return Ok(());
+        }
+
+        // A nil mt indicates that KV is being closed.
+        assert!(!self.must_mt().empty());
+        // let flush_task = FlushTask { mt: Some(self.mt), vptr: self.vlog.as_ref().unwrap() }
+        todo!()
     }
 }
 

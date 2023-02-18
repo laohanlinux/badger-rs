@@ -8,6 +8,7 @@ use std::ops::Deref;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{cmp, ptr, ptr::NonNull, sync::atomic::AtomicI32};
+use log::info;
 
 use crate::y::ValueStruct;
 
@@ -42,7 +43,9 @@ impl SkipList {
     pub fn incr_ref(&self) {
         self._ref.fetch_add(1, Ordering::Relaxed);
     }
-    // Sub crease the reference count
+
+    // Sub crease the reference count, deallocating the skiplist when done using it
+    // TODO
     pub fn decr_ref(&self) {
         self._ref.fetch_sub(1, Ordering::Relaxed);
     }
@@ -380,7 +383,7 @@ impl SkipList {
 impl Drop for SkipList {
     fn drop(&mut self) {
         let _ref = self._ref.load(Ordering::Relaxed);
-        println!("SkipList reference: {:p} => {:?}", &self, _ref);
+        info!("Drop SkipList, reference: {}", _ref);
         self.arena_mut_ref().reset();
     }
 }

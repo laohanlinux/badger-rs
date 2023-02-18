@@ -9,7 +9,9 @@ use crate::table::builder::Builder;
 use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
 use crate::table::table::{get_id_map, new_file_name, Table, TableCore};
 use crate::types::{Closer, XArc, XWeak};
-use crate::y::{create_synced_file, open_existing_synced_file, sync_directory};
+use crate::y::{
+    async_sync_directory, create_synced_file, open_existing_synced_file, sync_directory,
+};
 use crate::Result;
 use crate::Xiterator;
 use crate::{MergeIterOverBuilder, MergeIterOverIterator};
@@ -30,6 +32,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::vec;
 use tokio::macros::support::thread_rng_n;
+use tokio::time::sleep;
 
 #[derive(Clone)]
 pub(crate) struct LevelsController {
@@ -121,14 +124,14 @@ impl LevelsController {
             c_status: Arc::new(cstatus),
             manifest,
             opt: opt.clone(),
-            last_unstalled: Arc::new(SystemTime::now()),
+            last_unstalled: Arc::new(tokio::sync::RwLock::new(SystemTime::now())),
         };
         if let Err(err) = level_controller.validate() {
             let _ = level_controller.cleanup_levels();
             return Err(format!("Level validation, err:{}", err).into());
         }
         // Sync directory (because we have at least removed some files, or previously created the manifest file).
-        if let Err(err) = sync_directory(opt.dir.as_str()) {
+        if let Err(err) = async_sync_directory(*opt.dir.clone()).await {
             let _ = level_controller.close();
             return Err(err);
         }
@@ -321,7 +324,8 @@ impl LevelsController {
         Ok(())
     }
 
-    async fn add_level0_table(&self, table: Table) -> Result<()> {
+    // async to add level0 table
+    pub(crate) async fn add_level0_table(&self, table: Table) -> Result<()> {
         // We update the manifest _before_ the table becomes part of a levelHandler, because at that
         // point it could get used in some compaction.  This ensures the manifest file gets updated in
         // the proper order. (That means this update happens before that of some compaction which
@@ -331,15 +335,21 @@ impl LevelsController {
             .await
             .add_changes(vec![ManifestChangeBuilder::new(table.id())
                 .with_level(0)
+                .with_op(CREATE)
                 .build()])
             .await?;
         while !self.levels[0].try_add_level0_table(table.clone()).await {
             // Stall. Make sure all levels are healthy before we unstall.
-            let mut time = SystemTime::now();
+            let mut start_time = SystemTime::now();
             {
                 info!(
                     "STALLED STALLED STALLED STALLED STALLED STALLED STALLED STALLED: {}ms",
-                    self.last_unstalled.read().await.elapsed().unwrap().as_millis()
+                    self.last_unstalled
+                        .read()
+                        .await
+                        .elapsed()
+                        .unwrap()
+                        .as_millis()
                 );
                 let c_status = self.c_status.levels.write();
                 for i in 0..self.opt.max_levels {
@@ -350,7 +360,7 @@ impl LevelsController {
                         c_status[i].get_del_size()
                     )
                 }
-                time = SystemTime::now();
+                start_time = SystemTime::now();
             }
             // Before we unstall, we need to make sure that level 0 and 1 are healthy. Otherwise, we
             // will very quickly fill up level 0 again and if the compaction strategy favors level 0,
@@ -360,7 +370,18 @@ impl LevelsController {
                 // not having finished -- we wait for them to finish.  Also, it's crucial this behavior
                 // replicates pickCompactLevels' behavior in computing compactability in order to
                 // guarantee progress.
+                if !self.is_level0_compactable() && !self.levels[1].is_compactable(0) {
+                    break;
+                }
+                // sleep millis, try it again
+                sleep(Duration::from_millis(10)).await;
             }
+
+            info!(
+                "UNSTALLED UNSTALLED UNSTALLED UNSTALLED UNSTALLED UNSTALLED: {}ms",
+                start_time.elapsed().unwrap().as_millis()
+            );
+            *self.last_unstalled.write().await = SystemTime::now();
         }
         Ok(())
     }
