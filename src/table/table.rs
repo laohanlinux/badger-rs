@@ -7,6 +7,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 use filename::file_name;
 use growable_bloom_filter::GrowableBloom;
 use memmap::{Mmap, MmapMut};
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::fs::{read_dir, remove_file, File};
@@ -54,23 +55,23 @@ pub type WeakTable = XWeak<TableCore>;
 
 impl Table {
     pub fn incr_ref(&self) {
-        self.x.incr_ref()
+        self.to_ref().incr_ref()
     }
 
     pub fn decr_ref(&self) {
-        self.x.decr_ref()
+        self.to_ref().decr_ref()
     }
 
     pub fn size(&self) -> usize {
-        self.x.size()
+        self.to_ref().size()
     }
 
     pub fn biggest(&self) -> &[u8] {
-        &self.x.biggest
+       &self.biggest
     }
 
     pub fn smallest(&self) -> &[u8] {
-        &self.x.smallest
+       &self.smallest
     }
 }
 
@@ -85,7 +86,7 @@ pub struct TableCore {
     _mmap: Option<MmapMut>, // Memory mapped.
     // The following are initialized once and const.
     smallest: Vec<u8>, // smallest keys.
-    biggest: Vec<u8>,  // biggest keys.
+    biggest: Vec<u8>, // biggest keys.
     id: u64,
     bf: GrowableBloom,
 }
@@ -108,7 +109,7 @@ impl TableCore {
             loading_mode,
             _mmap: None,
             smallest: vec![],
-            biggest: vec![],
+            biggest:  vec![],
             id,
             bf: GrowableBloom::new(0.01, 1),
         };
@@ -142,11 +143,11 @@ impl TableCore {
                 .or_else(|| Some(vec![]))
         }
         .unwrap();
-        let mut table = Arc::into_inner(table_ref.x).unwrap();
-        table.biggest = biggest;
-        table.smallest = smallest;
-        println!("open table ==> {}", table);
-        Ok(table)
+        let mut tc = table_ref.to_inner().unwrap();
+        tc.biggest = biggest;
+        tc.smallest = smallest;
+        println!("open table ==> {}", tc);
+        Ok(tc)
     }
 
     // increments the refcount (having to do with whether the file should be deleted)

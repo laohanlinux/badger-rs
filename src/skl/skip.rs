@@ -1,14 +1,15 @@
 use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
+use log::info;
 use rand::random;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::{write, Display, Formatter};
 use std::ops::Deref;
-use std::sync::atomic::Ordering;
+use std::ptr::null_mut;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
 use std::{cmp, ptr, ptr::NonNull, sync::atomic::AtomicI32};
-use log::info;
 
 use crate::y::ValueStruct;
 
@@ -19,12 +20,23 @@ pub struct SkipList {
     height: Arc<AtomicI32>,
     head: NonNull<Node>,
     _ref: Arc<AtomicI32>,
-    pub(crate) arena: Arena,
+    pub(crate) arena: Arc<Arena>,
 }
 
 unsafe impl Send for SkipList {}
 
 unsafe impl Sync for SkipList {}
+
+impl Clone for SkipList {
+    fn clone(&self) -> Self {
+        SkipList {
+            height: self.height.clone(),
+            head: NonNull::new(self.head.as_ptr()).unwrap(),
+            _ref: self._ref.clone(),
+            arena: self.arena.clone(),
+        }
+    }
+}
 
 impl SkipList {
     pub fn new(arena_size: usize) -> Self {
@@ -35,7 +47,7 @@ impl SkipList {
             height: Arc::new(AtomicI32::new(1)),
             head: NonNull::new(node).unwrap(),
             _ref: Arc::new(AtomicI32::new(1)),
-            arena,
+            arena: Arc::new(arena),
         }
     }
 
@@ -536,6 +548,39 @@ mod tests {
         }
     }
 
+    fn t_concurrent_basic2() {
+        use rand::{thread_rng, Rng};
+
+        let st = SkipList::new(ARENA_SIZE);
+        let mut kv = vec![];
+        for i in 0..10000 {
+            kv.push((
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 10),
+                Alphanumeric.sample_string(&mut rand::thread_rng(), 20),
+            ));
+        }
+
+        let mut waits = vec![];
+        for (key, value) in kv.clone() {
+            let st_ptr = st.clone();
+            waits.push(spawn(move || {
+                // let st = unsafe {st.as_ref()};
+                st_ptr.put(
+                    key.as_bytes(),
+                    ValueStruct::new(value.as_bytes().to_vec(), 0, 0, 0),
+                )
+            }));
+        }
+        for join in waits {
+            join.join().unwrap();
+        }
+
+        for (key, value) in kv {
+            let got = st.get(key.as_bytes()).unwrap();
+            assert_eq!(got.value, value.as_bytes().to_vec());
+        }
+    }
+
     #[test]
     fn t_one_key() {
         let key = "thekey";
@@ -803,5 +848,16 @@ mod tests {
         assert!(cur.valid());
         assert_eq!(b"01990", cur.value().value.as_slice());
         cur.close();
+    }
+}
+
+mod tests2 {
+    use crate::SkipList;
+
+    const ARENA_SIZE: usize = 1 << 20;
+
+    #[test]
+    fn atomic_swap_skip_list() {
+        let mut st = SkipList::new(ARENA_SIZE);
     }
 }

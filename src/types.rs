@@ -188,55 +188,51 @@ impl Closer {
 }
 
 #[derive(Debug, Clone)]
-pub struct XWeak<T> {
-    pub(crate) x: Weak<T>,
-}
+pub struct XWeak<T>(Weak<T>);
 
 #[derive(Debug)]
-pub struct XArc<T> {
-    pub(crate) x: Arc<T>,
-}
+pub struct XArc<T>(Arc<T>);
 
 impl<T> Deref for XArc<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        self.x.deref()
+        self.0.deref()
     }
 }
 
 impl<T> Clone for XArc<T> {
     fn clone(&self) -> Self {
-        XArc { x: self.x.clone() }
+        XArc(self.0.clone())
     }
 }
 
 impl<T> XArc<T> {
     pub fn new(x: T) -> XArc<T> {
-        XArc { x: Arc::new(x) }
+        XArc(Arc::new(x))
     }
 
     pub fn to_ref(&self) -> &T {
-        self.x.as_ref()
+        self.0.as_ref()
     }
 
     pub fn to_inner(self) -> Option<T> {
-        Arc::into_inner(self.x)
+        Arc::into_inner(self.0)
     }
 }
 
 impl<T> XWeak<T> {
     pub fn new() -> Self {
-        Self { x: Weak::new() }
+        Self { 0: Weak::new() }
     }
 
     pub fn upgrade(&self) -> Option<XArc<T>> {
-        self.x.upgrade().map(|x| XArc { x })
+        self.0.upgrade().map(XArc)
     }
 
     pub fn from(xarc: &XArc<T>) -> Self {
         Self {
-            x: Arc::downgrade(&xarc.x),
+            0: Arc::downgrade(&xarc.0),
         }
     }
 }

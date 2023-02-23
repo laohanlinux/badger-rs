@@ -364,7 +364,7 @@ impl KV {
             let tc = TableCore::open_table(fp, &f_name, self.opt.table_loading_mode)?;
             let tb = Table::new(tc);
             // We own a ref on tbl.
-            self.must_lc().add_level0_table(tb.clone()).await?; // This will incr_ref (if we don't error, sure)
+            // self.must_lc().add_level0_table(tb.clone()).await?; // This will incr_ref (if we don't error, sure)
             tb.decr_ref(); // releases our ref.
 
             // Update s.imm, need a lock.
@@ -511,12 +511,6 @@ impl ArcKV {
         assert!(!self.must_mt().empty());
         // let flush_task = FlushTask { mt: Some(self.mt), vptr: self.vlog.as_ref().unwrap() }
         todo!()
-    }
-}
-
-impl Clone for WeakKV {
-    fn clone(&self) -> Self {
-        XWeak { x: self.x.clone() }
     }
 }
 

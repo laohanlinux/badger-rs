@@ -84,11 +84,11 @@ impl LevelHandler {
     }
 
     pub(crate) fn get_total_size(&self) -> u64 {
-        self.x.total_size.load(Ordering::Relaxed)
+        self.total_size.load(Ordering::Relaxed)
     }
 
     pub(crate) fn get_max_total_size(&self) -> u64 {
-        self.x.max_total_size.load(Ordering::Relaxed)
+        self.max_total_size.load(Ordering::Relaxed)
     }
 
     // delete current level's tables of to_del
@@ -96,7 +96,7 @@ impl LevelHandler {
         let to_del = to_del.iter().map(|id| *id).collect::<HashSet<_>>();
         let mut tb_wl = self.tables_wl();
         tb_wl.retain_mut(|tb| {
-            if to_del.contains(&tb.x.id()) {
+            if to_del.contains(&tb.id()) {
                 // delete table reference
                 tb.decr_ref();
                 return false;
@@ -108,15 +108,14 @@ impl LevelHandler {
     // init with tables
     pub(crate) fn init_tables(&self, tables: Vec<Table>) {
         let total_size = tables.iter().fold(0, |acc, table| acc + table.size());
-        self.x
-            .total_size
+        self.total_size
             .store(total_size as u64, Ordering::Relaxed);
         let mut tb_wl = self.tables_wl();
         (*tb_wl) = tables;
-        if self.x.level.load(Ordering::Relaxed) == 0 {
+        if self.level.load(Ordering::Relaxed) == 0 {
             // key range will overlap. Just sort by file_id in ascending order
             // because newer tables are at the end of level 0.
-            tb_wl.sort_by_key(|tb| tb.x.id());
+            tb_wl.sort_by_key(|tb| tb.id());
         } else {
             // Sort tables by keys.
             tb_wl.sort_by_key(|tb| tb.smallest().to_vec());
@@ -125,12 +124,12 @@ impl LevelHandler {
 
     // Get table write lock guards.
     fn tables_wl(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<Table>> {
-        self.x.tables.write()
+        self.tables.write()
     }
 
     // Get table read lock guards
     fn tables_rd(&self) -> RwLockReadGuard<'_, RawRwLock, Vec<Table>> {
-        self.x.tables.read()
+        self.tables.read()
     }
 
     // Returns the tables that intersect with key range. Returns a half-interval [left, right].
@@ -148,7 +147,7 @@ impl LevelHandler {
     }
 
     pub(crate) fn get_total_siz(&self) -> u64 {
-        self.x.total_size.load(Ordering::Relaxed)
+        self.total_size.load(Ordering::Relaxed)
     }
 
     // Replace tables[left:right] with new_tables, Note this EXCLUDES tables[right].
@@ -163,8 +162,7 @@ impl LevelHandler {
         // TODO Add lock (think of level's sharing lock)
         // Increase total_size first.
         for tb in &new_tables {
-            self.x
-                .total_size
+            self.total_size
                 .fetch_add(tb.size() as u64, Ordering::Relaxed);
             // add table reference
             tb.incr_ref();
@@ -187,8 +185,7 @@ impl LevelHandler {
                     // TODO it should be not a good idea decr reference here, slow lock
                     // decr table reference
                     tb.decr_ref();
-                    self.x
-                        .total_size
+                    self.total_size
                         .fetch_sub(tb.size() as u64, Ordering::Relaxed);
                     false
                 }
@@ -202,13 +199,13 @@ impl LevelHandler {
 
     // Return true if ok and no stalling.
     pub(crate) async fn try_add_level0_table(&self, t: Table) -> bool {
-        assert_eq!(self.x.level.load(Ordering::Relaxed), 0);
+        assert_eq!(self.level.load(Ordering::Relaxed), 0);
         let tw = self.tables_wl();
         if tw.len() >= self.opt.num_level_zero_tables_stall {
             return false;
         }
         t.incr_ref();
-        self.x
+        self
             .total_size
             .fetch_add(t.size() as u64, Ordering::Relaxed);
         self.tables_wl().push(t);
@@ -228,7 +225,7 @@ impl LevelHandler {
 
     // Acquires a read-lock to access s.tables. It returns a list of table_handlers.
     pub(crate) fn get_table_for_key(&self, key: &[u8]) -> Option<IteratorItem> {
-        return if self.x.level.load(Ordering::Relaxed) == 0 {
+        return if self.level.load(Ordering::Relaxed) == 0 {
             let tw = self.tables_rd();
             for tb in tw.iter().rev() {
                 tb.incr_ref();
@@ -263,7 +260,7 @@ impl LevelHandler {
 
     // returns current level
     pub(crate) fn level(&self) -> usize {
-        self.x.level.load(Ordering::Relaxed) as usize
+        self.level.load(Ordering::Relaxed) as usize
     }
 }
 

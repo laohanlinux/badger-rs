@@ -40,6 +40,7 @@ range-lock = "0.2.2"
 tracing = "0.1.37"
 drop_cell = "0.0.0"
 walkdir = "2.3.2"
+crossbeam-epoch = "0.9.13"
 [dev-dependencies]
 tracing-subscriber = "0.3.16"
 tracing-log = "0.1.3"
