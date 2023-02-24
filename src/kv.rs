@@ -10,7 +10,7 @@ use crate::y::{
     async_sync_directory, create_synced_file, sync_directory, Encode, Result, ValueStruct,
 };
 use crate::Error::Unexpected;
-use crate::{Decode, Error, Node, SkipList};
+use crate::{Decode, Error, Node, SkipList, SkipListManager};
 use bytes::BufMut;
 use drop_cell::defer;
 use fs2::FileExt;
@@ -63,6 +63,7 @@ pub struct KV {
     closers: Closers,
     // Our latest (actively written) in-memory table.
     mt: Option<Arc<SkipList>>,
+    mem_st_manger: Arc<SkipListManager>,
     // Add here only AFTER pushing to flush_ch
     imm: Vec<Arc<SkipList>>,
     write_ch: Channel<ArcRequest>,
@@ -120,6 +121,7 @@ impl KV {
             imm: Vec::new(),
             write_ch: Channel::new(1),
             last_used_cas_counter: Default::default(),
+            mem_st_manger: Arc::new(SkipListManager::default()),
         };
 
         let manifest = out.manifest.clone();

@@ -42,6 +42,7 @@ mod st_manager;
 
 pub use skl::*;
 pub use y::*;
+pub use st_manager::*;
 
 #[allow(dead_code)]
 #[inline]
