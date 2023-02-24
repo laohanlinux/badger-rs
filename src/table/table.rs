@@ -53,6 +53,12 @@ impl Display for KeyOffset {
 pub type Table = XArc<TableCore>;
 pub type WeakTable = XWeak<TableCore>;
 
+impl From<TableCore> for Table {
+    fn from(value: TableCore) -> Self {
+       Table::new(value)
+    }
+}
+
 impl Table {
     pub fn incr_ref(&self) {
         self.to_ref().incr_ref()

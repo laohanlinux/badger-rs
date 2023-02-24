@@ -10,8 +10,11 @@ use std::{hint, mem, thread};
 use async_channel::{
     bounded, unbounded, Receiver, Recv, RecvError, SendError, Sender, TryRecvError, TrySendError,
 };
+use atomic::Atomic;
+use crossbeam_epoch::Owned;
 use log::info;
 
+use crate::value_log::ValuePointer;
 use range_lock::{VecRangeLock, VecRangeLockGuard};
 use tokio::sync::mpsc::{UnboundedSender, WeakUnboundedSender};
 use tokio::time::sleep;
@@ -297,4 +300,16 @@ fn it_closer() {
 }
 
 #[tokio::test]
-async fn lck() {}
+async fn lck() {
+    use crossbeam_epoch::{self as epoch, Atomic, Shared};
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let a = Atomic::new(1234);
+    let guard = &epoch::pin();
+    // let p = a.swap(Shared::null(), SeqCst, guard);
+    // println!("{:?}", unsafe { p.as_ref().unwrap()});
+    let p = a.swap(Owned::new(200), SeqCst, guard);
+    let p = a.swap(Owned::new(200), SeqCst, guard);
+
+    println!("{:?}", unsafe { p.as_ref().unwrap()});
+}

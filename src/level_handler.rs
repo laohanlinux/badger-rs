@@ -197,7 +197,7 @@ impl LevelHandler {
         Ok(())
     }
 
-    // Return true if ok and no stalling.
+    // Return true if ok and no stalling that will hold a new table reference
     pub(crate) async fn try_add_level0_table(&self, t: Table) -> bool {
         assert_eq!(self.level.load(Ordering::Relaxed), 0);
         let tw = self.tables_wl();

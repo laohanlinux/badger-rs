@@ -7,7 +7,9 @@ use memmap::MmapMut;
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::fs::File;
+use std::future::Future;
 use std::io::{Read, Seek, SeekFrom};
+use std::pin::Pin;
 
 #[derive(Debug)]
 pub(crate) struct LogFile {
@@ -79,10 +81,13 @@ impl LogFile {
         Ok(())
     }
 
-    pub(crate) fn iterate(
+    pub(crate) async fn iterate(
         &mut self,
         offset: u32,
-        f: &mut impl FnMut(&Entry, &ValuePointer) -> Result<bool>,
+        f: &mut impl for<'a> FnMut(
+            &'a Entry,
+            &'a ValuePointer,
+        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
     ) -> Result<()> {
         let mut fd = self.fd.as_mut().unwrap();
         fd.seek(SeekFrom::Start(offset as u64))?;
@@ -135,7 +140,7 @@ impl LogFile {
             vp.offset = entry.offset;
             vp.fid = self.fid;
 
-            let _continue = f(&entry, &vp)?;
+            let _continue = f(&entry, &vp).await?;
             if !_continue {
                 break;
             }

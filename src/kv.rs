@@ -11,6 +11,7 @@ use crate::y::{
 };
 use crate::Error::Unexpected;
 use crate::{Decode, Error, Node, SkipList, SkipListManager};
+use atomic::Atomic;
 use bytes::BufMut;
 use drop_cell::defer;
 use fs2::FileExt;
@@ -19,11 +20,16 @@ use parking_lot::Mutex;
 use std::borrow::BorrowMut;
 use std::fs::{read_dir, File};
 use std::fs::{try_exists, OpenOptions};
+use std::future::Future;
 use std::io::{Cursor, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::pin::Pin;
+use std::ptr::NonNull;
+use std::string;
+use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 use tokio::fs::create_dir_all;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{RwLock, RwLockWriteGuard};
@@ -54,6 +60,7 @@ impl FlushTask {
 pub struct KV {
     pub opt: Options,
     pub vlog: Option<ValueLogCore>,
+    pub vptr: crossbeam_epoch::Atomic<ValuePointer>,
     pub manifest: Arc<RwLock<ManifestFile>>,
     lc: XWeak<LevelsController>,
     flush_chan: Channel<FlushTask>,
@@ -62,14 +69,13 @@ pub struct KV {
     value_dir_guard: File,
     closers: Closers,
     // Our latest (actively written) in-memory table.
-    mt: Option<Arc<SkipList>>,
     mem_st_manger: Arc<SkipListManager>,
     // Add here only AFTER pushing to flush_ch
-    imm: Vec<Arc<SkipList>>,
     write_ch: Channel<ArcRequest>,
     // Incremented in the non-concurrently accessed write loop.  But also accessed outside. So
     // we use an atomic op.
     last_used_cas_counter: AtomicU64,
+    share_lock: tokio::sync::RwLock<()>,
 }
 
 // TODO not add bellow lines
@@ -109,6 +115,7 @@ impl KV {
         let mut out = KV {
             opt: opt.clone(),
             vlog: None,
+            vptr: crossbeam_epoch::Atomic::null(),
             manifest: Arc::new(RwLock::new(manifest_file)),
             // lc: Default::default(),
             lc: XWeak::new(),
@@ -117,11 +124,10 @@ impl KV {
             dir_lock_guard,
             value_dir_guard,
             closers,
-            mt: None,
-            imm: Vec::new(),
             write_ch: Channel::new(1),
             last_used_cas_counter: Default::default(),
             mem_st_manger: Arc::new(SkipListManager::default()),
+            share_lock: tokio::sync::RwLock::new(()),
         };
 
         let manifest = out.manifest.clone();
@@ -183,39 +189,52 @@ impl KV {
         }
 
         let mut first = true;
-        xout.vlog.as_ref().unwrap().replay(&vptr, |entry, vptr| {
-            if first {
-                info!("First key={}", String::from_utf8_lossy(&entry.key));
-            }
-            first = false;
-            if xout.last_used_cas_counter.load(Ordering::Relaxed) < entry.cas_counter {
-                xout.last_used_cas_counter
-                    .store(entry.cas_counter, Ordering::Relaxed);
-            }
-            if entry.cas_counter_check != 0 {
-                let old_value = xout.get(&entry.key)?;
-                if old_value.cas_counter != entry.cas_counter_check {
-                    return Ok(true);
-                }
-            }
-            let mut nv = vec![];
-            let mut meta = entry.meta;
-            if xout.should_write_value_to_lsm(entry) {
-                nv = entry.value.clone();
-            } else {
-                nv = Vec::with_capacity(ValuePointer::value_pointer_encoded_size());
-                vptr.enc(&mut nv).unwrap();
-                meta = meta | MetaBit::BIT_VALUE_POINTER.bits();
-            }
-            let v = ValueStruct {
-                meta,
-                user_meta: entry.user_meta,
-                cas_counter: entry.cas_counter,
-                value: nv,
-            };
-            while let Err(err) = xout.ensure_room_for_write() {}
-            todo!()
-        })?;
+        xout.vlog
+            .as_ref()
+            .unwrap()
+            .replay(&vptr, |entry, vptr| {
+                let xout = xout.clone();
+                Box::pin(async move {
+                    if first {
+                        info!("First key={}", string::String::from_utf8_lossy(&entry.key));
+                    }
+                    first = false;
+                    if xout.last_used_cas_counter.load(Ordering::Relaxed) < entry.cas_counter {
+                        xout.last_used_cas_counter
+                            .store(entry.cas_counter, Ordering::Relaxed);
+                    }
+
+                    // TODO why?
+                    if entry.cas_counter_check != 0 {
+                        let old_value = xout.get(&entry.key)?;
+                        if old_value.cas_counter != entry.cas_counter_check {
+                            return Ok(true);
+                        }
+                    }
+                    let mut nv = vec![];
+                    let mut meta = entry.meta;
+                    if xout.should_write_value_to_lsm(entry) {
+                        // TODO OPZ memory copy
+                        nv = entry.value.clone();
+                    } else {
+                        nv = Vec::with_capacity(ValuePointer::value_pointer_encoded_size());
+                        vptr.enc(&mut nv).unwrap();
+                        meta = meta | MetaBit::BIT_VALUE_POINTER.bits();
+                    }
+                    let v = ValueStruct {
+                        meta,
+                        user_meta: entry.user_meta,
+                        cas_counter: entry.cas_counter,
+                        value: nv,
+                    };
+                    while let Err(err) = xout.ensure_room_for_write().await {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    xout.must_mt().put(&entry.key, v);
+                    Ok(true)
+                })
+            })
+            .await?;
         // Wait for replay to be applied first.
         replay_closer.signal_and_wait().await;
         Ok(xout)
@@ -278,17 +297,20 @@ impl KV {
     }
 
     // Returns the current `mem_tables` and get references.
-    fn get_mem_tables(&self) -> Vec<Arc<SkipList>> {
-        // TODO add kv lock
-        let mut tables = Vec::with_capacity(self.imm.len() + 1);
-        // Get mutable `mem_tables`.
-        tables.push(self.mt.as_ref().unwrap().clone());
-        tables[0].incr_ref();
+    fn get_mem_tables(&self) -> Vec<&SkipList> {
+        self.mem_st_manger.lock_exclusive();
+        defer! {self.mem_st_manger.unlock_exclusive()}
 
+        let mt = self.mem_st_manger.mt_ref();
+        let mut tables = Vec::with_capacity(self.mem_st_manger.imm().len() + 1);
+        // Get mutable `mem_tables`.
+        tables.push(mt);
+        tables[0].incr_ref();
         // Get immutable `mem_tables`.
-        for tb in self.imm.iter().rev() {
+        for tb in self.mem_st_manger.imm().iter().rev() {
+            let tb = unsafe { tb.as_ref() };
             tb.incr_ref();
-            tables.push(tb.clone());
+            tables.push(tb);
         }
         tables
     }
@@ -327,7 +349,9 @@ impl KV {
 
     // async to flush memory table into zero level
     async fn flush_mem_table(&self, lc: Closer) -> Result<()> {
+        defer! {lc.done()}
         while let Ok(task) = self.flush_chan.recv().await {
+            // after kv send empty mt, it will close flush_chan, so we should return the job.
             if task.mt.is_none() {
                 break;
             }
@@ -356,23 +380,22 @@ impl KV {
             let f_name = new_file_name(fid, &self.opt.dir);
             let fp = create_synced_file(&f_name, true)?;
             // Don't block just to sync the directory entry.
-            // TODO use currency
-            async_sync_directory(self.opt.dir.clone().to_string()).await?;
+            let task1 = async_sync_directory(self.opt.dir.clone().to_string());
             let mut fp = tokio::fs::File::from_std(fp);
-            write_level0_table(&task.mt.as_ref().unwrap(), &mut fp).await?;
+            let task2 = write_level0_table(&task.mt.as_ref().unwrap(), &mut fp);
+            let (task1_res, task2_res) = tokio::join!(task1, task2);
+            task1_res?;
+            task2_res?;
 
             let fp = fp.into_std().await;
-
             let tc = TableCore::open_table(fp, &f_name, self.opt.table_loading_mode)?;
-            let tb = Table::new(tc);
+            let tb = Table::from(tc);
             // We own a ref on tbl.
-            // self.must_lc().add_level0_table(tb.clone()).await?; // This will incr_ref (if we don't error, sure)
+            self.must_lc().add_level0_table(tb.clone()).await?;
+            // This will incr_ref (if we don't error, sure)
             tb.decr_ref(); // releases our ref.
-
-            // Update s.imm, need a lock.
-            // assert!(task.mt.as_ref().unwrap(), "{}", self.imm[0]);
-            // TODO
-            task.mt.as_ref().unwrap().decr_ref(); // Return memory
+            self.mem_st_manger.advance_imm(task.must_mt()); // Update s.imm, need a lock.
+            task.must_mt().decr_ref(); // Return memory
         }
         Ok(())
     }
@@ -388,9 +411,21 @@ impl KV {
         let lc = self.lc.upgrade().unwrap();
         lc
     }
+    fn must_mt(&self) -> &SkipList {
+        self.mem_st_manger.mt_ref()
+    }
 
-    fn must_mt(&self) -> &Arc<SkipList> {
-        self.mt.as_ref().unwrap()
+    fn must_vlog(&self) -> &ValueLogCore {
+        self.vlog.as_ref().unwrap()
+    }
+
+    fn must_vptr(&self) -> ValuePointer {
+        let p = crossbeam_epoch::pin();
+        let ptr = self.vptr.load(Ordering::Relaxed, &p);
+        if ptr.is_null() {
+            return ValuePointer::default();
+        }
+        unsafe { ptr.as_ref().unwrap().clone() }
     }
 }
 
@@ -503,16 +538,36 @@ impl ArcKV {
     }
 
     // Always called serially.
-    fn ensure_room_for_write(&self) -> Result<()> {
+    async fn ensure_room_for_write(&self) -> Result<()> {
         // TODO a special global lock for this function
+        let _ = self.share_lock.write().await;
         if self.must_mt().mem_size() < self.opt.max_table_size as u32 {
             return Ok(());
         }
 
         // A nil mt indicates that KV is being closed.
         assert!(!self.must_mt().empty());
-        // let flush_task = FlushTask { mt: Some(self.mt), vptr: self.vlog.as_ref().unwrap() }
-        todo!()
+
+        let flush_task = FlushTask {
+            mt: Some(self.must_mt().clone()),
+            vptr: self.must_vptr(),
+        };
+        if let Ok(_) = self.flush_chan.try_send(flush_task) {
+            info!("Flushing value log to disk if async mode.");
+            // Ensure value log is synced to disk so this memtable's contents wouldn't be lost.
+            self.must_vlog().sync()?;
+            info!(
+                "Flushing memtable, mt.size={} size of flushChan: {}",
+                self.must_mt().mem_size(),
+                self.flush_chan.tx().len()
+            );
+            // We manage to push this task. Let's modify imm.
+            self.mem_st_manger.swap_st();
+            // New memtable is empty. We certainly have room.
+            Ok(())
+        } else {
+            Err(Unexpected("No room for write".into()))
+        }
     }
 }
 

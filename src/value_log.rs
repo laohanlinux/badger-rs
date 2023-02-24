@@ -15,12 +15,14 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 use std::fs::{read_dir, File, OpenOptions};
+use std::future::Future;
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::{Deref, Index};
 use std::path::Path;
-use std::process::id;
+use std::pin::Pin;
+use std::process::{id, Output};
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::{fmt, fs, thread};
@@ -440,10 +442,10 @@ impl ValueLogCore {
     }
 
     /// Replays the value log. The kv provide is only valid for the lifetime of function call.
-    pub fn replay(
+    pub async fn replay(
         &self,
         vp: &ValuePointer,
-        mut f: impl FnMut(&Entry, &ValuePointer) -> Result<bool>,
+        mut f: impl for<'a> FnMut(&'a Entry, &'a ValuePointer) -> Pin<Box<dyn Future<Output = Result<bool>>+'a>>,
     ) -> Result<()> {
         let vlogs = self.pick_log_guard();
         info!("Seeking at value pointer: {:?}", vp);
@@ -457,7 +459,7 @@ impl ValueLogCore {
                 of = 0;
             }
             let log_file = vlogs.vlogs.get(&id).unwrap();
-            log_file.write().iterate(of, &mut f)?;
+            log_file.write().iterate(of, &mut f).await?;
         }
         // Seek to the end to start writing.
         let last_file = vlogs
@@ -480,7 +482,7 @@ impl ValueLogCore {
     }
 
     // sync is thread-unsafe and should not be called concurrently with write.
-    fn sync(&self) -> Result<()> {
+    pub(crate) fn sync(&self) -> Result<()> {
         if self.opt.sync_writes {
             return Ok(());
         }
@@ -761,7 +763,6 @@ fn it() {
 
 #[tokio::test]
 async fn lock1() {
-
     let req: RwLock<Vec<RefCell<Entry>>> = RwLock::new(Vec::new());
 
     tokio::spawn(async move {

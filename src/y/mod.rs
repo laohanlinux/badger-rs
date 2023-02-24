@@ -13,6 +13,7 @@ use std::error::Error as _;
 use std::fs::{File, OpenOptions, Permissions};
 use std::hash::Hasher;
 use std::io::{ErrorKind, Write};
+use std::sync::mpsc::sync_channel;
 use std::{cmp, io};
 use thiserror::Error;
 
@@ -267,6 +268,11 @@ pub(crate) fn create_synced_file(file_name: &str, synce: bool) -> Result<File> {
         .append(true)
         .open(file_name)
         .map_err(|err| err.into())
+}
+
+pub(crate) fn async_create_synced_file(file_name: &str, synced: bool) -> Result<tokio::fs::File> {
+    let fp = create_synced_file(file_name, synced)?;
+    Ok(tokio::fs::File::from_std(fp))
 }
 
 pub(crate) fn sync_directory(d: &str) -> Result<()> {

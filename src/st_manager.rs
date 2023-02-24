@@ -34,9 +34,11 @@ impl SkipListManager {
         self.mt.load(Ordering::Relaxed)
     }
 
-    pub unsafe fn mt_ref(&self) -> &'_ SkipList {
-        let st = self.mt();
-        st.as_ref()
+    pub fn mt_ref(&self) -> &'_ SkipList {
+        unsafe {
+            let st = self.mt();
+            st.as_ref()
+        }
     }
 
     pub fn imm(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<NonNull<SkipList>>> {
@@ -48,6 +50,7 @@ impl SkipListManager {
         imm.push(st);
     }
 
+    // TODO
     pub fn swap_st(&self) {
         self.lock_exclusive();
         defer! {self.unlock_exclusive()}
@@ -56,6 +59,14 @@ impl SkipListManager {
         let st = Box::new(SkipList::new(1000));
         let ptr = st.as_ref() as *const SkipList as *mut SkipList;
         self.set(NonNull::new(ptr).unwrap());
+    }
+
+    pub fn advance_imm(&self, mt: &SkipList) {
+        self.lock_exclusive();
+        defer! {self.unlock_exclusive()};
+        let mut imm = self.imm();
+        assert!(ptr::eq(imm[0].as_ptr(), mt));
+        imm.remove(0);
     }
 
     pub fn lock_exclusive(&self) {
