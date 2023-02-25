@@ -231,9 +231,7 @@ impl LevelsController {
     async fn do_compact(&self, p: CompactionPriority) -> Result<bool> {
         let l = p.level;
         assert!(l + 1 < self.opt.max_levels); //  Sanity check.
-        let mut cd = CompactDef::default();
-        cd.this_level = (self.levels[l]).clone();
-        cd.next_level = (self.levels[l + 1]).clone();
+        let mut cd = CompactDef::new(self.levels[l].clone(), self.levels[l + 1].clone());
         info!("Got compaction priority: {:?}", p);
         // While picking tables to be compacted, both level's tables are expected to
         // remain unchanged.
@@ -744,30 +742,19 @@ impl Display for CompactDef {
     }
 }
 
-impl Default for CompactDef {
-    fn default() -> Self {
-        // CompactDef {
-        //     this_level: XWeak::new(),
-        //     next_level: XWeak::new(),
-        //     top: RwLockReadGuard::,
-        //     bot: RwLock::new(vec![]),
-        //     this_range: KeyRange {
-        //         left: vec![],
-        //         right: vec![],
-        //         inf: false,
-        //     },
-        //     next_range: KeyRange {
-        //         left: vec![],
-        //         right: vec![],
-        //         inf: false,
-        //     },
-        //     this_size: Default::default(),
-        // }
-        todo!()
-    }
-}
-
 impl CompactDef {
+    pub(crate) fn new(this_level: LevelHandler, next_level: LevelHandler) -> Self {
+        CompactDef {
+            this_level,
+            next_level,
+            top: vec![],
+            bot: vec![],
+            this_range: KeyRange::default(),
+            next_range: KeyRange::default(),
+            this_size: Default::default(),
+        }
+    }
+
     #[inline]
     fn lock_shared_levels(&self) {
         self.this_level.lock_shared();
@@ -780,17 +767,17 @@ impl CompactDef {
         self.this_level.unlock_shared();
     }
 
-    #[inline]
-    fn lock_exclusive_levels(&self) {
-        self.this_level.lock_exclusive();
-        self.next_level.lock_exclusive();
-    }
-
-    #[inline]
-    fn unlock_exclusive_levels(&self) {
-        self.next_level.unlock_exclusive();
-        self.this_level.unlock_exclusive();
-    }
+    // #[inline]
+    // fn lock_exclusive_levels(&self) {
+    //     self.this_level.lock_exclusive();
+    //     self.next_level.lock_exclusive();
+    // }
+    //
+    // #[inline]
+    // fn unlock_exclusive_levels(&self) {
+    //     self.next_level.unlock_exclusive();
+    //     self.this_level.unlock_exclusive();
+    // }
 }
 
 // Checks that all necessary table files exist and removes all table files not

@@ -77,6 +77,8 @@ pub struct KV {
     // we use an atomic op.
     last_used_cas_counter: AtomicU64,
     share_lock: tokio::sync::RwLock<()>,
+    ctx: tokio_context::context::Context,
+    ctx_handle: tokio_context::context::Handle,
 }
 
 // TODO not add bellow lines
@@ -84,7 +86,7 @@ unsafe impl Send for KV {}
 unsafe impl Sync for KV {}
 
 impl KV {
-    pub async fn Open(mut opt: Options) -> Result<XArc<KV>> {
+    async fn open(mut opt: Options) -> Result<XArc<KV>> {
         opt.max_batch_size = (15 * opt.max_table_size) / 100;
         opt.max_batch_count = opt.max_batch_size / Node::size() as u64;
         create_dir_all(opt.dir.as_str()).await?;
@@ -112,7 +114,7 @@ impl KV {
             writes: Closer::new(),
             value_gc: Closer::new(),
         };
-        // go out.updateSize(out.closers.updateSize)
+        let (ctx, h) = tokio_context::context::Context::new();
         let mut out = KV {
             opt: opt.clone(),
             vlog: None,
@@ -129,6 +131,8 @@ impl KV {
             last_used_cas_counter: Default::default(),
             mem_st_manger: Arc::new(SkipListManager::default()),
             share_lock: tokio::sync::RwLock::new(()),
+            ctx,
+            ctx_handle: h,
         };
 
         let manifest = out.manifest.clone();
@@ -215,7 +219,6 @@ impl KV {
                     let mut nv = vec![];
                     let mut meta = entry.meta;
                     if xout.should_write_value_to_lsm(entry) {
-                        // TODO OPZ memory copy
                         nv = entry.value.clone();
                     } else {
                         nv = Vec::with_capacity(ValuePointer::value_pointer_encoded_size());
@@ -238,6 +241,9 @@ impl KV {
             .await?;
         // Wait for replay to be applied first.
         replay_closer.signal_and_wait().await;
+
+        // Mmap writeable log
+        // let lf = xout.must_vlog().files_log.read()[xout.must_vlog().max_fid.load(Ordering::Relaxed)];
         Ok(xout)
     }
 
@@ -295,9 +301,7 @@ impl KV {
             }
         }
 
-        self.must_lc()
-            .get(key)
-            .ok_or("Not found".into())
+        self.must_lc().get(key).ok_or("Not found".into())
     }
 
     // Returns the current `mem_tables` and get references.
@@ -442,14 +446,17 @@ pub type WeakKV = XWeak<KV>;
 pub type ArcKV = XArc<KV>;
 
 impl ArcKV {
+    /// Async open a KV db
+    pub async fn open(op: Options) -> Result<ArcKV> {
+        KV::open(op).await
+    }
+
     /// data size stats
     /// TODO
     pub async fn spawn_update_size(&self) {
         let lc = self.closers.update_size.spawn();
-        defer! {
-            lc.done();
-            info!("exit update size worker");
-        }
+        defer! {lc.done()}
+        defer! {info!("exit update size worker");}
 
         let mut tk = tokio::time::interval(tokio::time::Duration::from_secs(5 * 60));
         let dir = self.opt.dir.clone();
@@ -465,9 +472,7 @@ impl ArcKV {
                          let (_, vlog_sz) = KV::walk_dir(dir.as_str()).await.unwrap();
                     }
                 },
-                _ = c.recv() => {
-
-                },
+                _ = c.recv() => {return;},
             }
         }
     }
@@ -489,6 +494,7 @@ impl ArcKV {
 
 impl ArcKV {
     async fn do_writes(&self, lc: Closer) {
+        info!("start do writes task!");
         // TODO add metrics
         let has_been_close = lc.has_been_closed();
         let write_ch = self.write_ch.clone();

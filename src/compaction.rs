@@ -139,7 +139,7 @@ impl LevelCompactStatus {
 }
 
 // [left, right], Special inf is range all if it be set `true`
-#[derive(Clone, Debug)]
+#[derive(Clone, Default, Debug)]
 pub(crate) struct KeyRange {
     pub(crate) left: Vec<u8>, // TODO zero Copy
     pub(crate) right: Vec<u8>,

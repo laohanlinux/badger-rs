@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::{fmt, fs, thread};
 use tabled::object::Entity::Cell;
+use tokio::macros::support::thread_rng_n;
 
 use crate::kv::{ArcKV, WeakKV, KV};
 use crate::log_file::LogFile;
@@ -37,7 +38,7 @@ use crate::types::{Channel, Closer, XArc};
 use crate::y::{
     create_synced_file, is_eof, open_existing_synced_file, read_at, sync_directory, Decode, Encode,
 };
-use crate::Error::Unexpected;
+use crate::Error::{Unexpected, ValueNoRewrite, ValueRejected};
 use crate::{Error, Result};
 
 /// Values have their first byte being byteData or byteDelete. This helps us distinguish between
@@ -261,10 +262,10 @@ impl From<Request> for ArcRequest {
 
 pub struct ValueLogCore {
     dir_path: Box<String>,
-    max_fid: AtomicU32,
+    pub(crate) max_fid: AtomicU32,
     // TODO
     // guards our view of which files exist, which to be deleted, how many active iterators
-    files_log: Arc<RwLock<()>>,
+    pub(crate) files_log: Arc<RwLock<()>>,
     vlogs: Arc<RwLock<HashMap<u32, Arc<RwLock<LogFile>>>>>,
     dirty_vlogs: Arc<RwLock<HashSet<u32>>>,
     // TODO why?
@@ -337,6 +338,7 @@ impl ValueLogCore {
         self.kv = kv;
         self.open_create_files()?;
         // todo add garbage and metrics
+        self.garbage_ch = Channel::new(1);
         Ok(())
     }
 
@@ -445,7 +447,10 @@ impl ValueLogCore {
     pub async fn replay(
         &self,
         vp: &ValuePointer,
-        mut f: impl for<'a> FnMut(&'a Entry, &'a ValuePointer) -> Pin<Box<dyn Future<Output = Result<bool>>+'a>>,
+        mut f: impl for<'a> FnMut(
+            &'a Entry,
+            &'a ValuePointer,
+        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
     ) -> Result<()> {
         let vlogs = self.pick_log_guard();
         info!("Seeking at value pointer: {:?}", vp);
@@ -664,9 +669,6 @@ impl ValueLogCore {
     fn wait_gc(&self) {
         todo!()
     }
-    fn run_gc(&self) -> Result<()> {
-        todo!()
-    }
 }
 
 struct PickVlogsGuardsReadLock<'a> {
@@ -711,6 +713,24 @@ impl SafeValueLog {
     }
 
     async fn do_run_gcc(&self, gc_threshold: f64) -> Result<()> {
+        let lf = self.value_log.pick_log();
+        if lf.is_none() {
+            return Err(ValueNoRewrite);
+        }
+        #[derive(Debug, Default)]
+        struct Reason {
+            total: f64,
+            keep: f64,
+            discard: f64,
+        }
+        let mut reason = Reason::default();
+        let mut window = 100.0;
+        let mut count = 0;
+        // Pick a random start point for the log.
+        let skip_first_m = {
+            let mut rng = thread_rng_n((self.value_log.opt.value_log_file_size / M) as u32);
+            let x: u32 = rng.gen()
+        };
         Ok(())
     }
 }
