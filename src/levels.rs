@@ -12,9 +12,9 @@ use crate::types::{Closer, XArc, XWeak};
 use crate::y::{
     async_sync_directory, create_synced_file, open_existing_synced_file, sync_directory,
 };
-use crate::Result;
 use crate::Xiterator;
 use crate::{MergeIterOverBuilder, MergeIterOverIterator};
+use crate::{Result, ValueStruct};
 use atomic::Ordering;
 use awaitgroup::WaitGroup;
 use drop_cell::defer;
@@ -148,6 +148,22 @@ impl LevelsController {
 
     fn close(&self) -> Result<()> {
         self.cleanup_levels()
+    }
+
+    // returns the found value if any. If not found, we return nil.
+    pub(crate) fn get(&self, key: &[u8]) -> Option<ValueStruct> {
+        // It's important that we iterate the levels from 0 on upward.  The reason is, if we iterated
+        // in opposite order, or in parallel (naively calling all the h.RLock() in some order) we could
+        // read level L's tables post-compaction and level L+1's tables pre-compaction.  (If we do
+        // parallelize this, we will need to call the h.RLock() function by increasing order of level
+        // number.)
+        for h in self.levels.iter() {
+            let item = h.get(key);
+            if item.is_some() {
+                return Some(item.unwrap().value().clone());
+            }
+        }
+        None
     }
 
     // cleanup all level's handler

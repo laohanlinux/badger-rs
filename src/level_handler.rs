@@ -4,7 +4,7 @@ use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
 use crate::table::table::{Table, TableCore};
 use crate::types::{Channel, XArc, XWeak};
 use crate::y::merge_iterator::MergeIterOverBuilder;
-use crate::Result;
+use crate::{Result, ValueStruct};
 use core::slice::SlicePattern;
 
 use crate::levels::CompactDef;
@@ -256,6 +256,10 @@ impl LevelHandler {
             }
             item
         };
+    }
+
+    pub(crate)  fn get(&self, key: &[u8]) -> Option<IteratorItem>{
+        self.get_table_for_key(key)
     }
 
     // returns current level

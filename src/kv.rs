@@ -13,6 +13,7 @@ use crate::Error::Unexpected;
 use crate::{Decode, Error, Node, SkipList, SkipListManager};
 use atomic::Atomic;
 use bytes::BufMut;
+use crossbeam_epoch::Shared;
 use drop_cell::defer;
 use fs2::FileExt;
 use log::{info, Log};
@@ -278,11 +279,12 @@ impl KV {
     // get returns the value in `mem_table` or disk for given key.
     // Note that value will include meta byte.
     pub(crate) fn get(&self, key: &[u8]) -> Result<ValueStruct> {
-        let tables = self.get_mem_tables();
+        let p = crossbeam_epoch::pin();
+        let tables = self.get_mem_tables(&p);
 
         // TODO add metrics
         for tb in tables {
-            let vs = tb.get(key);
+            let vs = unsafe { tb.as_ref().unwrap().get(key) };
             if vs.is_none() {
                 continue;
             }
@@ -293,23 +295,26 @@ impl KV {
             }
         }
 
-        todo!()
+        self.must_lc()
+            .get(key)
+            .ok_or("Not found".into())
     }
 
     // Returns the current `mem_tables` and get references.
-    fn get_mem_tables(&self) -> Vec<&SkipList> {
+    fn get_mem_tables<'a>(&'a self, p: &'a crossbeam_epoch::Guard) -> Vec<Shared<'a, SkipList>> {
         self.mem_st_manger.lock_exclusive();
         defer! {self.mem_st_manger.unlock_exclusive()}
 
-        let mt = self.mem_st_manger.mt_ref();
+        let mt = self.mem_st_manger.mt_ref(p);
         let mut tables = Vec::with_capacity(self.mem_st_manger.imm().len() + 1);
         // Get mutable `mem_tables`.
         tables.push(mt);
-        tables[0].incr_ref();
+        // TODO
+        unsafe { tables[0].as_ref().unwrap().incr_ref() };
         // Get immutable `mem_tables`.
         for tb in self.mem_st_manger.imm().iter().rev() {
-            let tb = unsafe { tb.as_ref() };
-            tb.incr_ref();
+            let tb = tb.load(Ordering::Relaxed, &p);
+            unsafe { tb.as_ref().unwrap().incr_ref() };
             tables.push(tb);
         }
         tables
@@ -411,8 +416,11 @@ impl KV {
         let lc = self.lc.upgrade().unwrap();
         lc
     }
+
     fn must_mt(&self) -> &SkipList {
-        self.mem_st_manger.mt_ref()
+        let p = crossbeam_epoch::pin();
+        let st = self.mem_st_manger.mt_ref(&p).as_raw();
+        unsafe { &*st }
     }
 
     fn must_vlog(&self) -> &ValueLogCore {
@@ -562,7 +570,7 @@ impl ArcKV {
                 self.flush_chan.tx().len()
             );
             // We manage to push this task. Let's modify imm.
-            self.mem_st_manger.swap_st();
+            self.mem_st_manger.swap_st(self.opt.clone());
             // New memtable is empty. We certainly have room.
             Ok(())
         } else {
