@@ -231,7 +231,7 @@ impl Request {
 #[derive(Clone)]
 pub(crate) struct ArcRequest {
     inner: Arc<Request>,
-    err: Arc<Mutex<Arc<Result<()>>>>,
+    err: Arc<Mutex<Result<()>>>,
 }
 
 unsafe impl Send for ArcRequest {}
@@ -242,7 +242,7 @@ impl ArcRequest {
     pub(crate) fn get_req(&self) -> Arc<Request> {
         self.inner.clone()
     }
-    pub(crate) fn set_err(&self, err: Arc<Result<()>>) {
+    pub(crate) fn set_err(&self, err: Result<()>) {
         *self.err.lock() = err;
     }
 
@@ -255,7 +255,7 @@ impl From<Request> for ArcRequest {
     fn from(value: Request) -> Self {
         ArcRequest {
             inner: Arc::new(value),
-            err: Arc::new(Mutex::new(Arc::new(Ok(())))),
+            err: Arc::new(Mutex::new(Ok(()))),
         }
     }
 }
@@ -729,7 +729,7 @@ impl SafeValueLog {
         // Pick a random start point for the log.
         let skip_first_m = {
             let mut rng = thread_rng_n((self.value_log.opt.value_log_file_size / M) as u32);
-            let x: u32 = rng.gen()
+            // let x: u32 = rng.gen()
         };
         Ok(())
     }

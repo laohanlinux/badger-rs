@@ -518,8 +518,7 @@ impl ArcKV {
                     .collect::<Vec<_>>();
                 let to_reqs = Arc::new(to_reqs);
                 if let Err(err) = self.write_requests(to_reqs).await {
-                    let ret = Arc::new(Err(err));
-                    reqs.lock().iter().for_each(|req| req.set_err(ret.clone()));
+                    reqs.lock().iter().for_each(|req| req.set_err(Err(err.clone())));
                 }
                 reqs.lock().clear();
             }
@@ -541,8 +540,7 @@ impl ArcKV {
                 .map(|req| req.clone())
                 .collect::<Vec<_>>();
             if let Err(err) = self.write_requests(Arc::new(to_reqs)).await {
-                let ret = Arc::new(Err(err));
-                reqs.lock().iter().for_each(|req| req.set_err(ret.clone()));
+                reqs.lock().iter().for_each(|req| req.set_err(Err(err.clone())));
             }
         }
     }

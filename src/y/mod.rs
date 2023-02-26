@@ -6,6 +6,7 @@ mod metrics;
 pub use codec::{AsyncEncDec, Decode, Encode};
 pub use iterator::*;
 use libc::{O_DSYNC, O_WRONLY};
+use log::error;
 use memmap::MmapMut;
 pub use merge_iterator::*;
 use std::collections::hash_map::DefaultHasher;
@@ -23,10 +24,10 @@ pub const USER_META_SIZE: usize = 1;
 pub const CAS_SIZE: usize = 8;
 pub const VALUE_SIZE: usize = 4;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum Error {
     #[error(transparent)]
-    StdIO(#[from] std::io::Error),
+    StdIO(#[from] eieio::Error),
 
     #[error("io error: {0}")]
     Io(String),
@@ -85,6 +86,13 @@ impl Default for Error {
 }
 
 impl Error {
+    pub fn is_io(&self) -> bool {
+        match self {
+            Error::StdIO(err) => true,
+            _ => false,
+        }
+    }
+
     pub fn is_io_eof(&self) -> bool {
         match self {
             Error::StdIO(err) if err.kind() == ErrorKind::UnexpectedEof => true,
@@ -118,6 +126,12 @@ impl From<String> for Error {
     #[inline]
     fn from(s: String) -> Self {
         Self::Unexpected(s)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(value: io::Error) -> Self {
+        Error::StdIO(eieio::Error::from(value))
     }
 }
 
@@ -309,4 +323,23 @@ fn dsync() {
     // }
     let file = options.open("foo.txt");
     println!("{:?}", file.err());
+}
+
+#[test]
+fn clone_error() {
+    #[derive(Debug, Error, Clone)]
+    pub enum Error {
+        #[error(transparent)]
+        StdIO(#[from] eieio::Error),
+        #[error("Hello")]
+        Hello,
+    }
+    let err = Error::StdIO(eieio::Error::from(io::ErrorKind::AlreadyExists));
+    match err {
+        Error::StdIO(err) => {
+            let ioerr = io::Error::from(err.kind());
+            println!("{}", ioerr);
+        }
+        _ => {}
+    }
 }
