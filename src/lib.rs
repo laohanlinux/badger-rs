@@ -16,6 +16,7 @@
 #![feature(arc_into_inner)]
 #![feature(async_closure)]
 #![feature(async_iterator)]
+#![feature(atomic_mut_ptr)]
 
 use std::io;
 use std::mem::align_of;

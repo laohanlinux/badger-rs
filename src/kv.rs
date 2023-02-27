@@ -81,10 +81,6 @@ pub struct KV {
     ctx_handle: tokio_context::context::Handle,
 }
 
-// TODO not add bellow lines
-unsafe impl Send for KV {}
-unsafe impl Sync for KV {}
-
 impl KV {
     async fn open(mut opt: Options) -> Result<XArc<KV>> {
         opt.max_batch_size = (15 * opt.max_table_size) / 100;

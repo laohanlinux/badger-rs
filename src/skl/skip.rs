@@ -18,20 +18,17 @@ use super::{arena::Arena, node::Node};
 /// SkipList
 pub struct SkipList {
     height: Arc<AtomicI32>,
-    head: NonNull<Node>,
+    head: AtomicPtr<Node>,
     _ref: Arc<AtomicI32>,
     pub(crate) arena: Arc<Arena>,
 }
 
-unsafe impl Send for SkipList {}
-
-unsafe impl Sync for SkipList {}
-
 impl Clone for SkipList {
     fn clone(&self) -> Self {
+        let node = self.head.load(Ordering::Relaxed);
         SkipList {
             height: self.height.clone(),
-            head: NonNull::new(self.head.as_ptr()).unwrap(),
+            head: AtomicPtr::new(node),
             _ref: self._ref.clone(),
             arena: self.arena.clone(),
         }
@@ -45,7 +42,7 @@ impl SkipList {
         let node = Node::new(&mut arena, "".as_bytes(), &v, MAX_HEIGHT as isize);
         Self {
             height: Arc::new(AtomicI32::new(1)),
-            head: NonNull::new(node).unwrap(),
+            head: AtomicPtr::new(node),
             _ref: Arc::new(AtomicI32::new(1)),
             arena: Arc::new(arena),
         }
@@ -77,12 +74,11 @@ impl SkipList {
     }
 
     pub(crate) fn get_head(&self) -> &Node {
-        let node = unsafe { self.head.as_ptr() as *const Node };
-        unsafe { &*node }
+        unsafe { &*(self.head.load(Ordering::Relaxed) as *const Node) }
     }
 
     fn get_head_mut(&self) -> &mut Node {
-        let node = unsafe { self.head.as_ptr() as *mut Node };
+        let node = unsafe { self.head.load(Ordering::Relaxed) as *mut Node };
         unsafe { &mut *node }
     }
 
@@ -125,7 +121,7 @@ impl SkipList {
                     return (None, false);
                 }
                 // Try to return x. Make sure it is not a head node.
-                if ptr::eq(x, self.head.as_ptr()) {
+                if ptr::eq(x, self.head.load(Ordering::Relaxed)) {
                     return (None, false);
                 }
                 return (Some(x), false);
@@ -152,7 +148,7 @@ impl SkipList {
                         continue;
                     }
                     // On base level. Return x.
-                    if ptr::eq(x, self.head.as_ptr()) {
+                    if ptr::eq(x, self.get_head()) {
                         return (None, false);
                     }
 
@@ -170,7 +166,7 @@ impl SkipList {
                         return (Some(next), false);
                     }
                     // Try to return x. Make sure it is not a head node.
-                    if ptr::eq(x, self.head.as_ptr()) {
+                    if ptr::eq(x, self.get_head()) {
                         return (None, false);
                     }
                     return (Some(x), false);
@@ -328,7 +324,7 @@ impl SkipList {
     // Returns the last element. If head (empty list), we return nil, All the find functions
     // will NEVER return the head nodes.
     pub unsafe fn find_last(&self) -> Option<&Node> {
-        let mut n = self.head.as_ptr() as *const Node;
+        let mut n = self.get_head() as *const Node;
         let mut level = self.get_height() - 1;
         loop {
             let next = self.get_next(&*n, level);
@@ -337,7 +333,7 @@ impl SkipList {
                 continue;
             }
             if level == 0 {
-                if ptr::eq(n, self.head.as_ptr()) {
+                if ptr::eq(n, self.get_head()) {
                     return None;
                 }
                 return Some(&*n);
@@ -442,7 +438,7 @@ mod tests {
         let mut st = SkipList::new(ARENA_SIZE);
         assert_eq!(st.height.load(Ordering::Relaxed), 1);
         assert_eq!(st._ref.load(Ordering::Relaxed), 1);
-        let head = unsafe { st.head.as_ref() };
+        let head = st.get_head();
         assert_eq!(head.height as usize, MAX_HEIGHT);
         assert_eq!(head.key_offset as usize, 1);
     }
