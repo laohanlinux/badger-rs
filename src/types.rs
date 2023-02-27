@@ -19,8 +19,10 @@ use range_lock::{VecRangeLock, VecRangeLockGuard};
 use tokio::sync::mpsc::{UnboundedSender, WeakUnboundedSender};
 use tokio::time::sleep;
 
-type TArcMx<T> = Arc<tokio::sync::Mutex<T>>;
-type TArcRW<T> = Arc<tokio::sync::RwLock<T>>;
+pub type TArcMx<T> = Arc<tokio::sync::Mutex<T>>;
+pub type TArcRW<T> = Arc<tokio::sync::RwLock<T>>;
+pub type ArcMx<T> = Arc<parking_lot::Mutex<T>>;
+pub type ArcRW<T> = Arc<parking_lot::RwLock<T>>;
 
 // Channel like to go's channel
 #[derive(Clone)]

@@ -6,10 +6,12 @@ use byteorder::{BigEndian, ReadBytesExt};
 use memmap::MmapMut;
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
+use std::async_iter::AsyncIterator;
 use std::fs::File;
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom};
 use std::pin::Pin;
+use std::task::{Context, Poll};
 
 #[derive(Debug)]
 pub(crate) struct LogFile {
@@ -31,6 +33,14 @@ impl SafeLogFile {
     }
     pub(crate) fn wl(&self) -> RwLockWriteGuard<'_, RawRwLock, LogFile> {
         self.0.write()
+    }
+}
+
+impl AsyncIterator for LogFile {
+    type Item = ();
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        todo!()
     }
 }
 

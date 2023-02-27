@@ -140,12 +140,10 @@ impl KV {
         // handle levels_controller
         let lc = LevelsController::new(manifest.clone(), out.opt.clone()).await?;
         lc.start_compact(out.closers.compactors.clone());
-
         let mut vlog = ValueLogCore::default();
-        vlog.open(&out, opt)?;
         out.vlog = Some(vlog);
-
         let xout = XArc::new(out);
+        // xout.vlog.unwrap().open(&xout, opt)?;
         // update size
         {
             let _out = xout.clone();
