@@ -81,6 +81,9 @@ pub struct KV {
     ctx_handle: tokio_context::context::Handle,
 }
 
+unsafe impl Send for KV {}
+unsafe impl Sync for KV {}
+
 impl KV {
     async fn open(mut opt: Options) -> Result<XArc<KV>> {
         opt.max_batch_size = (15 * opt.max_table_size) / 100;
@@ -512,7 +515,9 @@ impl ArcKV {
                     .collect::<Vec<_>>();
                 let to_reqs = Arc::new(to_reqs);
                 if let Err(err) = self.write_requests(to_reqs).await {
-                    reqs.lock().iter().for_each(|req| req.set_err(Err(err.clone())));
+                    reqs.lock()
+                        .iter()
+                        .for_each(|req| req.set_err(Err(err.clone())));
                 }
                 reqs.lock().clear();
             }
@@ -534,7 +539,9 @@ impl ArcKV {
                 .map(|req| req.clone())
                 .collect::<Vec<_>>();
             if let Err(err) = self.write_requests(Arc::new(to_reqs)).await {
-                reqs.lock().iter().for_each(|req| req.set_err(Err(err.clone())));
+                reqs.lock()
+                    .iter()
+                    .for_each(|req| req.set_err(Err(err.clone())));
             }
         }
     }

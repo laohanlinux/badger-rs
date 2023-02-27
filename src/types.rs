@@ -313,5 +313,5 @@ async fn lck() {
     let p = a.swap(Owned::new(200), SeqCst, guard);
     let p = a.swap(Owned::new(200), SeqCst, guard);
 
-    println!("{:?}", unsafe { p.as_ref().unwrap()});
+    println!("{:?}", unsafe { p.as_ref().unwrap() });
 }

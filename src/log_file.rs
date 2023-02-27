@@ -9,7 +9,7 @@ use parking_lot::{RawRwLock, RwLock};
 use std::async_iter::AsyncIterator;
 use std::fs::File;
 use std::future::Future;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -20,28 +20,6 @@ pub(crate) struct LogFile {
     pub(crate) fid: u32,
     pub(crate) _mmap: Option<MmapMut>,
     pub(crate) sz: u32,
-}
-
-pub(crate) struct SafeLogFile(RwLock<LogFile>);
-
-impl SafeLogFile {
-    pub(crate) fn new(log_file: LogFile) -> Self {
-        Self(RwLock::new(log_file))
-    }
-    pub(crate) fn rl(&self) -> RwLockReadGuard<'_, RawRwLock, LogFile> {
-        self.0.read()
-    }
-    pub(crate) fn wl(&self) -> RwLockWriteGuard<'_, RawRwLock, LogFile> {
-        self.0.write()
-    }
-}
-
-impl AsyncIterator for LogFile {
-    type Item = ();
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        todo!()
-    }
 }
 
 impl LogFile {
@@ -157,6 +135,82 @@ impl LogFile {
         }
 
         // todo add truncate
+        Ok(())
+    }
+
+    pub(crate) async fn iterate2(
+        &self,
+        offset: u32,
+        f: &mut impl for<'a> FnMut(
+            &'a Entry,
+            &'a ValuePointer,
+        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
+    ) -> Result<()> {
+        // let mut fd = self.fd.as_mut().unwrap();
+        // fd.seek(SeekFrom::Start(offset as u64))?;
+        let fd = self.fd.as_ref().unwrap();
+        let mut entry = Entry::default();
+        let mut truncate = false;
+        let mut record_offset = offset;
+        loop {
+            let mut h = Header::default();
+            let buffer = vec![0u8; Header::encoded_size()];
+            let ok = h.dec(&mut Cursor::new(buffer));
+            if ok.is_err() && ok.as_ref().unwrap_err().is_io_eof() {
+                break;
+            }
+            // todo add truncate currenct
+            ok?;
+            if h.k_len as usize > entry.key.capacity() {
+                entry.key = vec![0u8; h.k_len as usize];
+            }
+            if h.v_len as usize > entry.value.capacity() {
+                entry.value = vec![0u8; h.v_len as usize];
+            }
+            entry.key.clear();
+            entry.value.clear();
+
+            let ok = fd.read(&mut entry.key);
+            if is_eof(&ok) {
+                break;
+            }
+            ok?;
+
+            let ok = fd.read(&mut entry.value);
+            if is_eof(&ok) {
+                break;
+            }
+            ok?;
+            entry.offset = record_offset;
+            entry.meta = h.meta;
+            entry.user_meta = h.user_mata;
+            entry.cas_counter = h.cas_counter;
+            entry.cas_counter_check = h.cas_counter_check;
+            let ok = fd.read_u32::<BigEndian>();
+            if is_eof(&ok) {
+                break;
+            }
+            let crc = ok?;
+
+            let mut vp = ValuePointer::default();
+            vp.len = Header::encoded_size() as u32 + h.k_len + h.v_len + 4;
+            record_offset += vp.len;
+
+            vp.offset = entry.offset;
+            vp.fid = self.fid;
+
+            let _continue = f(&entry, &vp).await?;
+            if !_continue {
+                break;
+            }
+        }
+
+        // todo add truncate
+        Ok(())
+    }
+    pub(crate) fn reset_seek_start(&mut self) -> Result<()> {
+        let fd = self.fd.as_mut().unwrap();
+        fd.seek(SeekFrom::Start(0))?;
         Ok(())
     }
 }
