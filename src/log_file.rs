@@ -11,6 +11,7 @@ use std::fs::File;
 use std::future::Future;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 #[derive(Debug)]
@@ -139,16 +140,15 @@ impl LogFile {
     }
 
     pub(crate) async fn iterate2(
-        &self,
+        fd: &mut File,
+        fid: u32,
         offset: u32,
         f: &mut impl for<'a> FnMut(
             &'a Entry,
             &'a ValuePointer,
         ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
     ) -> Result<()> {
-        // let mut fd = self.fd.as_mut().unwrap();
-        // fd.seek(SeekFrom::Start(offset as u64))?;
-        let fd = self.fd.as_ref().unwrap();
+        fd.seek(SeekFrom::Start(offset as u64))?;
         let mut entry = Entry::default();
         let mut truncate = false;
         let mut record_offset = offset;
@@ -197,7 +197,7 @@ impl LogFile {
             record_offset += vp.len;
 
             vp.offset = entry.offset;
-            vp.fid = self.fid;
+            vp.fid = fid;
 
             let _continue = f(&entry, &vp).await?;
             if !_continue {

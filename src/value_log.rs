@@ -751,11 +751,9 @@ impl SafeValueLog {
         let mut skipped = 0.0;
         let mut start = SystemTime::now();
         // assert!(!self.value_log.kv.is_null());
-
-        let err = lf
-            .clone()
-            .write()
-            .iterate(0, &mut |entry, vptr| {
+        let fid = lf.read().fid;
+        let mut mut_lf = lf.write().fd.as_mut().unwrap();
+        let err = LogFile::iterate2(&mut mut_lf, fid,0, &mut |entry, vptr| {
                 let vlg = self.value_log.clone();
                 let reason = reason.clone();
                 let lfc = lf.clone();
