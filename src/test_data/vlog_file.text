@@ -1,0 +1,6 @@
+This is a test data!
+warning: `badger-rs` (lib test) generated 569 warnings (run `cargo fix --lib -p badger-rs --tests` to apply 289 suggestions)
+    Finished test [unoptimized + debuginfo] target(s) in 2.53s
+warning: the following packages contain code that will be rejected by a future version of Rust: console_log v0.2.0
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 277`
+     Running unittests src/lib.rs (target/debug/deps/badger_rs-fef6c93f1008e2ae)

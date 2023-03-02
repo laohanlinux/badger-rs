@@ -25,11 +25,47 @@ pub(crate) struct LogFile {
 }
 
 impl LogFile {
+    // pub(crate) async fn iterate_by_offset1(
+    //     _self: &Self,
+    //     mut offset: u32,
+    //     f: &mut impl for<'a> FnMut(
+    //         &'a Entry,
+    //         &'a ValuePointer,
+    //     ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
+    // ) -> Result<()> {
+    //
+    //     Ok(())
+    // }
+
+    pub(crate) async fn iterate_by_offset(
+        &self,
+        mut offset: u32,
+        f: &mut impl for<'a> FnMut(
+            &'a Entry,
+            &'a ValuePointer,
+        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
+    ) -> Result<()> {
+        loop {
+            let (v, next) = self.read_entries(offset, 1).await?;
+            if v.is_empty() {
+                return Ok(());
+            }
+
+            for (entry, vptr) in v.iter() {
+                let continue_ = f(entry, vptr).await?;
+                if !continue_ {
+                    return Ok(());
+                }
+                offset = next;
+            }
+        }
+    }
+
     pub(crate) async fn read_entries(
         &self,
         offset: u32,
         n: usize,
-    ) -> Result<Vec<(Entry, ValuePointer)>> {
+    ) -> Result<(Vec<(Entry, ValuePointer)>, u32)> {
         let m = self._mmap.as_ref().unwrap().as_slice();
         let mut cursor_offset = offset;
         let mut v = vec![];
@@ -46,13 +82,24 @@ impl LogFile {
             entry.cas_counter = h.cas_counter;
             entry.user_meta = h.user_mata;
             entry.cas_counter_check = h.cas_counter_check;
-            let mut start = cursor_offset + Header::encoded_size();
-            entry.key.extend_from_slice(m[start..start + h.k_len]);
-            start = start + h.k_len;
-            entry.value.extend_from_slice(m[start..start + h.v_len]);
-            v.push((entry, ))
+            let mut start = cursor_offset as usize + Header::encoded_size();
+            entry
+                .key
+                .extend_from_slice(&m[start..start + h.k_len as usize]);
+            start += h.k_len as usize;
+            entry
+                .value
+                .extend_from_slice(&m[start..start + h.v_len as usize]);
+            start += h.v_len as usize;
+            let crc32 = Cursor::new(&m[start..start + 4]).read_u32::<BigEndian>()?;
+            let mut vpt = ValuePointer::default();
+            vpt.fid = self.fid;
+            vpt.len = Header::encoded_size() as u32 + h.k_len + h.v_len + 4;
+            vpt.offset = cursor_offset;
+            cursor_offset += vpt.len;
+            v.push((entry, vpt))
         }
-        Ok(vec![])
+        Ok((v, cursor_offset))
     }
 }
 
@@ -75,6 +122,7 @@ impl LogFile {
             .open(self._path.as_ref())?;
         let meta = fd.metadata()?;
         let file_sz = meta.len();
+        println!("file sz {}", file_sz);
         let mut _mmap = unsafe { MmapMut::map_mut(&fd)? };
         // let mut _mmap = _mmap.make_read_only()?;
         self._mmap.replace(_mmap);
@@ -259,4 +307,10 @@ impl LogFile {
         fd.seek(SeekFrom::Start(0))?;
         Ok(())
     }
+}
+
+#[test]
+fn concurrency() {
+    let mut lf = LogFile::new("src/test_data/vlog_file.text");
+    assert!(lf.is_ok(), "{}", lf.unwrap_err().to_string());
 }

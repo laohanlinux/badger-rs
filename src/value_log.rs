@@ -594,28 +594,67 @@ impl ValueLogCore {
         to_disk()
     }
 
-    fn rewrite(&self, lf: &LogFile) -> Result<()> {
+    async fn rewrite(&self, lf: Arc<lock_api::RwLock<RawRwLock, LogFile>>) -> Result<()> {
         let max_fid = self.max_fid.load(Ordering::Relaxed);
         assert!(
-            lf.fid < max_fid,
+            lf.read().fid < max_fid,
             "fid to move: {}. Current max fid: {}",
-            lf.fid,
+            lf.read().fid,
             max_fid
         );
         // TODO add metrics
 
         // let mut wb = Vec::with_capacity(1000);
         let mut size = 0i64;
-        let mut count = 0;
-        let fe = |e: &Entry| -> Result<()> {
-            count += 1;
-            if count % 1000 == 0 {
-                info!("Processing entry {}", count);
-            }
-            let vs = self.get_kv().get(&e.key);
-            Ok(())
-        };
+        let mut count = Arc::new(AtomicU32::new(0));
+        lf.clone().read()
+            .iterate_by_offset(0, &mut |entry, _| {
+                let count = count.clone();
+                let kv = self.get_kv();
 
+                Box::pin(async move {
+                    count.fetch_add(1, Ordering::Relaxed);
+                    if count.load(Ordering::Relaxed) % 1000 == 0 {
+                        info!("Processing entry {}", count.load(Ordering::Relaxed));
+                    }
+                                let vs = kv.get(&entry.key)?;
+                    //             if (vs.meta & MetaBit::BIT_DELETE.bits()) > 0 {
+                    //                 return Ok(true);
+                    //             }
+                    //             if (vs.meta & MetaBit::BIT_VALUE_POINTER.bits()) <= 0 {
+                    //                 return Ok(true);
+                    //             }
+                    Ok(true)
+                })
+            })
+            .await?;
+
+        // let err = lf.clone().read()
+        //     .iterate_by_offset(0, &mut |entry, vptr| {
+        //         // let vlg = self.value_log.clone();
+        //         // let lfc = lf.clone();
+        //         Box::pin(async move {
+        //             count += 1;
+        //             if count % 1000 == 0 {
+        //                 info!("Processing entry {}", count);
+        //             }
+        //             let vs = self.get_kv().get(&entry.key)?;
+        //             if (vs.meta & MetaBit::BIT_DELETE.bits()) > 0 {
+        //                 return Ok(true);
+        //             }
+        //             if (vs.meta & MetaBit::BIT_VALUE_POINTER.bits()) <= 0 {
+        //                 return Ok(true);
+        //             }
+        //             // Value is still present in value log.
+        //             if vs.value.is_empty() {
+        //                 return Err(format!("Empty value: {:?}", vs).into());
+        //             }
+        //
+        //             let mut vptr = ValuePointer::default();
+        //             vptr.dec(&mut Cursor::new(vs.value.as_slice())).unwrap();
+        //             Ok(true)
+        //         })
+        //     });
         Ok(())
     }
 
@@ -751,11 +790,10 @@ impl SafeValueLog {
         let mut skipped = 0.0;
         let mut start = SystemTime::now();
         // assert!(!self.value_log.kv.is_null());
-
         let err = lf
             .clone()
-            .write()
-            .iterate(0, &mut |entry, vptr| {
+            .read()
+            .iterate_by_offset(0, &mut |entry, vptr| {
                 let vlg = self.value_log.clone();
                 let reason = reason.clone();
                 let lfc = lf.clone();
@@ -844,7 +882,7 @@ impl SafeValueLog {
         }
 
         info!("REWRITING VLOG {}", lf.read().fid);
-        self.value_log.rewrite(&lf.read())?;
+        self.value_log.rewrite(lf).await?;
         Ok(())
     }
 }
