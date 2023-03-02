@@ -37,14 +37,15 @@ mod y;
 mod compaction;
 mod level_handler;
 mod levels;
+mod mmap;
 mod pb;
+mod st_manager;
 #[cfg(test)]
 mod test_util;
-mod st_manager;
 
 pub use skl::*;
-pub use y::*;
 pub use st_manager::*;
+pub use y::*;
 
 #[allow(dead_code)]
 #[inline]
