@@ -77,6 +77,8 @@ pub enum Error {
     #[error("Manifest has bad magic")]
     BadMagic,
     /////////////////////////////////
+    #[error("Not found")]
+    NotFound,
 }
 
 impl Default for Error {
@@ -110,6 +112,13 @@ impl Error {
     pub fn is_io_notfound(&self) -> bool {
         match self {
             Error::StdIO(err) if err.kind() == ErrorKind::NotFound => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_not_found(&self) -> bool {
+        match self {
+            Error::NotFound => true,
             _ => false,
         }
     }

@@ -30,6 +30,7 @@ use std::time::{Duration, SystemTime};
 use std::{fmt, fs, io, ptr, thread};
 use tabled::object::Entity::Cell;
 use tokio::macros::support::thread_rng_n;
+use tracing_subscriber::fmt::format;
 
 use crate::kv::{ArcKV, WeakKV, KV};
 use crate::log_file::LogFile;
@@ -41,7 +42,7 @@ use crate::y::{
     create_synced_file, is_eof, open_existing_synced_file, read_at, sync_directory, Decode, Encode,
 };
 use crate::Error::{Unexpected, ValueNoRewrite, ValueRejected};
-use crate::{Error, Result};
+use crate::{Error, Result, META_SIZE};
 
 /// Values have their first byte being byteData or byteDelete. This helps us distinguish between
 /// a key that has never been seen and a key that has been explicitly deleted.
@@ -284,7 +285,7 @@ pub struct ValueLogCore {
     vlogs: Arc<RwLock<HashMap<u32, Arc<RwLock<LogFile>>>>>, // TODO It is not good idea that use raw lock for Arc<RwLock<LogFile>>, it maybe lock AsyncRuntime thread.
     dirty_vlogs: Arc<RwLock<HashSet<u32>>>,
     // TODO why?
-    // A refcount of iterators -- when this hits zero, we can delete the files_to_be_deleted.
+    // A refcount of iterators -- when this hits zero, we can delete the files_to_be_deleted. Why?
     num_active_iterators: AtomicI32,
     writable_log_offset: AtomicU32,
     buf: ArcRW<BufWriter<Vec<u8>>>,
@@ -604,57 +605,119 @@ impl ValueLogCore {
         );
         // TODO add metrics
 
-        // let mut wb = Vec::with_capacity(1000);
-        let mut size = 0i64;
-        let mut count = Arc::new(AtomicU32::new(0));
-        lf.clone().read()
-            .iterate_by_offset(0, &mut |entry, _| {
-                let count = count.clone();
-                let kv = self.get_kv();
+        let mut offset = 0;
+        let mut count = 0;
+        let kv = self.get_kv();
+        let mut write_batch = Vec::with_capacity(1000);
+        loop {
+            let (mut entries, next) = lf.read().read_entries(offset, 1).await?;
+            if entries.is_empty() {
+                info!("not anything need to rewrite");
+                break;
+            }
+            offset += next;
+            count += 1;
+            if count % 1000 == 0 {
+                info!("Processing entry {}", count);
+            }
+            // TODO don't need decode vptr
+            let entry = &mut entries[0].0;
+            let vs = kv.get(&entry.key);
+            if let Err(ref err) = vs {
+                if err.is_not_found() {
+                    info!(
+                        "REWRITE=> not found the value, {}",
+                        String::from_utf8_lossy(&entry.key)
+                    );
+                    continue;
+                }
+                return Err(err.clone());
+            }
+            let vs = vs.unwrap();
+            if (vs.meta & MetaBit::BIT_DELETE.bits()) > 0 {
+                info!(
+                    "REWRITE=> {} has been deleted",
+                    String::from_utf8_lossy(&entry.key)
+                );
+                continue;
+            }
+            if (vs.meta & MetaBit::BIT_VALUE_POINTER.bits()) < 0 {
+                info!(
+                    "REWRITE=> {} has been skipped, meta: {}",
+                    String::from_utf8_lossy(&entry.key),
+                    entry.meta,
+                );
+                continue;
+            }
+            if vs.value.is_empty() {
+                info!(
+                    "REWRITE=> {} is empty value",
+                    String::from_utf8_lossy(&entry.key)
+                );
+                return Err(format!("Empty value: {:?}", vs).into());
+            }
+            // the lasted vptr
+            let mut vptr = ValuePointer::default();
+            vptr.dec(&mut Cursor::new(&vs.value)).unwrap();
+            if vptr.fid > lf.read().fid {
+                continue;
+            }
+            if vptr.offset > entry.offset {
+                continue;
+            }
+            assert_eq!(vptr.fid, lf.read().fid);
+            assert_eq!(vptr.offset, entry.offset);
+            {
+                // This new entry only contains the key, and a pointer to the value.
+                let mut ne = Entry::default();
+                if entry.meta == MetaBit::BIT_SET_IF_ABSENT.bits() {
+                    // If we rewrite this entry without removing BitSetIfAbsent, LSM would see that
+                    // the key is already present, which would be this same entry and won't update
+                    // the vptr to point to the new file.
+                    entry.meta = 0;
+                }
+                assert_eq!(entry.meta, 0, "Got meta: 0");
+                ne.meta = entry.meta;
+                ne.user_meta = entry.user_meta;
+                ne.key = entry.key.clone(); // TODO avoid copy
+                ne.value = entry.value.clone();
+                // CAS counter check. Do not rewrite if key has a newer value.
+                ne.cas_counter_check = vs.cas_counter;
+                write_batch.push(ne);
+            }
+        }
+        if write_batch.is_empty() {
+            info!("REWRITE: nothing to rewrite.");
+            return Ok(());
+        }
+        info!(
+            "REWRITE: request has {} entries, size {}",
+            write_batch.len(),
+            count
+        );
+        info!("REWRITE: Removing fid: {}", lf.read().fid);
+        kv.batch_set(write_batch).await?;
+        info!("REWRITE: Processed {} entries in total", count);
+        info!("REWRITE: Removing fid: {}", lf.read().fid);
+        let mut deleted_file_now = false;
+        // Entries written to LSM. Remove the older file now.
+        {
+            // Just a sanity-check.
+            let mut vlogs = self.vlogs.write();
+            if !vlogs.contains_key(&lf.read().fid) {
+                return Err(format!("Unable to find fid: {}", lf.read().fid).into());
+            }
+            // TODO Why?
+            if self.num_active_iterators.load(Ordering::Relaxed) == 0 {
+                vlogs.remove(&lf.read().fid);
+                deleted_file_now = true;
+            }else {
+                self.dirty_vlogs.write().insert(lf.read().fid.clone());
+            }
+        }
+        if deleted_file_now {
 
-                Box::pin(async move {
-                    count.fetch_add(1, Ordering::Relaxed);
-                    if count.load(Ordering::Relaxed) % 1000 == 0 {
-                        info!("Processing entry {}", count.load(Ordering::Relaxed));
-                    }
-                                let vs = kv.get(&entry.key)?;
-                    //             if (vs.meta & MetaBit::BIT_DELETE.bits()) > 0 {
-                    //                 return Ok(true);
-                    //             }
-                    //             if (vs.meta & MetaBit::BIT_VALUE_POINTER.bits()) <= 0 {
-                    //                 return Ok(true);
-                    //             }
-                    Ok(true)
-                })
-            })
-            .await?;
-
-        // let err = lf.clone().read()
-        //     .iterate_by_offset(0, &mut |entry, vptr| {
-        //         // let vlg = self.value_log.clone();
-        //         // let lfc = lf.clone();
-        //         Box::pin(async move {
-        //             count += 1;
-        //             if count % 1000 == 0 {
-        //                 info!("Processing entry {}", count);
-        //             }
-        //             let vs = self.get_kv().get(&entry.key)?;
-        //             if (vs.meta & MetaBit::BIT_DELETE.bits()) > 0 {
-        //                 return Ok(true);
-        //             }
-        //             if (vs.meta & MetaBit::BIT_VALUE_POINTER.bits()) <= 0 {
-        //                 return Ok(true);
-        //             }
-        //             // Value is still present in value log.
-        //             if vs.value.is_empty() {
-        //                 return Err(format!("Empty value: {:?}", vs).into());
-        //             }
-        //
-        //             let mut vptr = ValuePointer::default();
-        //             vptr.dec(&mut Cursor::new(vs.value.as_slice())).unwrap();
-        //             Ok(true)
-        //         })
-        //     });
+        }
         Ok(())
     }
 

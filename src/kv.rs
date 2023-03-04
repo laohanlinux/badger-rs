@@ -9,7 +9,7 @@ use crate::value_log::{ArcRequest, Entry, MetaBit, Request, ValueLogCore, ValueP
 use crate::y::{
     async_sync_directory, create_synced_file, sync_directory, Encode, Result, ValueStruct,
 };
-use crate::Error::Unexpected;
+use crate::Error::{NotFound, Unexpected};
 use crate::{Decode, Error, Node, SkipList, SkipListManager};
 use atomic::Atomic;
 use bytes::BufMut;
@@ -298,7 +298,7 @@ impl KV {
             }
         }
 
-        self.must_lc().get(key).ok_or("Not found".into())
+        self.must_lc().get(key).ok_or(NotFound)
     }
 
     // Returns the current `mem_tables` and get references.
@@ -404,6 +404,17 @@ impl KV {
             task.must_mt().decr_ref(); // Return memory
         }
         Ok(())
+    }
+
+    // Applies a list of `badger.entries`. If a request level error occurs it will be returned. Errors are also set on each
+    // `Entry` and must be checked individually.
+    // Check(kv.batch_set(entries))
+    // for e in entries {
+    //      Check(e.Error);
+    // }
+    // TODO
+    pub(crate) async fn batch_set(&self, entries: Vec<Entry>) -> Result<()> {
+        todo!()
     }
 
     fn new_cas_counter(&self, how_many: u64) -> u64 {
