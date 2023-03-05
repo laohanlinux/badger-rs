@@ -4,38 +4,71 @@ use crate::y::{is_eof, read_at, Decode};
 use crate::Error;
 use byteorder::{BigEndian, ReadBytesExt};
 use core::slice::SlicePattern;
-use memmap::{MmapMut, Mmap};
+use either::Either;
+use memmap::{Mmap, MmapMut};
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::async_iter::AsyncIterator;
+use std::f32::consts::E;
+use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
 use std::future::Future;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::ops::Deref;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use either::Either;
 // use crate::mmap::AsyncMMAP;
 
-struct MmapType(Either<Mmap, MmapMut>);
+pub(crate) struct MmapType(Either<Mmap, MmapMut>);
 
-impl Deref for MmapType {
-    type Target = ();
+impl MmapType {
+    fn get_mmap(&self) -> &Mmap {
+        match self.0 {
+            Either::Left(ref _mmap) => _mmap,
+            _ => panic!("It should be not happen"),
+        }
+    }
 
-    fn deref(&self) -> &Self::Target {
-        todo!()
+    pub(crate) fn get_mut_mmap(&self) -> &MmapMut {
+        match self.0 {
+            Either::Right(ref m) => m,
+            _ => panic!("It should be not happen"),
+        }
     }
 }
 
-#[derive(Debug)]
+impl Deref for MmapType {
+    type Target = Either<Mmap, MmapMut>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<Mmap> for MmapType {
+    fn from(value: Mmap) -> Self {
+        Self(Either::Left(value))
+    }
+}
+
+impl From<MmapMut> for MmapType {
+    fn from(value: MmapMut) -> Self {
+        Self(Either::Right(value))
+    }
+}
+
 pub(crate) struct LogFile {
     pub(crate) _path: Box<String>,
     pub(crate) fd: Option<File>,
     pub(crate) fid: u32,
-    // pub(crate) _mmap: Option<Mmap>,
-    pub(crate) _mut_mmap: Option<Mmap>,
     pub(crate) _mmap: Option<MmapType>,
     pub(crate) sz: u32,
+}
+
+impl Debug for LogFile {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        todo!()
+    }
 }
 
 impl LogFile {
@@ -75,12 +108,11 @@ impl LogFile {
         }
     }
 
-    fn mmap_slice(&self) {
-        match self._mmap.as_ref().unwrap() {
-            Either::Left(_mmap) => {
-
-            },
-            Either::Right(_mut_mmap) => {},
+    fn mmap_slice(&self) -> &[u8] {
+        let mmap = self._mmap.as_ref().unwrap();
+        match mmap.0 {
+            Either::Left(ref _mmap) => _mmap.as_ref(),
+            Either::Right(ref _mmap) => _mmap.as_ref(),
         }
     }
 
@@ -89,7 +121,7 @@ impl LogFile {
         offset: u32,
         n: usize,
     ) -> Result<(Vec<(Entry, ValuePointer)>, u32)> {
-        let m = self._mmap.as_ref().unwrap().as_slice();
+        let m = self.mmap_slice();
         let mut cursor_offset = offset;
         let mut v = vec![];
         while cursor_offset < m.len() as u32 && v.len() < n {
@@ -148,7 +180,7 @@ impl LogFile {
         println!("file sz {}", file_sz);
         let mut _mmap = unsafe { Mmap::map(&fd)? };
         // let mut _mmap = _mmap.make_read_only()?;
-        self._mmap.replace(_mmap);
+        self._mmap.replace(_mmap.into());
         self.fd.replace(fd);
         self.sz = file_sz as u32;
         Ok(())
@@ -170,7 +202,7 @@ impl LogFile {
     // todo opz
     pub(crate) fn done_writing(&mut self, offset: u32) -> Result<()> {
         self.sync()?;
-        let mut_mmap =self.mut_mmap();
+        let mut_mmap = self.mut_mmap();
         mut_mmap.flush_async()?;
         self.fd.as_mut().unwrap().set_len(offset as u64)?;
         self.fd.as_mut().unwrap().sync_all()?;
@@ -181,13 +213,12 @@ impl LogFile {
         self.open_read_only()
     }
 
-    fn mut_mmap(&self) -> &mut MmapMut{
-        let _mmap = self._mmap.as_ref().unwrap();
-        _mmap.make_mut().as_mut().unwrap()
+    fn mut_mmap(&self) -> &MmapMut {
+        self._mmap.as_ref().unwrap().get_mut_mmap()
     }
 
     fn mmap_ref(&self) -> &Mmap {
-        self._mmap.as_ref().unwrap()
+        self._mmap.as_ref().unwrap().get_mmap()
     }
 
     // You must hold lf.lock to sync()
@@ -345,17 +376,18 @@ impl LogFile {
 #[test]
 fn concurrency() {
     let mut lf = LogFile::new("src/test_data/vlog_file.text");
-    assert!(lf.is_ok(), "{}", lf.unwrap_err().to_string());
+    assert!(lf.is_ok(), "{:?}", lf.unwrap_err().to_string());
 }
 
 #[test]
-fn test_mmap () {
+fn test_mmap() {
     let mut fd = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open("src/test_data/vlog_file.text").unwrap();
+        .open("src/test_data/vlog_file.text")
+        .unwrap();
 
-    let _mmap = unsafe {Mmap::map(&fd).unwrap()};
+    let _mmap = unsafe { Mmap::map(&fd).unwrap() };
     println!("{}", _mmap.len());
     println!("{}", _mmap.make_mut().is_err());
 }

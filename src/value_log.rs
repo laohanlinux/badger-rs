@@ -6,7 +6,7 @@ use crc32fast::Hasher;
 use libc::{difftime, nice};
 use log::info;
 use log::kv::Source;
-use memmap::{MmapMut, Mmap};
+use memmap::{Mmap, MmapMut};
 use parking_lot::*;
 use protobuf::well_known_types::api::Mixin;
 use rand::random;
@@ -341,7 +341,7 @@ impl ValueLogCore {
         let mut vlog_file = self.create_vlog_file(fid)?;
         vlog_file.fd.as_mut().unwrap().set_len(offset)?;
         let mut _mmap = unsafe { Mmap::map(vlog_file.fd.as_ref().unwrap())? };
-        vlog_file._mmap.replace(_mmap);
+        vlog_file._mmap.replace(_mmap.into());
         Ok(vlog_file)
     }
 
@@ -367,8 +367,8 @@ impl ValueLogCore {
             let mut lf = vlog.1.write();
             if *vlog.0 == self.max_fid.load(Ordering::Acquire) {
                 let _mmap = lf._mmap.take().unwrap();
-                _mmap.make_mut().unwrap().flush()?;
-                    lf.fd
+                _mmap.get_mut_mmap().flush()?;
+                lf.fd
                     .as_mut()
                     .unwrap()
                     .set_len(self.writable_log_offset.load(Ordering::Acquire) as u64)?;
@@ -499,7 +499,7 @@ impl ValueLogCore {
 
     fn delete_log_file(&mut self, mut log_file: LogFile) -> Result<()> {
         if let Some(mp) = log_file._mmap.take() {
-            mp.make_mut()?.flush()?;
+            mp.get_mut_mmap().flush()?;
         }
         if let Some(fp) = log_file.fd.take() {
             fp.sync_all()?;
@@ -710,13 +710,11 @@ impl ValueLogCore {
             if self.num_active_iterators.load(Ordering::Relaxed) == 0 {
                 vlogs.remove(&lf.read().fid);
                 deleted_file_now = true;
-            }else {
+            } else {
                 self.dirty_vlogs.write().insert(lf.read().fid.clone());
             }
         }
-        if deleted_file_now {
-
-        }
+        if deleted_file_now {}
         Ok(())
     }
 
