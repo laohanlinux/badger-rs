@@ -6,7 +6,7 @@ use crc32fast::Hasher;
 use libc::{difftime, nice};
 use log::info;
 use log::kv::Source;
-use memmap::MmapMut;
+use memmap::{MmapMut, Mmap};
 use parking_lot::*;
 use protobuf::well_known_types::api::Mixin;
 use rand::random;
@@ -30,7 +30,6 @@ use std::time::{Duration, SystemTime};
 use std::{fmt, fs, io, ptr, thread};
 use tabled::object::Entity::Cell;
 use tokio::macros::support::thread_rng_n;
-use tracing_subscriber::fmt::format;
 
 use crate::kv::{ArcKV, WeakKV, KV};
 use crate::log_file::LogFile;
@@ -341,7 +340,7 @@ impl ValueLogCore {
     fn create_mmap_vlog_file(&self, fid: u32, offset: u64) -> Result<LogFile> {
         let mut vlog_file = self.create_vlog_file(fid)?;
         vlog_file.fd.as_mut().unwrap().set_len(offset)?;
-        let mut _mmap = unsafe { MmapMut::map_mut(vlog_file.fd.as_ref().unwrap())? };
+        let mut _mmap = unsafe { Mmap::map(vlog_file.fd.as_ref().unwrap())? };
         vlog_file._mmap.replace(_mmap);
         Ok(vlog_file)
     }
@@ -365,11 +364,11 @@ impl ValueLogCore {
         info!("Stopping garbage collection of values.");
         let mut vlogs = self.vlogs.write();
         for vlog in vlogs.iter() {
-            vlog.1.write()._mmap.as_mut().unwrap().flush()?;
+            let mut lf = vlog.1.write();
             if *vlog.0 == self.max_fid.load(Ordering::Acquire) {
-                vlog.1
-                    .write()
-                    .fd
+                let _mmap = lf._mmap.take().unwrap();
+                _mmap.make_mut().unwrap().flush()?;
+                    lf.fd
                     .as_mut()
                     .unwrap()
                     .set_len(self.writable_log_offset.load(Ordering::Acquire) as u64)?;
@@ -500,7 +499,7 @@ impl ValueLogCore {
 
     fn delete_log_file(&mut self, mut log_file: LogFile) -> Result<()> {
         if let Some(mp) = log_file._mmap.take() {
-            mp.flush()?;
+            mp.make_mut()?.flush()?;
         }
         if let Some(fp) = log_file.fd.take() {
             fp.sync_all()?;
