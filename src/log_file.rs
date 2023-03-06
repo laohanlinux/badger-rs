@@ -86,31 +86,11 @@ impl LogFile {
         let mut cursor_offset = offset;
         let mut v = vec![];
         while cursor_offset < m.len() as u32 && v.len() < n {
-            let mut entry = Entry::default();
-            let mut h = Header::default();
-            h.dec(&mut Cursor::new(
-                &m[cursor_offset as usize..cursor_offset as usize + Header::encoded_size()],
-            ))?;
-            entry.key = vec![0u8; h.k_len as usize];
-            entry.value = vec![0u8; h.v_len as usize];
-            entry.meta = h.meta;
-            entry.offset = cursor_offset as u32;
-            entry.cas_counter = h.cas_counter;
-            entry.user_meta = h.user_mata;
-            entry.cas_counter_check = h.cas_counter_check;
-            let mut start = cursor_offset as usize + Header::encoded_size();
-            entry
-                .key
-                .extend_from_slice(&m[start..start + h.k_len as usize]);
-            start += h.k_len as usize;
-            entry
-                .value
-                .extend_from_slice(&m[start..start + h.v_len as usize]);
-            start += h.v_len as usize;
-            let crc32 = Cursor::new(&m[start..start + 4]).read_u32::<BigEndian>()?;
+            let mut entry = Entry::from_slice(cursor_offset, m)?;
             let mut vpt = ValuePointer::default();
             vpt.fid = self.fid;
-            vpt.len = Header::encoded_size() as u32 + h.k_len + h.v_len + 4;
+            vpt.len =
+                Header::encoded_size() as u32 + (entry.key.len() + entry.value.len()) as u32 + 4;
             vpt.offset = cursor_offset;
             cursor_offset += vpt.len;
             v.push((entry, vpt))

@@ -74,13 +74,6 @@ impl Header {
     pub(crate) const fn encoded_size() -> usize {
         size_of::<Self>()
     }
-
-    // pub(crate) fn from_fd(&mut self, rd: &File, offset: u64) -> Result<()> {
-    //     let mut buffer = vec![0u8; Self::encoded_size()];
-    //     read_at(rd, &mut buffer, offset)?;
-    //     self.enc(&mut Cursor::new(buffer))?;
-    //     Ok(())
-    // }
 }
 
 impl Encode for Header {
@@ -124,6 +117,32 @@ pub struct Entry {
 }
 
 impl Entry {
+    pub(crate) fn from_slice(cursor_offset: u32, m: &[u8]) -> Result<Entry> {
+        let mut entry = Entry::default();
+        let mut h = Header::default();
+        h.dec(&mut Cursor::new(
+            &m[cursor_offset as usize..cursor_offset as usize + Header::encoded_size()],
+        ))?;
+        entry.key = vec![0u8; h.k_len as usize];
+        entry.value = vec![0u8; h.v_len as usize];
+        entry.meta = h.meta;
+        entry.offset = cursor_offset as u32;
+        entry.cas_counter = h.cas_counter;
+        entry.user_meta = h.user_mata;
+        entry.cas_counter_check = h.cas_counter_check;
+        let mut start = cursor_offset as usize + Header::encoded_size();
+        entry
+            .key
+            .extend_from_slice(&m[start..start + h.k_len as usize]);
+        start += h.k_len as usize;
+        entry
+            .value
+            .extend_from_slice(&m[start..start + h.v_len as usize]);
+        start += h.v_len as usize;
+        let crc32 = Cursor::new(&m[start..start + 4]).read_u32::<BigEndian>()?;
+        Ok(entry)
+    }
+
     fn to_string(&self, prefix: &str) -> String {
         format!("{} {}", prefix, self)
     }
@@ -157,23 +176,39 @@ impl Encode for Entry {
 
 impl Decode for Entry {
     fn dec(&mut self, rd: &mut dyn Read) -> Result<()> {
-        todo!()
+        let mut h = Header::default();
+        let mut buffer = vec![0u8; Header::encoded_size()];
+        let sz = rd.read(&mut buffer)?;
+        assert_eq!(sz, buffer.len());
+        h.dec(&mut Cursor::new(&buffer))?;
+        self.key = vec![0u8; h.k_len as usize];
+        self.value = vec![0u8; h.v_len as usize];
+        self.meta = h.meta;
+        // self.offset = cursor_offset as u32;
+        self.cas_counter = h.cas_counter;
+        self.user_meta = h.user_mata;
+        self.cas_counter_check = h.cas_counter_check;
+        let sz = rd.read(&mut self.key)?;
+        assert_eq!(sz, h.k_len as usize);
+        let sz = rd.read(&mut self.value)?;
+        assert_eq!(sz, h.v_len as usize);
+        // TODO check crc32
+        let crc32 = rd.read_u32::<BigEndian>()?;
+        Ok(())
     }
 }
 
 impl fmt::Display for Entry {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "key: {:?} meta: {} usermeta: {} offset: {} len={} cas={} check={}",
-            self.key,
-            self.meta,
-            self.user_meta,
-            self.offset,
-            self.value.len(),
-            self.cas_counter,
-            self.cas_counter_check
-        )
+        f.debug_struct("Entry")
+            .field("key", &String::from_utf8_lossy(&self.key).to_string())
+            .field("meta", &self.meta)
+            .field("user_meta", &self.user_meta)
+            .field("offset", &self.offset)
+            .field("value", &self.value)
+            .field("case=", &self.cas_counter)
+            .field("check", &self.cas_counter_check)
+            .finish()
     }
 }
 
