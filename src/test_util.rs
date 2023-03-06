@@ -1,3 +1,4 @@
+use atomic::Atomic;
 use chrono::Local;
 use log::{info, kv::source::as_map, kv::Source, Level};
 use rand::random;
@@ -5,10 +6,9 @@ use std::collections::HashMap;
 use std::env::temp_dir;
 use std::fs::create_dir_all;
 use std::io;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
-use atomic::Atomic;
 use tokio::runtime::Handle;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
@@ -185,10 +185,9 @@ fn tk2() {
             });
         }
         fn add() -> i32 {
-            let f = async move {100};
-            let r = tokio::task::block_in_place( move || {
-                tokio::runtime::Handle::current().block_on(f)
-            });
+            let f = async move { 100 };
+            let r =
+                tokio::task::block_in_place(move || tokio::runtime::Handle::current().block_on(f));
             r
         }
 

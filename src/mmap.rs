@@ -9,7 +9,7 @@ pub(crate) struct AsyncLogFile {
     path: Box<String>,
     sz: usize,
     fp: Option<tokio::fs::File>,
-    m:  Option<MmapMut>,
+    m: Option<MmapMut>,
 }
 
 // impl AsyncMMAP {

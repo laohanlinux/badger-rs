@@ -55,7 +55,7 @@ pub type WeakTable = XWeak<TableCore>;
 
 impl From<TableCore> for Table {
     fn from(value: TableCore) -> Self {
-       Table::new(value)
+        Table::new(value)
     }
 }
 
@@ -73,11 +73,11 @@ impl Table {
     }
 
     pub fn biggest(&self) -> &[u8] {
-       &self.biggest
+        &self.biggest
     }
 
     pub fn smallest(&self) -> &[u8] {
-       &self.smallest
+        &self.smallest
     }
 }
 
@@ -92,7 +92,7 @@ pub struct TableCore {
     _mmap: Option<MmapMut>, // Memory mapped.
     // The following are initialized once and const.
     smallest: Vec<u8>, // smallest keys.
-    biggest: Vec<u8>, // biggest keys.
+    biggest: Vec<u8>,  // biggest keys.
     id: u64,
     bf: GrowableBloom,
 }
@@ -115,7 +115,7 @@ impl TableCore {
             loading_mode,
             _mmap: None,
             smallest: vec![],
-            biggest:  vec![],
+            biggest: vec![],
             id,
             bf: GrowableBloom::new(0.01, 1),
         };

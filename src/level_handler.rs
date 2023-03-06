@@ -108,8 +108,7 @@ impl LevelHandler {
     // init with tables
     pub(crate) fn init_tables(&self, tables: Vec<Table>) {
         let total_size = tables.iter().fold(0, |acc, table| acc + table.size());
-        self.total_size
-            .store(total_size as u64, Ordering::Relaxed);
+        self.total_size.store(total_size as u64, Ordering::Relaxed);
         let mut tb_wl = self.tables_wl();
         (*tb_wl) = tables;
         if self.level.load(Ordering::Relaxed) == 0 {
@@ -205,8 +204,7 @@ impl LevelHandler {
             return false;
         }
         t.incr_ref();
-        self
-            .total_size
+        self.total_size
             .fetch_add(t.size() as u64, Ordering::Relaxed);
         self.tables_wl().push(t);
         true
@@ -258,7 +256,7 @@ impl LevelHandler {
         };
     }
 
-    pub(crate)  fn get(&self, key: &[u8]) -> Option<IteratorItem>{
+    pub(crate) fn get(&self, key: &[u8]) -> Option<IteratorItem> {
         self.get_table_for_key(key)
     }
 

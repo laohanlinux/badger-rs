@@ -478,7 +478,6 @@ impl ValueLogCore {
                 of = 0;
             }
             let mut log_file = vlogs.vlogs.get(&id).unwrap().write();
-            // log_file.reset_seek_start()?;
             log_file.iterate(of, &mut f).await?;
         }
         // Seek to the end to start writing.
