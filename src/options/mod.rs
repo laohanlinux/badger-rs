@@ -71,7 +71,7 @@ pub struct Options {
 }
 
 impl Options {
-    fn estimate_size(&self, entry: Entry) -> usize {
+    pub fn estimate_size(&self, entry: &Entry) -> usize {
         if entry.value.len() < self.value_threshold {
             return entry.key.len() + entry.value.len() + META_SIZE + USER_META_SIZE + CAS_SIZE;
         }

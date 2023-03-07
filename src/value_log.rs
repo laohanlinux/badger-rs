@@ -59,6 +59,8 @@ bitflags! {
 
 const M: u64 = 1 << 20;
 
+pub(crate) const MAX_KEY_SIZE: usize = 1 << 20;
+
 #[derive(Debug, Default)]
 #[repr(C)]
 pub(crate) struct Header {
@@ -268,6 +270,16 @@ pub(crate) struct Request {
     pub(crate) res: Channel<Result<()>>,
 }
 
+impl Default for Request {
+    fn default() -> Self {
+        Request{
+            entries: Default::default(),
+            ptrs: Default::default(),
+            res: Channel::new(1),
+        }
+    }
+}
+
 impl Request {
     pub(crate) async fn get_resp(&self) -> Result<()> {
         self.res.recv().await.unwrap()
@@ -292,8 +304,9 @@ impl ArcRequest {
     pub(crate) fn get_req(&self) -> Arc<Request> {
         self.inner.clone()
     }
-    pub(crate) fn set_err(&self, err: Result<()>) {
-        *self.err.lock() = err;
+    pub(crate) async fn set_err(&self, err: Result<()>) {
+        *self.err.lock() = err.clone();
+        self.inner.res.send(err).await;
     }
 
     pub(crate) fn to_inner(self) -> Request {
@@ -628,7 +641,8 @@ impl ValueLogCore {
         to_disk()
     }
 
-    async fn rewrite(&self, lf: Arc<lock_api::RwLock<RawRwLock, LogFile>>) -> Result<()> {
+    // rewrite the log_file
+    async fn rewrite(&self, lf: Arc<lock_api::RwLock<RawRwLock, LogFile>>, x: &KV) -> Result<()> {
         let max_fid = self.max_fid.load(Ordering::Relaxed);
         assert!(
             lf.read().fid < max_fid,
@@ -667,14 +681,15 @@ impl ValueLogCore {
                 return Err(err.clone());
             }
             let vs = vs.unwrap();
-            if (vs.meta & MetaBit::BIT_DELETE.bits()) > 0 {
+            // It should be not happen, if the value is deleted
+            if vs.meta & MetaBit::BIT_DELETE.bits() > 0 {
                 info!(
                     "REWRITE=> {} has been deleted",
                     String::from_utf8_lossy(&entry.key)
                 );
                 continue;
             }
-            if (vs.meta & MetaBit::BIT_VALUE_POINTER.bits()) < 0 {
+            if vs.meta & MetaBit::BIT_VALUE_POINTER.bits() < 0 {
                 info!(
                     "REWRITE=> {} has been skipped, meta: {}",
                     String::from_utf8_lossy(&entry.key),
@@ -703,6 +718,7 @@ impl ValueLogCore {
             {
                 // This new entry only contains the key, and a pointer to the value.
                 let mut ne = Entry::default();
+                // TODO why?
                 if entry.meta == MetaBit::BIT_SET_IF_ABSENT.bits() {
                     // If we rewrite this entry without removing BitSetIfAbsent, LSM would see that
                     // the key is already present, which would be this same entry and won't update
@@ -976,7 +992,7 @@ impl SafeValueLog {
         }
 
         info!("REWRITING VLOG {}", lf.read().fid);
-        self.value_log.rewrite(lf).await?;
+        self.value_log.rewrite(lf, self.value_log.get_kv()).await?;
         Ok(())
     }
 }

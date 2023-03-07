@@ -5,7 +5,9 @@ use crate::table::builder::Builder;
 use crate::table::iterator::IteratorImpl;
 use crate::table::table::{new_file_name, Table, TableCore};
 use crate::types::{Channel, Closer, XArc, XWeak};
-use crate::value_log::{ArcRequest, Entry, MetaBit, Request, ValueLogCore, ValuePointer};
+use crate::value_log::{
+    ArcRequest, Entry, MetaBit, Request, ValueLogCore, ValuePointer, MAX_KEY_SIZE,
+};
 use crate::y::{
     async_sync_directory, create_synced_file, sync_directory, Encode, Result, ValueStruct,
 };
@@ -19,6 +21,7 @@ use fs2::FileExt;
 use log::{info, Log};
 use parking_lot::Mutex;
 use std::borrow::BorrowMut;
+use std::cell::RefCell;
 use std::fs::{read_dir, File};
 use std::fs::{try_exists, OpenOptions};
 use std::future::Future;
@@ -27,10 +30,10 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::string;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
+use std::{string, vec};
 use tokio::fs::create_dir_all;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{RwLock, RwLockWriteGuard};
@@ -413,8 +416,46 @@ impl KV {
     //      Check(e.Error);
     // }
     // TODO
-    pub(crate) async fn batch_set(&self, entries: Vec<Entry>) -> Result<()> {
-        todo!()
+    pub(crate) async fn batch_set(&self, entries: Vec<Entry>) -> Result<Vec<ArcRequest>> {
+        let mut bad = vec![];
+        let mut b = vec![Request::default()];
+        let mut count = 0;
+        let mut sz = 0u64;
+        for mut entry in entries {
+            if entry.key.len() > MAX_KEY_SIZE {
+                bad.push(entry);
+                continue;
+            }
+            if entry.value.len() as u64 > self.opt.value_log_file_size {
+                bad.push(entry);
+                continue;
+            }
+            count += 1;
+            sz += self.opt.estimate_size(&entry) as u64;
+            let req = b.last_mut().unwrap();
+            req.entries.write().push(RefCell::new(entry));
+            if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_count {
+                b.push(Request::default());
+            }
+        }
+        let mut reqs = vec![];
+        for req in b {
+            if req.entries.read().is_empty() {
+                break;
+            }
+            let arc_req = ArcRequest::from(req);
+            reqs.push(arc_req.clone());
+            self.write_ch.send(arc_req).await.unwrap();
+        }
+        if !bad.is_empty() {
+            let mut req = Request::default();
+            *req.entries.write() =
+                Vec::from_iter(bad.into_iter().map(|bad| RefCell::new(bad)).into_iter());
+            let arc_req = ArcRequest::from(req);
+            arc_req.set_err(Err("key too big or value to big".into())).await;
+            reqs.push(arc_req);
+        }
+        Ok(reqs)
     }
 
     fn new_cas_counter(&self, how_many: u64) -> u64 {
@@ -526,9 +567,9 @@ impl ArcKV {
                     .collect::<Vec<_>>();
                 let to_reqs = Arc::new(to_reqs);
                 if let Err(err) = self.write_requests(to_reqs).await {
-                    reqs.lock()
-                        .iter()
-                        .for_each(|req| req.set_err(Err(err.clone())));
+                    for req in reqs.lock().iter() {
+                        req.set_err(Err(err.clone())).await;
+                    }
                 }
                 reqs.lock().clear();
             }
