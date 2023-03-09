@@ -4,7 +4,7 @@ use crate::options::Options;
 use crate::table::builder::Builder;
 use crate::table::iterator::IteratorImpl;
 use crate::table::table::{new_file_name, Table, TableCore};
-use crate::types::{Channel, Closer, XArc, XWeak};
+use crate::types::{ArcMx, Channel, Closer, TArcMx, XArc, XWeak};
 use crate::value_log::{
     ArcRequest, Entry, MetaBit, Request, ValueLogCore, ValuePointer, MAX_KEY_SIZE,
 };
@@ -338,8 +338,9 @@ impl KV {
         // There is code (in flush_mem_table) whose correctness depends on us generating CAS Counter
         // values _before_ we modify s.vptr here.
         for req in reqs.iter() {
-            let counter_base = self.new_cas_counter(req.get_req().entries.read().len() as u64);
-            for (idx, entry) in req.get_req().entries.read().iter().enumerate() {
+            let entries = req.req_ref().entries.write();
+            let counter_base = self.new_cas_counter(entries.len() as u64);
+            for (idx, entry) in entries.iter().enumerate() {
                 entry.borrow_mut().cas_counter = counter_base + idx as u64;
             }
         }
@@ -348,9 +349,6 @@ impl KV {
         info!("Writing to memory table");
         let mut count = 0;
         for req in reqs.iter() {
-            if req.get_req().entries.read().is_empty() {
-                continue;
-            }
             count += req.get_req().entries.read().len();
         }
         Ok(())
@@ -452,7 +450,9 @@ impl KV {
             *req.entries.write() =
                 Vec::from_iter(bad.into_iter().map(|bad| RefCell::new(bad)).into_iter());
             let arc_req = ArcRequest::from(req);
-            arc_req.set_err(Err("key too big or value to big".into())).await;
+            arc_req
+                .set_err(Err("key too big or value to big".into()))
+                .await;
             reqs.push(arc_req);
         }
         Ok(reqs)
@@ -547,7 +547,7 @@ impl ArcKV {
         // TODO add metrics
         let has_been_close = lc.has_been_closed();
         let write_ch = self.write_ch.clone();
-        let reqs = Arc::new(Mutex::new(vec![]));
+        let reqs = ArcMx::<Vec<ArcRequest>>::new(Mutex::new(vec![]));
         loop {
             tokio::select! {
                 _ = has_been_close.recv() => {
@@ -567,9 +567,9 @@ impl ArcKV {
                     .collect::<Vec<_>>();
                 let to_reqs = Arc::new(to_reqs);
                 if let Err(err) = self.write_requests(to_reqs).await {
-                    for req in reqs.lock().iter() {
-                        req.set_err(Err(err.clone())).await;
-                    }
+                    // for req in reqs.lock().iter() {
+                    //     req.set_err(Err(err.clone())).await;
+                    // }
                 }
                 reqs.lock().clear();
             }
@@ -591,9 +591,9 @@ impl ArcKV {
                 .map(|req| req.clone())
                 .collect::<Vec<_>>();
             if let Err(err) = self.write_requests(Arc::new(to_reqs)).await {
-                reqs.lock()
-                    .iter()
-                    .for_each(|req| req.set_err(Err(err.clone())));
+                // for req in reqs.lock().iter() {
+                //     req.set_err(Err(err.clone())).await;
+                // }
             }
         }
     }

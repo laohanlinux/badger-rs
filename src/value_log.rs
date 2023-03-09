@@ -304,6 +304,11 @@ impl ArcRequest {
     pub(crate) fn get_req(&self) -> Arc<Request> {
         self.inner.clone()
     }
+
+    pub(crate) fn req_ref(&self) -> &Arc<Request> {
+        &self.inner
+    }
+
     pub(crate) async fn set_err(&self, err: Result<()>) {
         *self.err.lock() = err.clone();
         self.inner.res.send(err).await;
