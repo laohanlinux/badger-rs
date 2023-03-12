@@ -3,7 +3,6 @@ use crate::y::{create_synced_file, Result};
 use crate::y::{is_eof, read_at, Decode};
 use crate::Error;
 use byteorder::{BigEndian, ReadBytesExt};
-use core::slice::SlicePattern;
 use either::Either;
 use memmap::{Mmap, MmapMut};
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
@@ -20,10 +19,11 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::SystemTime;
 
+// MmapType is a Mmap and MmapMut tule
 pub(crate) struct MmapType(Either<Mmap, MmapMut>);
 
 impl MmapType {
-    fn get_mmap(&self) -> &Mmap {
+    pub(crate) fn get_mmap(&self) -> &Mmap {
         match self.0 {
             Either::Left(ref _mmap) => _mmap,
             _ => panic!("It should be not happen"),
@@ -77,6 +77,7 @@ impl Debug for LogFile {
 }
 
 impl LogFile {
+    // async read *n* entries
     pub(crate) async fn read_entries(
         &self,
         offset: u32,
@@ -86,7 +87,7 @@ impl LogFile {
         let mut cursor_offset = offset;
         let mut v = vec![];
         while cursor_offset < m.len() as u32 && v.len() < n {
-            let mut entry = Entry::from_slice(cursor_offset, m)?;
+            let entry = Entry::from_slice(cursor_offset, m)?;
             let mut vpt = ValuePointer::default();
             vpt.fid = self.fid;
             vpt.len =
@@ -98,6 +99,7 @@ impl LogFile {
         Ok((v, cursor_offset))
     }
 
+    // async iterate from offset that must be call with thread safty
     pub(crate) async fn iterate_by_offset(
         &self,
         mut offset: u32,
@@ -113,8 +115,7 @@ impl LogFile {
             }
 
             for (entry, vptr) in v.iter() {
-                let continue_ = f(entry, vptr).await?;
-                if !continue_ {
+                if !f(entry, vptr).await? {
                     return Ok(());
                 }
                 offset = next;
@@ -194,6 +195,7 @@ impl LogFile {
 }
 
 impl LogFile {
+    // new LogFile with special path.
     pub(crate) fn new(path: &str) -> Result<Self> {
         let mut lf = LogFile {
             _path: Box::new(path.to_string()),
@@ -206,8 +208,9 @@ impl LogFile {
         Ok(lf)
     }
 
+    // open only read permission
     pub(crate) fn open_read_only(&mut self) -> Result<()> {
-        let mut fd = std::fs::OpenOptions::new()
+        let fd = std::fs::OpenOptions::new()
             .read(true)
             .open(self._path.as_ref())?;
         let meta = fd.metadata()?;
@@ -217,18 +220,6 @@ impl LogFile {
         self.fd.replace(fd);
         self.sz = file_sz as u32;
         Ok(())
-    }
-
-    fn mmap_slice(&self) -> &[u8] {
-        let mmap = self._mmap.as_ref().unwrap();
-        match mmap.0 {
-            Either::Left(ref _mmap) => _mmap.as_ref(),
-            Either::Right(ref _mmap) => _mmap.as_ref(),
-        }
-    }
-
-    fn file_ref(&self) -> &File {
-        self.fd.as_ref().unwrap()
     }
 
     // Acquire lock on mmap if you are calling this.
@@ -244,7 +235,7 @@ impl LogFile {
         // todo add metrics
     }
 
-    // todo opz
+    // Done written, reopen with read only permisson for file and mmap.
     pub(crate) fn done_writing(&mut self, offset: u32) -> Result<()> {
         self.sync()?;
         let mut_mmap = self.mut_mmap();
@@ -256,6 +247,20 @@ impl LogFile {
             self.fd.take();
         }
         self.open_read_only()
+    }
+
+    // return mmap slice
+    fn mmap_slice(&self) -> &[u8] {
+        let mmap = self._mmap.as_ref().unwrap();
+        match mmap.0 {
+            Either::Left(ref _mmap) => _mmap.as_ref(),
+            Either::Right(ref _mmap) => _mmap.as_ref(),
+        }
+    }
+
+    // return file reference
+    fn file_ref(&self) -> &File {
+        self.fd.as_ref().unwrap()
     }
 
     fn mut_mmap(&self) -> &MmapMut {
