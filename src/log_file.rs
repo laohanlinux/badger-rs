@@ -135,7 +135,7 @@ impl LogFile {
         let mut fd = self.fd.as_mut().unwrap();
         fd.seek(SeekFrom::Start(offset as u64))?;
         let mut entry = Entry::default();
-        let mut truncate = false;
+        let mut truncate = false; // because maybe abort before write
         let mut record_offset = offset;
         loop {
             let mut h = Header::default();
@@ -299,6 +299,7 @@ fn test_mmap() {
 
 #[test]
 fn test_write_file() {
-    let _path = temp_dir().join("badger-".to_owned() + &*rand::random::<u32>().to_string());
-    let lf = create_synced_file(_path.to_str().unwrap(), true).unwrap();
+    //let lf = create_synced_file(_path.to_str().unwrap(), true).unwrap();
+    let mut vlog = LogFile::new("src/test_data/vlog_file.text").unwrap();
+    println!("{}", vlog.unwrap_err());
 }

@@ -522,12 +522,13 @@ impl ValueLogCore {
         let vlogs = self.pick_log_guard();
         info!("Seeking at value pointer: {:?}", vp);
         let offset = vp.offset + vp.len;
+        // Find the max file to recover
         for id in vlogs.fids {
             if id < vp.fid {
                 continue;
             }
             let mut of = offset;
-            if id > vp.fid {
+            if id > vp.fid { // It is very import that maybe the lasted memory table are not persistent at disk.
                 of = 0;
             }
             let mut log_file = vlogs.vlogs.get(&id).unwrap().write();
