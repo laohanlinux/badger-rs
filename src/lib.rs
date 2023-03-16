@@ -22,6 +22,7 @@ use std::io;
 use std::mem::align_of;
 
 mod event;
+mod iterator;
 mod kv;
 mod log_file;
 mod manifest;

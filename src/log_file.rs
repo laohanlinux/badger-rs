@@ -301,5 +301,5 @@ fn test_mmap() {
 fn test_write_file() {
     //let lf = create_synced_file(_path.to_str().unwrap(), true).unwrap();
     let mut vlog = LogFile::new("src/test_data/vlog_file.text").unwrap();
-    println!("{}", vlog.unwrap_err());
+    // println!("{}", vlog.unwrap_err());
 }

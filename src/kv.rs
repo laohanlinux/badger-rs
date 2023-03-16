@@ -1,3 +1,4 @@
+use crate::iterator::KVItemInner;
 use crate::levels::{LevelsController, XLevelsController};
 use crate::manifest::{open_or_create_manifest_file, Manifest, ManifestFile};
 use crate::options::Options;
@@ -122,10 +123,8 @@ impl KV {
             vlog: None,
             vptr: crossbeam_epoch::Atomic::null(),
             manifest: Arc::new(RwLock::new(manifest_file)),
-            // lc: Default::default(),
             lc: XWeak::new(),
             flush_chan: Channel::new(1),
-            // write_chan: Channel::new(1),
             dir_lock_guard,
             value_dir_guard,
             closers,
@@ -143,9 +142,13 @@ impl KV {
         let lc = LevelsController::new(manifest.clone(), out.opt.clone()).await?;
         lc.start_compact(out.closers.compactors.clone());
         let mut vlog = ValueLogCore::default();
+        {
+            let kv = unsafe { &out as *const KV };
+            vlog.open(kv, opt)?;
+        }
         out.vlog = Some(vlog);
         let xout = XArc::new(out);
-        // xout.vlog.unwrap().open(&xout, opt)?;
+
         // update size
         {
             let _out = xout.clone();
@@ -163,12 +166,12 @@ impl KV {
             });
         }
 
+        // Get the lasted ValueLog Recover Pointer
         let item = xout.get(_HEAD);
         if item.is_err() {
             return Err("Retrieving head".into());
         }
         let item = item.unwrap();
-
         let value = &item.value;
         if value != _HEAD {
             return Err("Retrieving head".into());
@@ -633,6 +636,13 @@ impl ArcKV {
         } else {
             Err(Unexpected("No room for write".into()))
         }
+    }
+
+    async fn yield_item_value(
+        &self,
+        item: &KVItemInner,
+        consume: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
     }
 }
 
