@@ -272,7 +272,7 @@ pub(crate) struct Request {
 
 impl Default for Request {
     fn default() -> Self {
-        Request{
+        Request {
             entries: Default::default(),
             ptrs: Default::default(),
             res: Channel::new(1),
@@ -528,7 +528,8 @@ impl ValueLogCore {
                 continue;
             }
             let mut of = offset;
-            if id > vp.fid { // It is very import that maybe the lasted memory table are not persistent at disk.
+            if id > vp.fid {
+                // It is very import that maybe the lasted memory table are not persistent at disk.
                 of = 0;
             }
             let mut log_file = vlogs.vlogs.get(&id).unwrap().write();
@@ -547,6 +548,26 @@ impl ValueLogCore {
             .seek(SeekFrom::End(0))?;
         self.writable_log_offset
             .store(last_offset as u32, Ordering::Release);
+        Ok(())
+    }
+
+    fn decr_iterator_count(&self) -> Result<()> {
+        // TODO add share lock.
+        let old = self.num_active_iterators.fetch_sub(1, Ordering::Relaxed);
+        if old != 1 {
+            // the lasted reference
+            return Ok(());
+        }
+        let mut lfs = vec![];
+        for dirty_vlog in self.dirty_vlogs.read().iter() {
+            lfs.push(*dirty_vlog);
+            // TODO
+            self.vlogs.write().remove(dirty_vlog);
+        }
+        self.dirty_vlogs.write().clear();
+        for lf in lfs {
+            // self.delete_log_file() // TODO
+        }
         Ok(())
     }
 

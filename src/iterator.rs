@@ -1,7 +1,9 @@
-use std::{io::Cursor, sync::atomic::AtomicU64};
+use std::{collections::VecDeque, io::Cursor, sync::atomic::AtomicU64};
+use std::ops::Deref;
 
 use awaitgroup::WaitGroup;
 
+use crate::types::{ArcMx, ArcRW};
 use crate::{
     kv::KV,
     types::XArc,
@@ -86,5 +88,59 @@ impl KVItemInner {
     // is used to interpret the value.
     pub(crate) fn user_meta(&self) -> u8 {
         self.meta
+    }
+}
+
+// Used to set options when iterating over Badger key-value stores.
+pub(crate) struct IteratorOptions {
+    // Indicates whether we should prefetch values during iteration and store them.
+    pre_fetch_values: bool,
+    // How may KV pairs to prefetch while iterating. Valid only if PrefetchValues is true.
+    pre_fetch_size: isize,
+    // Direction of iteration. False is forward, true is backward.
+    reverse: bool,
+}
+
+pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
+    pre_fetch_size: 100,
+    pre_fetch_values: true,
+    reverse: false,
+};
+
+// Helps iterating over the KV pairs in a lexicographically sorted order.
+struct IteratorExt {
+    kv: XArc<KV>,
+    opt: IteratorOptions,
+    item: Option<XArc<KVItemInner>>,
+    data: ArcRW<std::collections::LinkedList<XArc<KVItemInner>>>,
+    waste: ArcRW<std::collections::LinkedList<XArc<KVItemInner>>>,
+}
+
+impl IteratorExt {
+    fn new_item(&self) -> Option<XArc<KVItemInner>> {
+        self.waste.write().pop_front()
+    }
+
+    // Returns pointer to the current KVItem.
+    // This item is only valid until it.Next() gets called.
+    fn item(&self) -> Option<XArc<KVItemInner>> {
+        self.item.clone()
+    }
+
+    // Returns false when iteration is done.
+    fn valid(&self) -> bool {
+        self.item.is_some()
+    }
+
+    // Returns false when iteration is done
+    // or when the current key is not prefixed by the specified prefix.
+    fn valid_for_prefix(&self, prefix: &[u8]) -> bool {
+        self.item.is_some() && self.item.as_ref().unwrap().key().starts_with(prefix)
+    }
+
+    // Close the iterator, It is important to call this when you're done with iteration.
+    fn close(&self) {
+        // TODO: We could handle this error.
+        self.kv.vlog.as_ref().unwrap().deref();
     }
 }
