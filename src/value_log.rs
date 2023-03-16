@@ -551,7 +551,7 @@ impl ValueLogCore {
         Ok(())
     }
 
-    fn decr_iterator_count(&self) -> Result<()> {
+    pub(crate) fn decr_iterator_count(&self) -> Result<()> {
         // TODO add share lock.
         let old = self.num_active_iterators.fetch_sub(1, Ordering::Relaxed);
         if old != 1 {
@@ -560,25 +560,25 @@ impl ValueLogCore {
         }
         let mut lfs = vec![];
         for dirty_vlog in self.dirty_vlogs.read().iter() {
-            lfs.push(*dirty_vlog);
             // TODO
-            self.vlogs.write().remove(dirty_vlog);
+            let vlog = self.vlogs.write().remove(dirty_vlog).unwrap();
+            lfs.push(vlog);
         }
         self.dirty_vlogs.write().clear();
         for lf in lfs {
-            // self.delete_log_file() // TODO
+            self.delete_log_file_by_fid(lf)?;
         }
         Ok(())
     }
 
-    fn delete_log_file(&mut self, mut log_file: LogFile) -> Result<()> {
-        if let Some(mp) = log_file._mmap.take() {
+    fn delete_log_file_by_fid(&self, log_file: Arc<RwLock<LogFile>>) -> Result<()> {
+        if let Some(mp) = log_file.write()._mmap.take() {
             mp.get_mut_mmap().flush()?;
         }
-        if let Some(fp) = log_file.fd.take() {
+        if let Some(fp) = log_file.read().fd.take() {
             fp.sync_all()?;
         }
-        remove_file(self.fpath(log_file.fid))?;
+        remove_file(self.fpath(log_file.read().fid))?;
         Ok(())
     }
 

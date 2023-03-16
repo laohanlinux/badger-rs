@@ -180,8 +180,7 @@ impl Closer {
             if self.wait.load(Ordering::Relaxed) <= 0 {
                 break;
             }
-            // hint::spin_loop();
-            sleep(Duration::from_millis(10)).await;
+            sleep(Duration::from_millis(1)).await;
         }
     }
 

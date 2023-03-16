@@ -638,7 +638,7 @@ impl ArcKV {
         }
     }
 
-    async fn yield_item_value(
+    pub(crate) async fn yield_item_value(
         &self,
         item: &KVItemInner,
         consume: impl FnMut(&[u8]) -> Result<()>,
