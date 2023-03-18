@@ -21,9 +21,8 @@ use drop_cell::defer;
 use fs2::FileExt;
 use log::{info, Log};
 use parking_lot::Mutex;
-use std::borrow::BorrowMut;
 use std::cell::RefCell;
-use std::fs::{read_dir, File};
+use std::fs::File;
 use std::fs::{try_exists, OpenOptions};
 use std::future::Future;
 use std::io::{Cursor, Write};
@@ -87,6 +86,20 @@ pub struct KV {
 
 unsafe impl Send for KV {}
 unsafe impl Sync for KV {}
+
+pub struct BoxKV {
+    kv: *const KV,
+}
+
+unsafe impl Send for BoxKV {}
+
+unsafe impl Sync for BoxKV{}
+
+impl BoxKV {
+    fn new(kv: *const KV) -> BoxKV {
+        BoxKV { kv }
+    }
+}
 
 impl KV {
     async fn open(mut opt: Options) -> Result<XArc<KV>> {
@@ -638,11 +651,27 @@ impl ArcKV {
         }
     }
 
+    // asyn yield item value from ValueLog
     pub(crate) async fn yield_item_value(
         &self,
         item: &KVItemInner,
-        consume: impl FnMut(&[u8]) -> Result<()>,
+        mut consumer: impl for<'a> FnMut(&'a [u8]) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
     ) -> Result<()> {
+        // no value
+        if !item.has_value() {
+            return consumer(&[0u8]).await;
+        }
+
+        // TODO What is this
+        if (item.meta() & MetaBit::BIT_VALUE_POINTER.bits()) == 0 {
+            return consumer(item.vptr()).await;
+        }
+
+        let mut vptr = ValuePointer::default();
+        vptr.dec(&mut Cursor::new(item.vptr()))?;
+        let vlog = self.must_vlog();
+        vlog.async_read(&vptr, consumer).await?;
+        Ok(())
     }
 }
 

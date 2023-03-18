@@ -1,8 +1,4 @@
-use parking_lot::RwLock;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::Arc;
-use std::{io::Cursor, sync::atomic::AtomicU64};
-
+use crate::iterator::PreFetchStatus::Prefetched;
 use crate::types::{ArcMx, ArcRW, Closer, TArcMx, TArcRW};
 use crate::MergeIterOverIterator;
 use crate::{
@@ -11,7 +7,12 @@ use crate::{
     value_log::{MetaBit, ValuePointer},
     Decode, Result, Xiterator,
 };
-use crate::iterator::PreFetchStatus::Prefetched;
+use parking_lot::RwLock;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
+use std::{io::Cursor, sync::atomic::AtomicU64};
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum PreFetchStatus {
@@ -24,10 +25,10 @@ type KVItem = TArcRW<KVItemInner>;
 // Returned during iteration. Both the key() and value() output is only valid until
 // iterator.next() is called.
 pub(crate) struct KVItemInner {
-    status: PreFetchStatus,
+    status: TArcRW<PreFetchStatus>,
     kv: XArc<KV>,
     key: Vec<u8>,
-    value: Vec<u8>,
+    value: TArcRW<Vec<u8>>,
     vptr: Vec<u8>,
     meta: u8,
     user_meta: u8,
@@ -38,20 +39,28 @@ pub(crate) struct KVItemInner {
 
 impl KVItemInner {
     // Returns the key. Remember to copy if you need to access it outside the iteration loop.
-    pub(crate) fn key(&self) -> Vec<u8> {
-        self.value
+    pub(crate) fn key(&self) -> &[u8] {
+        &self.key
     }
 
-    pub(crate) async fn value(&self, consumer: &mut impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
+    // Value retrieves the value of the item from the value log. It calls the
+    // consumer function with a slice argument representing the value. In case
+    // of error, the consumer function is not called.
+    //
+    // Note that the call to the consumer func happens synchronously.
+    pub(crate) async fn value(
+        &self,
+        mut consumer: impl for<'a> FnMut(&'a [u8]) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+    ) -> Result<()> {
+        // Wait result
         self.wg.wait().await;
-        if self.status == PreFetchStatus::Prefetch {
+        if *self.status.read().await == PreFetchStatus::Prefetched {
             if self.err.is_err() {
                 return self.err.clone();
             }
-
-            return consumer(&self.value);
+            return consumer(&self.value.read().await).await;
         }
-        Ok(())
+        return self.kv.yield_item_value(&self, consumer).await;
     }
 
     pub(crate) fn has_value(&self) -> bool {
@@ -65,17 +74,24 @@ impl KVItemInner {
         true
     }
 
+    // async fetch value from value_log.
     pub(crate) async fn pre_fetch_value(&self) {
-        self.kv
-            .yield_item_value(&self, |value| -> Result<()> {
+        let kv = self.kv.clone();
+        kv.yield_item_value(&self, |value| {
+            let ref_value = self.value.clone();
+            let ref_status = self.status.clone();
+            Box::pin(async move {
                 if value.is_empty() {
-                    self.status = Prefetched;
+                    *ref_status.write().await = PreFetchStatus::Prefetched;
                     return Ok(());
                 }
-                self.value = value.clone();
-                self.status = Prefetched;
+                ref_value.write().await.extend(value);
+                *ref_status.write().await = PreFetchStatus::Prefetched;
                 Ok(())
-            });
+            })
+        })
+        .await
+        .unwrap();
     }
     // Returns approximate size of the key-value pair.
     //
@@ -102,7 +118,15 @@ impl KVItemInner {
     // Returns the user_meta set by the user. Typically, this byte, optionally set by the user
     // is used to interpret the value.
     pub(crate) fn user_meta(&self) -> u8 {
+        self.user_meta
+    }
+
+    pub(crate) fn meta(&self) -> u8 {
         self.meta
+    }
+
+    pub(crate) fn vptr(&self) -> &[u8] {
+        &self.vptr
     }
 }
 
@@ -162,7 +186,8 @@ impl IteratorExt {
     }
 
     async fn fill(&self, item: KVItem) {
-        let mut vs = self.itr.peek().as_ref().unwrap().value();
+        let vs = self.itr.peek().unwrap();
+        let vs = vs.value();
         {
             let mut item = item.write().await;
             item.meta = vs.meta;
@@ -170,14 +195,22 @@ impl IteratorExt {
             item.cas_counter.store(vs.cas_counter, Ordering::Relaxed);
             item.key.extend(self.itr.peek().as_ref().unwrap().key());
             item.vptr.extend(&vs.value);
-            item.value.clear();
+            item.value.write().await.clear();
         }
 
+        // need fetch value, use new coroutine to load value.
         if self.opt.pre_fetch_values {
-            item.wg.add_running(1);
+            item.read().await.wg.add_running(1);
             tokio::spawn(async move {
                 // FIXME we are not handling errors here.
-                item.read().pre_fetch_value()?;
+                {
+                    let item = item.read().await;
+                    item.pre_fetch_value().await;
+                }
+                // {
+                //     let rd = item.read().await;
+                //     rd.pre_fetch_value().await;
+                // }
                 item.read().await.wg.done();
             });
         }

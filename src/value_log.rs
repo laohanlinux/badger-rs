@@ -510,6 +510,26 @@ impl ValueLogCore {
         })
     }
 
+    pub async fn async_read(
+        &self,
+        vp: &ValuePointer,
+        consumer: impl for<'a> FnMut(&'a [u8]) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+    ) -> Result<()> {
+        // Check for valid offset if we are reading to writable log.
+        if vp.fid == self.max_fid.load(Ordering::Acquire)
+            && vp.offset >= self.writable_log_offset.load(Ordering::Acquire)
+        {
+            return Err(format!(
+                "Invalid value pointer offset: {} greater than current offset: {}",
+                vp.offset,
+                self.writable_log_offset.load(Ordering::Acquire)
+            )
+            .into());
+        }
+        self.async_read_bytes(vp, consumer).await?;
+        Ok(())
+    }
+
     /// Replays the value log. The kv provide is only valid for the lifetime of function call.
     pub async fn replay(
         &self,
@@ -571,11 +591,12 @@ impl ValueLogCore {
         Ok(())
     }
 
+    // Delete log file after no refernece of LogFile
     fn delete_log_file_by_fid(&self, log_file: Arc<RwLock<LogFile>>) -> Result<()> {
         if let Some(mp) = log_file.write()._mmap.take() {
             mp.get_mut_mmap().flush()?;
         }
-        if let Some(fp) = log_file.read().fd.take() {
+        if let Some(fp) = log_file.write().fd.take() {
             fp.sync_all()?;
         }
         remove_file(self.fpath(log_file.read().fid))?;
@@ -606,6 +627,24 @@ impl ValueLogCore {
         let lf = log_file.read();
         let buffer = lf.read(vp)?;
         consumer(buffer)
+    }
+
+    async fn async_read_bytes(
+        &self,
+        vp: &ValuePointer,
+        mut consumer: impl for<'a> FnMut(&'a [u8]) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+    ) -> Result<()> {
+        let log_file = self.pick_log_by_vlog_id(&vp.fid);
+        let lf = log_file.read();
+        let buffer = lf.read(vp)?;
+        let mut h = Header::default();
+        h.dec(&mut Cursor::new(buffer))?;
+        if (h.meta & MetaBit::BIT_DELETE.bits) != 0 {
+            // Tombstone key
+            return consumer(&[0u8]).await;
+        }
+        let n = Header::encoded_size() + h.k_len as usize;
+        consumer(&buffer[n..n + (h.v_len as usize)]).await
     }
 
     // write is thread-unsafe by design and should not be called concurrently.
