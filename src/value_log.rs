@@ -31,7 +31,7 @@ use std::{fmt, fs, io, ptr, thread};
 use tabled::object::Entity::Cell;
 use tokio::macros::support::thread_rng_n;
 
-use crate::kv::{ArcKV, WeakKV, KV};
+use crate::kv::{ArcKV, BoxKV, WeakKV, KV};
 use crate::log_file::LogFile;
 use crate::options::Options;
 use crate::skl::BlockBytes;
@@ -342,7 +342,7 @@ pub struct ValueLogCore {
     writable_log_offset: AtomicU32,
     buf: ArcRW<BufWriter<Vec<u8>>>,
     opt: Options,
-    kv: *const KV,
+    kv: BoxKV,
     // Only allow one GC at a time.
     garbage_ch: Channel<()>,
 }
@@ -359,7 +359,7 @@ impl Default for ValueLogCore {
             writable_log_offset: Default::default(),
             buf: Arc::new(RwLock::new(BufWriter::new(vec![0u8; 0]))),
             opt: Default::default(),
-            kv: ptr::null_mut(),
+            kv: BoxKV::new(ptr::null_mut()),
             garbage_ch: Channel::new(1),
         }
     }
@@ -402,7 +402,7 @@ impl ValueLogCore {
     pub(crate) fn open(&mut self, kv: *const KV, opt: Options) -> Result<()> {
         self.dir_path = opt.value_dir.clone();
         self.opt = opt;
-        self.kv = kv;
+        self.kv = BoxKV::new(kv);
         self.open_create_files()?;
         // todo add garbage and metrics
         self.garbage_ch = Channel::new(1);
@@ -410,7 +410,7 @@ impl ValueLogCore {
     }
 
     fn get_kv(&self) -> &KV {
-        unsafe { &*self.kv }
+        unsafe { &*self.kv.kv }
     }
 
     pub fn close(&self) -> Result<()> {
@@ -513,7 +513,7 @@ impl ValueLogCore {
     pub async fn async_read(
         &self,
         vp: &ValuePointer,
-        consumer: impl for<'a> FnMut(&'a [u8]) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+        consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // Check for valid offset if we are reading to writable log.
         if vp.fid == self.max_fid.load(Ordering::Acquire)
@@ -569,6 +569,10 @@ impl ValueLogCore {
         self.writable_log_offset
             .store(last_offset as u32, Ordering::Release);
         Ok(())
+    }
+
+    pub(crate) fn incr_iterator_count(&self) {
+        self.num_active_iterators.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn decr_iterator_count(&self) -> Result<()> {
@@ -632,19 +636,17 @@ impl ValueLogCore {
     async fn async_read_bytes(
         &self,
         vp: &ValuePointer,
-        mut consumer: impl for<'a> FnMut(&'a [u8]) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
-        let log_file = self.pick_log_by_vlog_id(&vp.fid);
-        let lf = log_file.read();
-        let buffer = lf.read(vp)?;
+        let mut buffer = self.pick_log_by_vlog_id(&vp.fid).read().read(&vp)?.to_vec();
+        let value_buffer = buffer.split_off(Header::encoded_size());
         let mut h = Header::default();
         h.dec(&mut Cursor::new(buffer))?;
         if (h.meta & MetaBit::BIT_DELETE.bits) != 0 {
             // Tombstone key
-            return consumer(&[0u8]).await;
+            return consumer(vec![]).await;
         }
-        let n = Header::encoded_size() + h.k_len as usize;
-        consumer(&buffer[n..n + (h.v_len as usize)]).await
+        consumer(value_buffer).await
     }
 
     // write is thread-unsafe by design and should not be called concurrently.

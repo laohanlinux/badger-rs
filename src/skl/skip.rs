@@ -1,4 +1,5 @@
 use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
+use crate::Xiterator;
 use log::info;
 use rand::random;
 use serde_json::Value;
@@ -415,6 +416,41 @@ impl Display for SkipList {
         let table = Table::new(kv).to_string();
         writeln!(f, "SkipList=>").unwrap();
         writeln!(f, "{}", table)
+    }
+}
+
+// A unidirectional memetable iterator. It is a thin wrapper around
+// `Iterator`. We like to keep `Iterator` as before, because it is more powerful and
+// we might support bidirectional iterations in the  future.
+pub struct UniIterator {}
+
+// An iterator over SkipList object. for new objects, you just
+// need to initialize Iterator.list.
+pub struct SkipIterator {
+    st: SkipList,
+    node: NonNull<Node>,
+}
+
+impl<'a> Xiterator for SkipIterator<'a> {
+    type Output = &'a Node;
+    fn next(&self) -> Option<Self::Output> {
+        todo!()
+    }
+
+    fn rewind(&self) -> Option<Self::Output> {
+        todo!()
+    }
+
+    fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+        todo!()
+    }
+
+    fn peek(&self) -> Option<Self::Output> {
+        todo!()
+    }
+
+    fn close(&self) {
+        self.st.decr_ref();
     }
 }
 

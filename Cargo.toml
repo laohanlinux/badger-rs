@@ -46,6 +46,7 @@ dyn-clone = "1.0.10"
 eieio = "1.0.0"
 either = "1.8.1"
 enum-unitary = "0.5.0"
+atom_box = "0.1.2"
 [dev-dependencies]
 tracing-subscriber = "0.3.16"
 tracing-log = "0.1.3"

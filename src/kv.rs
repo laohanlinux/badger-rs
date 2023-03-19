@@ -1,9 +1,9 @@
-use crate::iterator::KVItemInner;
+use crate::iterator::{IteratorExt, KVItemInner};
 use crate::levels::{LevelsController, XLevelsController};
 use crate::manifest::{open_or_create_manifest_file, Manifest, ManifestFile};
 use crate::options::Options;
 use crate::table::builder::Builder;
-use crate::table::iterator::IteratorImpl;
+use crate::table::iterator::{IteratorImpl, IteratorItem};
 use crate::table::table::{new_file_name, Table, TableCore};
 use crate::types::{ArcMx, Channel, Closer, TArcMx, XArc, XWeak};
 use crate::value_log::{
@@ -13,7 +13,7 @@ use crate::y::{
     async_sync_directory, create_synced_file, sync_directory, Encode, Result, ValueStruct,
 };
 use crate::Error::{NotFound, Unexpected};
-use crate::{Decode, Error, Node, SkipList, SkipListManager};
+use crate::{Decode, Error, Node, SkipList, SkipListManager, Xiterator};
 use atomic::Atomic;
 use bytes::BufMut;
 use crossbeam_epoch::Shared;
@@ -38,9 +38,9 @@ use tokio::fs::create_dir_all;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
-const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
+pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
 // Prefix for internal keys used by badger.
-const _HEAD: &[u8; 11] = b"!bager!head"; // For Storing value offset for replay.
+pub const _HEAD: &[u8; 11] = b"!bager!head"; // For Storing value offset for replay.
 
 struct Closers {
     update_size: Closer,
@@ -88,15 +88,15 @@ unsafe impl Send for KV {}
 unsafe impl Sync for KV {}
 
 pub struct BoxKV {
-    kv: *const KV,
+    pub kv: *const KV,
 }
 
 unsafe impl Send for BoxKV {}
 
-unsafe impl Sync for BoxKV{}
+unsafe impl Sync for BoxKV {}
 
 impl BoxKV {
-    fn new(kv: *const KV) -> BoxKV {
+    pub(crate) fn new(kv: *const KV) -> BoxKV {
         BoxKV { kv }
     }
 }
@@ -435,7 +435,7 @@ impl KV {
         let mut b = vec![Request::default()];
         let mut count = 0;
         let mut sz = 0u64;
-        for mut entry in entries {
+        for entry in entries {
             if entry.key.len() > MAX_KEY_SIZE {
                 bad.push(entry);
                 continue;
@@ -462,7 +462,7 @@ impl KV {
             self.write_ch.send(arc_req).await.unwrap();
         }
         if !bad.is_empty() {
-            let mut req = Request::default();
+            let req = Request::default();
             *req.entries.write() =
                 Vec::from_iter(bad.into_iter().map(|bad| RefCell::new(bad)).into_iter());
             let arc_req = ArcRequest::from(req);
@@ -554,6 +554,23 @@ impl ArcKV {
         self.to_ref().closers.writes.signal_and_wait().await;
 
         Ok(())
+    }
+
+    pub async fn new_iterator(&self) -> IteratorExt {
+        let p = crossbeam_epoch::pin();
+        let tables = self.get_mem_tables(&p);
+        defer! {
+            tables.iter().for_each(|table| unsafe {table.as_ref().unwrap().decr_ref()});
+        }
+        self.must_vlog().incr_iterator_count();
+
+        // Create iterators across all the tables involved first.
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        // for tb in tables {
+        //     let iter = Box::new(IteratorImpl::new(tb, false));
+        //     itr.push(iter);
+        // }
+        todo!()
     }
 }
 
@@ -654,17 +671,17 @@ impl ArcKV {
     // asyn yield item value from ValueLog
     pub(crate) async fn yield_item_value(
         &self,
-        item: &KVItemInner,
-        mut consumer: impl for<'a> FnMut(&'a [u8]) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+        item: KVItemInner,
+        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // no value
         if !item.has_value() {
-            return consumer(&[0u8]).await;
+            return consumer(vec![]).await;
         }
 
         // TODO What is this
         if (item.meta() & MetaBit::BIT_VALUE_POINTER.bits()) == 0 {
-            return consumer(item.vptr()).await;
+            return consumer(item.vptr().to_vec()).await;
         }
 
         let mut vptr = ValuePointer::default();
