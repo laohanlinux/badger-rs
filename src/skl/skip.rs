@@ -1,5 +1,7 @@
 use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
+use crate::table::iterator::IteratorItem;
 use crate::Xiterator;
+use atom_box::AtomBox;
 use log::info;
 use rand::random;
 use serde_json::Value;
@@ -426,33 +428,90 @@ pub struct UniIterator {}
 
 // An iterator over SkipList object. for new objects, you just
 // need to initialize Iterator.list.
+// Try GAT lifetime
 pub struct SkipIterator {
     st: SkipList,
-    node: NonNull<Node>,
+    node: AtomicPtr<Node>,
 }
 
-impl<'a> Xiterator for SkipIterator<'a> {
-    type Output = &'a Node;
-    fn next(&self) -> Option<Self::Output> {
-        todo!()
-    }
-
-    fn rewind(&self) -> Option<Self::Output> {
-        todo!()
-    }
-
-    fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-        todo!()
-    }
-
-    fn peek(&self) -> Option<Self::Output> {
-        todo!()
-    }
-
+impl SkipIterator {
+    fn peek(&self) {}
     fn close(&self) {
-        self.st.decr_ref();
+        self.st.decr_ref()
+    }
+
+    // Advance to the next position
+    fn next(&self) -> Option<IteratorItem> {
+        let node = self.node.load(Ordering::Relaxed);
+        if node.is_null() {
+            return None;
+        }
+        let next = self.st.get_next(unsafe { node.as_ref().unwrap() }, 0);
+        let next = next.unwrap() as *const Node as *mut Node;
+        self.node.store(next, Ordering::Relaxed);
+        let key = next.key().to_vec();
+        let (value_offset, val_size) = next.get_value_offset();
+        let value = self.st.arena_ref().get_val(value_offset, val_size);
+        Some(IteratorItem)
     }
 }
+
+// impl Xiterator for SkipIterator {
+//     type Output = IteratorItem;
+//
+//     fn next(&self) -> Option<Self::Output> {
+//         todo!()
+//     }
+//
+//     fn rewind(&self) -> Option<Self::Output> {
+//         todo!()
+//     }
+//
+//     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+//         if self.node.load(Ordering::Relaxed).is_null() {
+//             return None;
+//         }
+//
+//         let node = self.node.load(Ordering::Relaxed);
+//         if node.is_null() {
+//             return None;
+//         }
+//         let key = node.key(self.st.arena_ref()).to_vec();
+//         let value = node.value.load(Ordering::Relaxed);
+//         Some(IteratorItem{ key: node.key(self.st.arena_ref()).to_vec(), value: Default::default() })
+//     }
+//
+//     fn peek(&self) -> Option<Self::Output> {
+//         todo!()
+//     }
+//
+//     fn close(&self) {
+//         todo!()
+//     }
+// }
+
+// impl<'a> Xiterator for SkipIterator<'a> {
+//     type Output = &'a Node;
+//     fn next(&self) -> Option<Self::Output> {
+//         todo!()
+//     }
+//
+//     fn rewind(&self) -> Option<Self::Output> {
+//         todo!()
+//     }
+//
+//     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+//         todo!()
+//     }
+//
+//     fn peek(&self) -> Option<Self::Output> {
+//         todo!()
+//     }
+//
+//     fn close(&self) {
+//         self.st.decr_ref();
+//     }
+// }
 
 mod tests {
     use crate::skl::node::Node;
@@ -891,5 +950,23 @@ mod tests2 {
     #[test]
     fn atomic_swap_skip_list() {
         let mut st = SkipList::new(ARENA_SIZE);
+    }
+
+    #[test]
+    fn gat() {
+        // #![allow(unused)]
+
+        // trait IterableTypes {
+        //     type Item<'me>;
+        //     type Iterator<'me>: Iterator<Item = Self::Item<'me>>;
+        // }
+
+        // trait Iterable: IterableTypes {
+        //     fn iter<'a>(&'a self) -> Self::Iterator<'a>;
+        // }
+
+        // struct GatSimple {}
+
+        // impl GatSimple {}
     }
 }

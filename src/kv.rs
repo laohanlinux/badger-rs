@@ -556,7 +556,7 @@ impl ArcKV {
         Ok(())
     }
 
-    pub async fn new_iterator(&self) -> IteratorExt {
+    pub(crate) async fn new_iterator(&self) -> IteratorExt {
         let p = crossbeam_epoch::pin();
         let tables = self.get_mem_tables(&p);
         defer! {
