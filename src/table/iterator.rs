@@ -245,8 +245,8 @@ impl BlockIterator {
 
 #[derive(Debug, Clone)]
 pub struct IteratorItem {
-    key: Vec<u8>,
-    value: ValueStruct,
+    pub key: Vec<u8>,
+    pub value: ValueStruct,
 }
 
 impl fmt::Display for IteratorItem {

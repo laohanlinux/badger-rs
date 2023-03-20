@@ -435,13 +435,35 @@ pub struct SkipIterator {
 }
 
 impl SkipIterator {
-    fn peek(&self) {}
-    fn close(&self) {
+    pub fn get_item_by_node(&self, node: &Node) -> Option<IteratorItem> {
+        if ptr::eq(node, self.st.get_head()) {
+            return None;
+        }
+        let key = node.key(&self.st.arena);
+        let (value_offset, val_size) = node.get_value_offset();
+        let value = self.st.arena_ref().get_val(value_offset, val_size);
+        Some(IteratorItem {
+            key: key.to_vec(),
+            value,
+        })
+    }
+
+    pub fn peek(&self) -> Option<IteratorItem> {
+        let node = unsafe { self.node.load(Ordering::Relaxed).as_ref().unwrap() };
+        self.get_item_by_node(&node)
+    }
+
+    // returns true iff the iterator is positioned at a valid node.
+    pub fn valid(&self) -> bool {
+        self.peek().is_some()
+    }
+
+    pub fn close(&self) {
         self.st.decr_ref()
     }
 
     // Advance to the next position
-    fn next(&self) -> Option<IteratorItem> {
+    pub fn next(&self) -> Option<IteratorItem> {
         let node = self.node.load(Ordering::Relaxed);
         if node.is_null() {
             return None;
@@ -449,10 +471,61 @@ impl SkipIterator {
         let next = self.st.get_next(unsafe { node.as_ref().unwrap() }, 0);
         let next = next.unwrap() as *const Node as *mut Node;
         self.node.store(next, Ordering::Relaxed);
-        let key = next.key().to_vec();
-        let (value_offset, val_size) = next.get_value_offset();
-        let value = self.st.arena_ref().get_val(value_offset, val_size);
-        Some(IteratorItem)
+        self.get_item_by_node(unsafe { next.as_ref().unwrap() })
+    }
+
+    // Advances to the previous position.
+    pub fn prev(&self) -> Option<IteratorItem> {
+        assert!(self.peek().is_some());
+        let (node, _) = self.st.find_near(self.peek().unwrap().key(), true, false);
+        if node.is_none() {
+            self.set_node(self.st.get_head());
+            return None;
+        }
+        self.set_node(node.unwrap());
+        self.get_item_by_node(node.unwrap())
+    }
+
+    // finds an entry with key <= target.
+    pub fn seek_to_prev(&self, target: &[u8]) -> Option<IteratorItem> {
+        let (node, _) = self.st.find_near(target, true, true); // find <=1
+        if node.is_none() {
+            self.set_node(self.st.get_head());
+            return None;
+        }
+        self.node
+            .store(node.unwrap() as *const Node as *mut Node, Ordering::Relaxed);
+        self.get_item_by_node(node.unwrap())
+    }
+
+    // Seeks position at the first entry in list.
+    // Final state of iterator is valid() iff list is not empty.
+    pub fn seek_to_first(&self) -> Option<IteratorItem> {
+        let node = self.st.get_next(self.st.get_head(), 0);
+        if node.is_none() {
+            self.set_node(self.st.get_head());
+            return None;
+        }
+
+        self.node
+            .store(node.unwrap() as *const Node as *mut Node, Ordering::Relaxed);
+        self.get_item_by_node(node.unwrap())
+    }
+
+    pub fn seek_to_last(&self) -> Option<IteratorItem> {
+        let node = unsafe { self.st.find_last() };
+        if node.is_none() {
+            self.set_node(self.st.get_head());
+            return None;
+        }
+        self.node
+            .store(node.unwrap() as *const Node as *mut Node, Ordering::Relaxed);
+        self.get_item_by_node(node.unwrap())
+    }
+
+    fn set_node(&self, node: &Node) {
+        let node = node as *const Node as *mut Node;
+        self.node.store(node, Ordering::Relaxed);
     }
 }
 
