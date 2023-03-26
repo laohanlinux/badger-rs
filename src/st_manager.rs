@@ -49,6 +49,12 @@ impl SkipListManager {
         st
     }
 
+    pub fn mt_clone(&self) -> SkipList {
+        let p = crossbeam_epoch::pin();
+        let mt = self.mt_ref(&p);
+        unsafe { mt.as_ref().unwrap().clone() }
+    }
+
     pub fn imm(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<SkipListItem>> {
         self.imm.write()
     }

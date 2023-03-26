@@ -179,6 +179,10 @@ impl ManifestFile {
             Err(err) => Err(err),
         };
     }
+
+    pub(crate) fn close(&mut self) {
+        self.fp.take();
+    }
 }
 
 /// Manifest represents the contents of the MANIFEST file in a Badger store.

@@ -418,6 +418,7 @@ impl ValueLogCore {
         for vlog in vlogs.iter() {
             let mut lf = vlog.1.write();
             if *vlog.0 == self.max_fid.load(Ordering::Acquire) {
+                info!("close vlog: {}", vlog.0);
                 let _mmap = lf._mmap.take().unwrap();
                 _mmap.get_mut_mmap().flush()?;
                 lf.fd
@@ -912,7 +913,6 @@ impl ValueLogCore {
 
     pub(crate) async fn wait_on_gc(&self, lc: Closer) {
         defer! {lc.done()};
-        defer! {info!("exit gc worker")};
         lc.wait().await; // wait for lc to be closed.
                          // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
                          // the channel of size 1.
