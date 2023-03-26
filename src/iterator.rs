@@ -136,11 +136,11 @@ impl KVItemInner {
 // Used to set options when iterating over Badger key-value stores.
 pub(crate) struct IteratorOptions {
     // Indicates whether we should prefetch values during iteration and store them.
-    pre_fetch_values: bool,
+    pub(crate) pre_fetch_values: bool,
     // How may KV pairs to prefetch while iterating. Valid only if PrefetchValues is true.
-    pre_fetch_size: isize,
+    pub(crate) pre_fetch_size: isize,
     // Direction of iteration. False is forward, true is backward.
-    reverse: bool,
+    pub(crate) reverse: bool,
 }
 
 pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
@@ -156,10 +156,23 @@ pub(crate) struct IteratorExt {
     opt: IteratorOptions,
     item: ArcRW<Option<KVItem>>,
     data: ArcRW<std::collections::LinkedList<KVItem>>,
-    waste: ArcRW<std::collections::LinkedList<KVItem>>,
 }
 
 impl IteratorExt {
+    pub(crate) fn new(
+        kv: XArc<KV>,
+        itr: MergeIterOverIterator,
+        opt: IteratorOptions,
+    ) -> IteratorExt {
+        IteratorExt {
+            kv,
+            opt,
+            itr,
+            data: ArcRW::default(),
+            item: Arc::new(Default::default()),
+        }
+    }
+
     // Seek to the provided key if present. If absent, if would seek to the next smallest key
     // greater than provided if iterating in the forward direction. Behavior would be reversed is
     // iterating backwards.
@@ -236,7 +249,7 @@ impl IteratorExt {
             meta: 0,
             user_meta: 0,
             cas_counter: Arc::new(Default::default()),
-            wg: Closer::new(),
+            wg: Closer::new("IteratorExt".to_owned()),
             err: Ok(()),
         };
         return KVItem::new(tokio::sync::RwLock::new(inner_item));

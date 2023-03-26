@@ -3,12 +3,11 @@ use awaitgroup::{WaitGroup, Worker};
 use bitflags::bitflags;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crc32fast::Hasher;
-use libc::{difftime, nice};
+use drop_cell::defer;
 use log::info;
 use log::kv::Source;
 use memmap::{Mmap, MmapMut};
 use parking_lot::*;
-use protobuf::well_known_types::api::Mixin;
 use rand::random;
 use serde_json::to_vec;
 use std::cell::{Ref, RefCell, RefMut};
@@ -474,6 +473,7 @@ impl ValueLogCore {
         // If no files are found, creating a new file.
         if vlogs.is_empty() {
             let log_file = self.create_vlog_file(0)?;
+            info!("Create zero vlog {}!!", log_file._path.as_ref());
             vlogs.insert(0, Arc::new(RwLock::new(log_file)));
         }
         Ok(())
@@ -568,6 +568,11 @@ impl ValueLogCore {
             .seek(SeekFrom::End(0))?;
         self.writable_log_offset
             .store(last_offset as u32, Ordering::Release);
+        info!(
+            "After recover, max_id:{}, last_offset:{}",
+            self.max_fid.load(Ordering::Relaxed),
+            last_offset
+        );
         Ok(())
     }
 
@@ -852,7 +857,7 @@ impl ValueLogCore {
         Some(vlog.clone())
     }
 
-    fn pick_log_by_vlog_id(&self, id: &u32) -> Arc<RwLock<LogFile>> {
+    pub(crate) fn pick_log_by_vlog_id(&self, id: &u32) -> Arc<RwLock<LogFile>> {
         let pick_vlogs = self.pick_log_guard();
         let vlogs = pick_vlogs.vlogs.get(id);
         let vlog = vlogs.unwrap();
@@ -905,8 +910,13 @@ impl ValueLogCore {
         Ok(data_file_ids)
     }
 
-    fn wait_gc(&self) {
-        todo!()
+    pub(crate) async fn wait_on_gc(&self, lc: Closer) {
+        defer! {lc.done()};
+        defer! {info!("exit gc worker")};
+        lc.wait().await; // wait for lc to be closed.
+                         // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
+                         // the channel of size 1.
+        self.garbage_ch.send(()).await.unwrap();
     }
 }
 

@@ -424,7 +424,56 @@ impl Display for SkipList {
 // A unidirectional memetable iterator. It is a thin wrapper around
 // `Iterator`. We like to keep `Iterator` as before, because it is more powerful and
 // we might support bidirectional iterations in the  future.
-pub struct UniIterator {}
+pub struct UniIterator {
+    iter: SkipIterator,
+    reversed: bool,
+}
+
+impl UniIterator {
+    pub fn new(st: SkipList, reversed: bool) -> UniIterator {
+        let itr = SkipIterator::new(st);
+        UniIterator {
+            iter: itr,
+            reversed,
+        }
+    }
+}
+
+impl Xiterator for UniIterator {
+    type Output = IteratorItem;
+
+    fn next(&self) -> Option<Self::Output> {
+        if !self.reversed {
+            self.iter.prev()
+        } else {
+            self.iter.next()
+        }
+    }
+
+    fn rewind(&self) -> Option<Self::Output> {
+        if !self.reversed {
+            self.iter.seek_to_first()
+        } else {
+            self.iter.seek_to_first()
+        }
+    }
+
+    fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+        if !self.reversed {
+            self.iter.seek(key)
+        } else {
+            self.iter.seek_to_prev(key)
+        }
+    }
+
+    fn peek(&self) -> Option<Self::Output> {
+        self.iter.peek()
+    }
+
+    fn close(&self) {
+        self.iter.close()
+    }
+}
 
 // An iterator over SkipList object. for new objects, you just
 // need to initialize Iterator.list.
@@ -435,6 +484,13 @@ pub struct SkipIterator {
 }
 
 impl SkipIterator {
+    pub fn new(st: SkipList) -> SkipIterator {
+        SkipIterator {
+            st,
+            node: AtomicPtr::new(ptr::null_mut()),
+        }
+    }
+
     pub fn get_item_by_node(&self, node: &Node) -> Option<IteratorItem> {
         if ptr::eq(node, self.st.get_head()) {
             return None;
@@ -449,8 +505,13 @@ impl SkipIterator {
     }
 
     pub fn peek(&self) -> Option<IteratorItem> {
-        let node = unsafe { self.node.load(Ordering::Relaxed).as_ref().unwrap() };
-        self.get_item_by_node(&node)
+        unsafe {
+            self.node
+                .load(Ordering::Relaxed)
+                .as_ref()
+                .map(|node| self.get_item_by_node(node))
+                .unwrap_or_else(|| None)
+        }
     }
 
     // returns true iff the iterator is positioned at a valid node.
@@ -486,9 +547,21 @@ impl SkipIterator {
         self.get_item_by_node(node.unwrap())
     }
 
+    // Advances to the first entry with a key >= target.
+    pub fn seek(&self, key: &[u8]) -> Option<IteratorItem> {
+        let (node, _) = self.st.find_near(key, false, true); // find >=.
+        if node.is_none() {
+            self.set_node(self.st.get_head());
+            return None;
+        }
+        self.node
+            .store(node.unwrap() as *const Node as *mut Node, Ordering::Relaxed);
+        self.get_item_by_node(node.unwrap())
+    }
+
     // finds an entry with key <= target.
-    pub fn seek_to_prev(&self, target: &[u8]) -> Option<IteratorItem> {
-        let (node, _) = self.st.find_near(target, true, true); // find <=1
+    pub fn seek_to_prev(&self, key: &[u8]) -> Option<IteratorItem> {
+        let (node, _) = self.st.find_near(key, true, true); // find <=1
         if node.is_none() {
             self.set_node(self.st.get_head());
             return None;

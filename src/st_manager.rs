@@ -17,23 +17,35 @@ type SkipListItem = crossbeam_epoch::Atomic<SkipList>;
 
 pub struct SkipListManager {
     share_lock: parking_lot::RwLock<()>,
-    mt: SkipListItem,
+    mt: Option<SkipListItem>,
     imm: Arc<parking_lot::RwLock<Vec<SkipListItem>>>,
 }
 
 impl Default for SkipListManager {
     fn default() -> Self {
-        todo!()
+        SkipListManager {
+            share_lock: parking_lot::RwLock::new(()),
+            mt: None,
+            imm: Arc::new(parking_lot::RwLock::new(vec![])),
+        }
     }
 }
 
 impl SkipListManager {
+    pub fn new(sz: usize) -> SkipListManager {
+        SkipListManager {
+            share_lock: parking_lot::RwLock::new(()),
+            mt: Some(SkipListItem::new(SkipList::new(sz))),
+            imm: Arc::new(parking_lot::RwLock::new(vec![])),
+        }
+    }
+
     pub fn take<'a>(&'a self, p: &'a crossbeam_epoch::Guard) -> Shared<'a, SkipList> {
-        self.mt.load_consume(p)
+        self.mt.as_ref().unwrap().load_consume(p)
     }
 
     pub fn mt_ref<'a>(&'a self, p: &'a crossbeam_epoch::Guard) -> Shared<'a, SkipList> {
-        let st = self.mt.load(Ordering::Relaxed, &p);
+        let st = self.mt.as_ref().unwrap().load(Ordering::Relaxed, &p);
         st
     }
 
@@ -50,6 +62,8 @@ impl SkipListManager {
         self.imm.write().push(st);
         let st = SkipList::new(1000);
         self.mt
+            .as_ref()
+            .unwrap()
             .store(crossbeam_epoch::Owned::new(st), Ordering::Relaxed);
     }
 

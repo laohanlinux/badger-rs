@@ -12,7 +12,7 @@ use async_channel::{
 };
 use atomic::Atomic;
 use crossbeam_epoch::Owned;
-use log::info;
+use log::{info, warn};
 
 use crate::value_log::ValuePointer;
 use range_lock::{VecRangeLock, VecRangeLockGuard};
@@ -126,6 +126,7 @@ impl<T> UnChannel<T> {
 /// down.
 #[derive(Clone)]
 pub struct Closer {
+    name: String,
     closed: Channel<()>,
     wait: Arc<AtomicIsize>,
 }
@@ -138,8 +139,9 @@ impl Drop for Closer {
 
 impl Closer {
     /// create a Closer with *initial* cap Workers
-    pub fn new() -> Self {
+    pub fn new(name: String) -> Self {
         let mut close = Closer {
+            name,
             closed: Channel::new(1),
             wait: Arc::from(AtomicIsize::new(0)),
         };
@@ -176,18 +178,24 @@ impl Closer {
 
     /// Waiting until done
     pub async fn wait(&self) {
+        // loop {
+        //     if self.wait.load(Ordering::Relaxed) <= 0 {
+        //         break;
+        //     }
+        //     sleep(Duration::from_millis(1)).await;
+        // }
+        self.has_been_closed().recv().await;
+    }
+
+    /// Send a close signal and waiting util done
+    pub async fn signal_and_wait(&self) {
+        self.signal();
         loop {
             if self.wait.load(Ordering::Relaxed) <= 0 {
                 break;
             }
             sleep(Duration::from_millis(1)).await;
         }
-    }
-
-    /// Send a close signal and waiting util done
-    pub async fn signal_and_wait(&self) {
-        self.signal();
-        self.wait().await;
     }
 }
 
@@ -284,7 +292,7 @@ impl<T> Deref for XVec<T> {
 fn it_closer() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
-        let closer = Closer::new();
+        let closer = Closer::new("test".to_owned());
         let count = Arc::new(AtomicUsize::new(100));
         for i in 0..count.load(Ordering::Relaxed) {
             let c = closer.spawn();

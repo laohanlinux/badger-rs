@@ -191,6 +191,8 @@ impl LevelsController {
             lc.done();
             return;
         }
+        defer! {lc.done()};
+        defer! {info!("Exit level controller worker");};
         // random sleep avoid all worker compact at same time
         {
             let duration = thread_rng_n(1000);
@@ -398,6 +400,27 @@ impl LevelsController {
             *self.last_unstalled.write().await = SystemTime::now();
         }
         Ok(())
+    }
+
+    pub(crate) fn as_iterator(
+        &self,
+        reverse: bool,
+    ) -> Vec<Box<dyn Xiterator<Output = IteratorItem>>> {
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        for level in self.levels.iter() {
+            if level.level() == 0 {
+                for table in level.tables.read().iter().rev() {
+                    let itr = Box::new(IteratorImpl::new(table.clone(), reverse));
+                    itrs.push(itr);
+                }
+            } else {
+                for table in level.tables.read().iter() {
+                    let itr = Box::new(IteratorImpl::new(table.clone(), reverse));
+                    itrs.push(itr);
+                }
+            }
+        }
+        itrs
     }
 
     // Merge top tables and bot tables to from a List of new tables.

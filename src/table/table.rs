@@ -21,6 +21,8 @@ use std::os::unix::fs::FileExt;
 
 use crate::types::{XArc, XWeak};
 use crate::y::iterator::Xiterator;
+use crate::Error::Unexpected;
+use log::{debug, info};
 use serde_json::to_vec;
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::FileExt;
@@ -387,8 +389,10 @@ pub fn get_id_map(dir: &str) -> HashSet<u64> {
         }
         let fid = parse_file_id(dir_el.file_name().to_str().unwrap());
         if fid.is_err() {
+            debug!("Skip file, {:?}", fid.unwrap_err());
             continue;
         }
+        info!("What dir : {:?} {:?}", fid, dir_el.file_name());
         ids.insert(fid.unwrap());
     }
     ids
@@ -399,7 +403,7 @@ pub fn parse_file_id(name: &str) -> Result<u64> {
     let path = Path::new(name);
     let filename = path.file_name().unwrap().to_str().unwrap();
     if !FILE_SUFFIX.is_suffix_of(filename) {
-        return Ok(0);
+        return Err(format!("invalid file {}", name).into());
     }
     let name = filename.trim_end_matches(FILE_SUFFIX);
     name.parse::<u64>()

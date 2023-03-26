@@ -1,4 +1,4 @@
-use crate::iterator::{IteratorExt, KVItemInner};
+use crate::iterator::{IteratorExt, IteratorOptions, KVItemInner};
 use crate::levels::{LevelsController, XLevelsController};
 use crate::manifest::{open_or_create_manifest_file, Manifest, ManifestFile};
 use crate::options::Options;
@@ -13,7 +13,10 @@ use crate::y::{
     async_sync_directory, create_synced_file, sync_directory, Encode, Result, ValueStruct,
 };
 use crate::Error::{NotFound, Unexpected};
-use crate::{Decode, Error, Node, SkipList, SkipListManager, Xiterator};
+use crate::{
+    Decode, Error, MergeIterOverBuilder, MergeIterOverIterator, Node, SkipList, SkipListManager,
+    UniIterator, Xiterator,
+};
 use atomic::Atomic;
 use bytes::BufMut;
 use crossbeam_epoch::Shared;
@@ -66,7 +69,7 @@ pub struct KV {
     pub vlog: Option<ValueLogCore>,
     pub vptr: crossbeam_epoch::Atomic<ValuePointer>,
     pub manifest: Arc<RwLock<ManifestFile>>,
-    lc: XWeak<LevelsController>,
+    lc: Option<LevelsController>,
     flush_chan: Channel<FlushTask>,
     // write_chan: Channel<Request>,
     dir_lock_guard: File,
@@ -80,6 +83,7 @@ pub struct KV {
     // we use an atomic op.
     last_used_cas_counter: AtomicU64,
     share_lock: tokio::sync::RwLock<()>,
+    // TODO user ctx replace closer
     ctx: tokio_context::context::Context,
     ctx_handle: tokio_context::context::Handle,
 }
@@ -102,7 +106,7 @@ impl BoxKV {
 }
 
 impl KV {
-    async fn open(mut opt: Options) -> Result<XArc<KV>> {
+    pub async fn open(mut opt: Options) -> Result<XArc<KV>> {
         opt.max_batch_size = (15 * opt.max_table_size) / 100;
         opt.max_batch_count = opt.max_batch_size / Node::size() as u64;
         create_dir_all(opt.dir.as_str()).await?;
@@ -116,34 +120,37 @@ impl KV {
             .append(true)
             .create(true)
             .open(Path::new(opt.dir.as_str()).join("dir_lock_guard.lock"))?;
+
         dir_lock_guard.lock_exclusive()?;
         let value_dir_guard = OpenOptions::new()
             .write(true)
             .append(true)
             .create(true)
             .open(Path::new(opt.value_dir.as_str()).join("value_dir_guard.lock"))?;
+
         value_dir_guard.lock_exclusive()?;
         let closers = Closers {
-            update_size: Closer::new(),
-            compactors: Closer::new(),
-            mem_table: Closer::new(),
-            writes: Closer::new(),
-            value_gc: Closer::new(),
+            update_size: Closer::new("update_size".to_owned()),
+            compactors: Closer::new("compactors".to_owned()),
+            mem_table: Closer::new("mem_table".to_owned()),
+            writes: Closer::new("writes".to_owned()),
+            value_gc: Closer::new("value_gc".to_owned()),
         };
+
         let (ctx, h) = tokio_context::context::Context::new();
         let mut out = KV {
             opt: opt.clone(),
             vlog: None,
             vptr: crossbeam_epoch::Atomic::null(),
             manifest: Arc::new(RwLock::new(manifest_file)),
-            lc: XWeak::new(),
+            lc: None,
             flush_chan: Channel::new(1),
             dir_lock_guard,
             value_dir_guard,
             closers,
             write_ch: Channel::new(1),
             last_used_cas_counter: Default::default(),
-            mem_st_manger: Arc::new(SkipListManager::default()),
+            mem_st_manger: Arc::new(SkipListManager::new(opt.arena_size() as usize)),
             share_lock: tokio::sync::RwLock::new(()),
             ctx,
             ctx_handle: h,
@@ -154,12 +161,14 @@ impl KV {
         // handle levels_controller
         let lc = LevelsController::new(manifest.clone(), out.opt.clone()).await?;
         lc.start_compact(out.closers.compactors.clone());
+        out.lc.replace(lc);
         let mut vlog = ValueLogCore::default();
         {
             let kv = unsafe { &out as *const KV };
             vlog.open(kv, opt)?;
         }
-        out.vlog = Some(vlog);
+        out.vlog.replace(vlog);
+
         let xout = XArc::new(out);
 
         // update size
@@ -173,23 +182,20 @@ impl KV {
         {
             let _out = xout.clone();
             tokio::spawn(async move {
-                _out.flush_mem_table(_out.closers.mem_table.clone())
+                _out.flush_mem_table(_out.closers.mem_table.spawn())
                     .await
                     .expect("TODO: panic message");
             });
         }
 
         // Get the lasted ValueLog Recover Pointer
-        let item = xout.get(_HEAD);
-        if item.is_err() {
-            return Err("Retrieving head".into());
-        }
-        let item = item.unwrap();
+        let item = match xout.get(_HEAD) {
+            Err(NotFound) => ValueStruct::default(), // Give it a default value
+            Err(_) => return Err("Retrieving head".into()),
+            Ok(item) => item,
+        };
         let value = &item.value;
-        if value != _HEAD {
-            return Err("Retrieving head".into());
-        }
-
+        assert!(item.value.is_empty() || item.value == _HEAD.to_vec());
         // lastUsedCasCounter will either be the value stored in !badger!head, or some subsequently
         // written value log entry that we replay.  (Subsequent value log entries might be _less_
         // than lastUsedCasCounter, if there was value log gc so we have to max() values while
@@ -198,12 +204,13 @@ impl KV {
             .store(item.cas_counter, Ordering::Relaxed);
 
         let mut vptr = ValuePointer::default();
-        vptr.dec(&mut Cursor::new(value))?;
-
-        let replay_closer = Closer::new();
+        if !item.value.is_empty() {
+            vptr.dec(&mut Cursor::new(value))?;
+        }
+        let replay_closer = Closer::new("tmp_replay".to_owned());
         {
             let _out = xout.clone();
-            let replay_closer = replay_closer.clone();
+            let replay_closer = replay_closer.spawn();
             tokio::spawn(async move {
                 _out.do_writes(replay_closer).await;
             });
@@ -257,9 +264,27 @@ impl KV {
             .await?;
         // Wait for replay to be applied first.
         replay_closer.signal_and_wait().await;
-
         // Mmap writeable log
-        // let lf = xout.must_vlog().files_log.read()[xout.must_vlog().max_fid.load(Ordering::Relaxed)];
+        // let max_fid = xout.must_vlog().max_fid.load(Ordering::Relaxed);
+        // let lf = xout.must_vlog().pick_log_by_vlog_id(&max_fid);
+        // TODO
+
+        {
+            let closer = xout.closers.writes.spawn();
+            let _out = xout.clone();
+            tokio::spawn(async move {
+                _out.do_writes(closer).await;
+            });
+        }
+
+        {
+            let closer = xout.closers.value_gc.spawn();
+            let _out = xout.clone();
+            tokio::spawn(async move {
+                _out.must_vlog().wait_on_gc(closer).await;
+            });
+        }
+
         Ok(xout)
     }
 
@@ -373,6 +398,7 @@ impl KV {
     // async to flush memory table into zero level
     async fn flush_mem_table(&self, lc: Closer) -> Result<()> {
         defer! {lc.done()}
+        defer! {info!("exit flush table worker")};
         while let Ok(task) = self.flush_chan.recv().await {
             // after kv send empty mt, it will close flush_chan, so we should return the job.
             if task.mt.is_none() {
@@ -481,8 +507,8 @@ impl KV {
 }
 
 impl KV {
-    fn must_lc(&self) -> XArc<LevelsController> {
-        let lc = self.lc.upgrade().unwrap();
+    pub(crate) fn must_lc(&self) -> &LevelsController {
+        let lc = self.lc.as_ref().unwrap();
         lc
     }
 
@@ -553,30 +579,63 @@ impl ArcKV {
         // Stop writes next.
         self.to_ref().closers.writes.signal_and_wait().await;
 
+        self.flush_chan
+            .send(FlushTask {
+                mt: None,
+                vptr: ValuePointer::default(),
+            })
+            .await
+            .unwrap();
         Ok(())
     }
 
-    pub(crate) async fn new_iterator(&self) -> IteratorExt {
+    // NewIterator returns a new iterator. Depending upon the options, either only keys, or both
+    // key-value pairs would be fetched. The keys are returned in lexicographically sorted order.
+    // Usage:
+    //   opt := badger.DefaultIteratorOptions
+    //   itr := kv.NewIterator(opt)
+    //   for itr.Rewind(); itr.Valid(); itr.Next() {
+    //     item := itr.Item()
+    //     key := item.Key()
+    //     var val []byte
+    //     err = item.Value(func(v []byte) {
+    //         val = make([]byte, len(v))
+    // 	       copy(val, v)
+    //     }) 	// This could block while value is fetched from value log.
+    //          // For key only iteration, set opt.PrefetchValues to false, and don't call
+    //          // item.Value(func(v []byte)).
+    //
+    //     // Remember that both key, val would become invalid in the next iteration of the loop.
+    //     // So, if you need access to them outside, copy them or parse them.
+    //   }
+    //   itr.Close()
+    pub(crate) async fn new_iterator(&self, opt: IteratorOptions) -> IteratorExt {
         let p = crossbeam_epoch::pin();
         let tables = self.get_mem_tables(&p);
         defer! {
             tables.iter().for_each(|table| unsafe {table.as_ref().unwrap().decr_ref()});
         }
+        // add vlog reference.
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
         let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
-        // for tb in tables {
-        //     let iter = Box::new(IteratorImpl::new(tb, false));
-        //     itr.push(iter);
-        // }
-        todo!()
+        for tb in tables.clone() {
+            let st = unsafe { tb.as_ref().unwrap().clone() };
+            let iter = Box::new(UniIterator::new(st, opt.reverse));
+            itrs.push(iter);
+        }
+        itrs.extend(self.must_lc().as_iterator(opt.reverse));
+        let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
+        IteratorExt::new(self.clone(), mitr, opt)
     }
 }
 
 impl ArcKV {
     async fn do_writes(&self, lc: Closer) {
         info!("start do writes task!");
+        defer! {lc.done();};
+        defer! {info!("exit do write woker")};
         // TODO add metrics
         let has_been_close = lc.has_been_closed();
         let write_ch = self.write_ch.clone();
@@ -706,4 +765,23 @@ async fn write_level0_table(st: &SkipList, f: &mut tokio::fs::File) -> Result<()
 
 fn arena_size(opt: &Options) -> usize {
     (opt.max_table_size + opt.max_batch_size + opt.max_batch_count * Node::size() as u64) as usize
+}
+
+#[test]
+fn t_pointer() {
+    struct Ext {
+        v: Vec<u32>,
+        name: String,
+    }
+
+    let t = Ext {
+        v: vec![],
+        name: "Name".to_owned(),
+    };
+
+    let p = unsafe { &t as *const Ext };
+
+    let arc_p = Arc::new(t);
+
+    print!("==> {:?}", p);
 }

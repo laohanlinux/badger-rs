@@ -104,7 +104,15 @@ impl Error {
 
     pub fn is_io_existing(&self) -> bool {
         match self {
-            Error::StdIO(err) if err.kind() == ErrorKind::AlreadyExists => true,
+            Error::StdIO(err) => {
+                if err.kind() == io::ErrorKind::AlreadyExists {
+                    return true;
+                }
+                if let Some(code) = err.raw_os_error() {
+                    return code == 2;
+                }
+                false
+            }
             _ => false,
         }
     }

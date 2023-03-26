@@ -16,7 +16,6 @@
 #![feature(arc_into_inner)]
 #![feature(async_closure)]
 #![feature(async_iterator)]
-#![feature(atomic_mut_ptr)]
 
 use std::io;
 use std::mem::align_of;
@@ -43,6 +42,10 @@ mod pb;
 mod st_manager;
 #[cfg(test)]
 mod test_util;
+#[cfg(test)]
+mod kv_test;
+
+mod db;
 
 pub use skl::*;
 pub use st_manager::*;
