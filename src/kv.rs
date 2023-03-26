@@ -48,7 +48,7 @@ pub const _HEAD: &[u8; 11] = b"!bager!head"; // For Storing value offset for rep
 struct Closers {
     update_size: Closer,
     compactors: Closer,
-    mem_table: Closer,
+    mem_table: Closer, // Wait flush job exit
     writes: Closer,
     value_gc: Closer,
 }
@@ -165,7 +165,7 @@ impl KV {
         let mut vlog = ValueLogCore::default();
         {
             let kv = unsafe { &out as *const KV };
-            vlog.open(kv, opt)?;
+            vlog.open(kv, opt.clone())?;
         }
         out.vlog.replace(vlog);
 
@@ -265,8 +265,9 @@ impl KV {
         // Wait for replay to be applied first.
         replay_closer.signal_and_wait().await;
         // Mmap writeable log
-        // let max_fid = xout.must_vlog().max_fid.load(Ordering::Relaxed);
-        // let lf = xout.must_vlog().pick_log_by_vlog_id(&max_fid);
+        let max_fid = xout.must_vlog().max_fid.load(Ordering::Relaxed);
+        let lf = xout.must_vlog().pick_log_by_vlog_id(&max_fid);
+        lf.write().set_write(opt.clone().value_log_file_size * 2)?;
         // TODO
 
         {
@@ -286,21 +287,6 @@ impl KV {
         }
 
         Ok(xout)
-    }
-
-    /// close kv, should be call only once
-    pub async fn close(&self) -> Result<()> {
-        self.dir_lock_guard
-            .unlock()
-            .map_err(|err| Unexpected(err.to_string()))?;
-        self.value_dir_guard
-            .unlock()
-            .map_err(|err| Unexpected(err.to_string()))?;
-        self.closers.compactors.signal_and_wait().await;
-        self.closers.mem_table.signal_and_wait().await;
-        self.closers.writes.signal_and_wait().await;
-        self.closers.update_size.signal_and_wait().await;
-        Ok(())
     }
 }
 
@@ -398,7 +384,6 @@ impl KV {
     // async to flush memory table into zero level
     async fn flush_mem_table(&self, lc: Closer) -> Result<()> {
         defer! {lc.done()}
-        defer! {info!("exit flush table worker")};
         while let Ok(task) = self.flush_chan.recv().await {
             // after kv send empty mt, it will close flush_chan, so we should return the job.
             if task.mt.is_none() {
@@ -547,7 +532,6 @@ impl ArcKV {
     pub async fn spawn_update_size(&self) {
         let lc = self.closers.update_size.spawn();
         defer! {lc.done()}
-        defer! {info!("exit update size worker");}
 
         let mut tk = tokio::time::interval(tokio::time::Duration::from_secs(5 * 60));
         let dir = self.opt.dir.clone();
@@ -572,6 +556,8 @@ impl ArcKV {
         self.manifest.write().await
     }
 
+    /// Closes a KV. It's crucial to call it to ensure all the pending updates
+    /// make their way to disk.
     pub async fn close(&self) -> Result<()> {
         info!("Closing database");
         // Stop value GC first;
@@ -579,6 +565,34 @@ impl ArcKV {
         // Stop writes next.
         self.to_ref().closers.writes.signal_and_wait().await;
 
+        // Now close the value log.
+        self.must_vlog().close()?;
+
+        // Make sure that block writer is done pushing stuff into memtable!
+        // Otherwise, you will have a race condition: we are trying to flush memtables
+        // and remove them completely, while the block / memtable writer is still trying
+        // to push stuff into the memtable. This will also resolve the value
+        // offset problem: as we push into memtable, we update value offsets there.
+        if !self.must_mt().empty() {
+            info!("Flushing memtable!");
+            let vptr = unsafe {
+                self.vptr
+                    .load(Ordering::Relaxed, &crossbeam_epoch::pin())
+                    .as_ref()
+                    .clone()
+                    .unwrap()
+                    .clone()
+            };
+            self.flush_chan
+                .send(FlushTask {
+                    mt: Some(self.mem_st_manger.mt_clone()),
+                    vptr,
+                })
+                .await
+                .unwrap();
+        }
+
+        // Tell flusher to quit.
         self.flush_chan
             .send(FlushTask {
                 mt: None,
@@ -586,6 +600,26 @@ impl ArcKV {
             })
             .await
             .unwrap();
+        self.closers.mem_table.signal_and_wait().await;
+        info!("Memtable flushed!");
+
+        self.closers.compactors.signal_and_wait().await;
+        info!("Compaction finished!");
+
+        self.must_lc().close()?;
+
+        info!("Waiting for closer");
+        self.closers.update_size.signal_and_wait().await;
+
+        self.dir_lock_guard.unlock()?;
+        self.value_dir_guard.unlock()?;
+
+        self.manifest.write().await.close();
+        // Fsync directions to ensure that lock file, and any other removed files whose directory
+        // we haven't specifically fsynced, are guaranteed to have their directory entry removal
+        // persisted to disk.
+        async_sync_directory(self.opt.dir.clone().to_string()).await?;
+        async_sync_directory(self.opt.value_dir.clone().to_string()).await?;
         Ok(())
     }
 
@@ -635,7 +669,6 @@ impl ArcKV {
     async fn do_writes(&self, lc: Closer) {
         info!("start do writes task!");
         defer! {lc.done();};
-        defer! {info!("exit do write woker")};
         // TODO add metrics
         let has_been_close = lc.has_been_closed();
         let write_ch = self.write_ch.clone();

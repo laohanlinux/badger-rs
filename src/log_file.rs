@@ -249,6 +249,14 @@ impl LogFile {
         self.open_read_only()
     }
 
+    pub(crate) fn set_write(&mut self, sz: u64) -> Result<()> {
+        self.fd.as_mut().unwrap().set_len(sz as u64)?;
+        let mut _mmap = unsafe { Mmap::map(&self.fd.as_ref().unwrap())?.make_mut()? };
+        self._mmap.replace(MmapType(Either::Right(_mmap)));
+        self.sz = sz as u32;
+        Ok(())
+    }
+
     // return mmap slice
     fn mmap_slice(&self) -> &[u8] {
         let mmap = self._mmap.as_ref().unwrap();

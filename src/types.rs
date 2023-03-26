@@ -12,6 +12,7 @@ use async_channel::{
 };
 use atomic::Atomic;
 use crossbeam_epoch::Owned;
+use libc::regoff_t;
 use log::{info, warn};
 
 use crate::value_log::ValuePointer;
@@ -134,6 +135,11 @@ pub struct Closer {
 impl Drop for Closer {
     fn drop(&mut self) {
         assert!(self.wait.load(Ordering::Relaxed) >= 0, "Sanity check!");
+        info!(
+            "Worker-{}-{} exited",
+            self.name,
+            self.wait.load(Ordering::Relaxed)
+        );
     }
 }
 
@@ -178,13 +184,17 @@ impl Closer {
 
     /// Waiting until done
     pub async fn wait(&self) {
-        // loop {
-        //     if self.wait.load(Ordering::Relaxed) <= 0 {
-        //         break;
-        //     }
-        //     sleep(Duration::from_millis(1)).await;
-        // }
-        self.has_been_closed().recv().await;
+        loop {
+            if self.wait.load(Ordering::Relaxed) <= 0 {
+                break;
+            }
+            match self.has_been_closed().try_recv() {
+                Err(err) if err.is_closed() => return,
+                Err(_) => {}
+                Ok(()) => return,
+            }
+            tokio::time::sleep(Duration::from_micros(1)).await;
+        }
     }
 
     /// Send a close signal and waiting util done
@@ -194,7 +204,7 @@ impl Closer {
             if self.wait.load(Ordering::Relaxed) <= 0 {
                 break;
             }
-            sleep(Duration::from_millis(1)).await;
+            sleep(Duration::from_nanos(1000)).await;
         }
     }
 }
@@ -298,7 +308,6 @@ fn it_closer() {
             let c = closer.spawn();
             let n = count.clone();
             tokio::spawn(async move {
-                sleep(Duration::from_millis(10000)).await;
                 n.fetch_sub(1, Ordering::Relaxed);
                 c.done();
             });

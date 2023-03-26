@@ -146,7 +146,7 @@ impl LevelsController {
         Ok(())
     }
 
-    fn close(&self) -> Result<()> {
+    pub(crate) fn close(&self) -> Result<()> {
         self.cleanup_levels()
     }
 
@@ -192,7 +192,6 @@ impl LevelsController {
             return;
         }
         defer! {lc.done()};
-        defer! {info!("Exit level controller worker");};
         // random sleep avoid all worker compact at same time
         {
             let duration = thread_rng_n(1000);
