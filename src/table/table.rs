@@ -7,6 +7,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 use filename::file_name;
 use growable_bloom_filter::GrowableBloom;
 use memmap::{Mmap, MmapMut};
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::fs::{read_dir, remove_file, File};
@@ -20,6 +21,8 @@ use std::os::unix::fs::FileExt;
 
 use crate::types::{XArc, XWeak};
 use crate::y::iterator::Xiterator;
+use crate::Error::Unexpected;
+use log::{debug, info};
 use serde_json::to_vec;
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::FileExt;
@@ -52,25 +55,31 @@ impl Display for KeyOffset {
 pub type Table = XArc<TableCore>;
 pub type WeakTable = XWeak<TableCore>;
 
+impl From<TableCore> for Table {
+    fn from(value: TableCore) -> Self {
+        Table::new(value)
+    }
+}
+
 impl Table {
     pub fn incr_ref(&self) {
-        self.x.incr_ref()
+        self.to_ref().incr_ref()
     }
 
     pub fn decr_ref(&self) {
-        self.x.decr_ref()
+        self.to_ref().decr_ref()
     }
 
     pub fn size(&self) -> usize {
-        self.x.size()
+        self.to_ref().size()
     }
 
     pub fn biggest(&self) -> &[u8] {
-        &self.x.biggest
+        &self.biggest
     }
 
     pub fn smallest(&self) -> &[u8] {
-        &self.x.smallest
+        &self.smallest
     }
 }
 
@@ -142,11 +151,11 @@ impl TableCore {
                 .or_else(|| Some(vec![]))
         }
         .unwrap();
-        let mut table = Arc::into_inner(table_ref.x).unwrap();
-        table.biggest = biggest;
-        table.smallest = smallest;
-        println!("open table ==> {}", table);
-        Ok(table)
+        let mut tc = table_ref.to_inner().unwrap();
+        tc.biggest = biggest;
+        tc.smallest = smallest;
+        println!("open table ==> {}", tc);
+        Ok(tc)
     }
 
     // increments the refcount (having to do with whether the file should be deleted)
@@ -380,8 +389,10 @@ pub fn get_id_map(dir: &str) -> HashSet<u64> {
         }
         let fid = parse_file_id(dir_el.file_name().to_str().unwrap());
         if fid.is_err() {
+            debug!("Skip file, {:?}", fid.unwrap_err());
             continue;
         }
+        info!("What dir : {:?} {:?}", fid, dir_el.file_name());
         ids.insert(fid.unwrap());
     }
     ids
@@ -392,7 +403,7 @@ pub fn parse_file_id(name: &str) -> Result<u64> {
     let path = Path::new(name);
     let filename = path.file_name().unwrap().to_str().unwrap();
     if !FILE_SUFFIX.is_suffix_of(filename) {
-        return Ok(0);
+        return Err(format!("invalid file {}", name).into());
     }
     let name = filename.trim_end_matches(FILE_SUFFIX);
     name.parse::<u64>()

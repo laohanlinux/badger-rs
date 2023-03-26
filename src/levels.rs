@@ -1,17 +1,20 @@
 use crate::compaction::{CompactStatus, KeyRange, LevelCompactStatus, INFO_RANGE};
 use crate::kv::{ArcKV, WeakKV, KV};
 use crate::level_handler::{LevelHandler, LevelHandlerInner};
-use crate::manifest::{Manifest, ManifestChangeBuilder};
+use crate::manifest::{Manifest, ManifestChangeBuilder, ManifestFile};
+use crate::options::Options;
 use crate::pb::badgerpb3::manifest_change::Operation::{CREATE, DELETE};
 use crate::pb::badgerpb3::ManifestChange;
 use crate::table::builder::Builder;
 use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
 use crate::table::table::{get_id_map, new_file_name, Table, TableCore};
 use crate::types::{Closer, XArc, XWeak};
-use crate::y::{create_synced_file, open_existing_synced_file, sync_directory};
-use crate::Result;
+use crate::y::{
+    async_sync_directory, create_synced_file, open_existing_synced_file, sync_directory,
+};
 use crate::Xiterator;
 use crate::{MergeIterOverBuilder, MergeIterOverIterator};
+use crate::{Result, ValueStruct};
 use atomic::Ordering;
 use awaitgroup::WaitGroup;
 use drop_cell::defer;
@@ -29,36 +32,34 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::vec;
 use tokio::macros::support::thread_rng_n;
+use tokio::time::sleep;
 
 #[derive(Clone)]
 pub(crate) struct LevelsController {
     // The following are initialized once and const
     levels: Arc<Vec<LevelHandler>>,
-    kv: WeakKV,
     next_file_id: Arc<AtomicU64>,
     // For ending compactions.
     compact_worker_wg: Arc<WaitGroup>,
     // Store compact status that will be run or has running
     c_status: Arc<CompactStatus>,
+    manifest: Arc<tokio::sync::RwLock<ManifestFile>>,
+    opt: Options,
+    last_unstalled: Arc<tokio::sync::RwLock<SystemTime>>,
 }
 
-unsafe impl Sync for LevelsController {}
-
-unsafe impl Send for LevelsController {}
-
-impl Default for LevelsController {
-    fn default() -> Self {
-        todo!()
-    }
-}
+pub(crate) type XLevelsController = XArc<LevelHandler>;
 
 impl LevelsController {
-    fn new(kv: ArcKV, mf: &Manifest) -> Result<LevelsController> {
-        assert!(kv.x.opt.num_level_zero_tables_stall > kv.x.opt.num_level_zero_tables);
+    pub(crate) async fn new(
+        manifest: Arc<tokio::sync::RwLock<ManifestFile>>,
+        opt: Options,
+    ) -> Result<LevelsController> {
+        assert!(opt.num_level_zero_tables_stall > opt.num_level_zero_tables);
         let mut levels = vec![];
         let cstatus = CompactStatus::default();
-        for i in 0..kv.x.opt.max_levels {
-            let lh = LevelHandlerInner::new(WeakKV::from(&kv), i);
+        for i in 0..opt.max_levels {
+            let lh = LevelHandlerInner::new(opt.clone(), i);
             levels.push(LevelHandler::from(lh));
             if i == 0 {
                 // Do nothing
@@ -66,39 +67,48 @@ impl LevelsController {
                 // Level 1 probably shouldn't be too much bigger than level 0.
                 levels[i]
                     .max_total_size
-                    .store(kv.opt.level_one_size, Ordering::Relaxed);
+                    .store(opt.level_one_size, Ordering::Relaxed);
             } else {
                 levels[i].max_total_size.store(
                     levels[i - 1].max_total_size.load(Ordering::Relaxed)
-                        * kv.opt.level_size_multiplier,
+                        * opt.level_size_multiplier,
                     Ordering::Relaxed,
                 );
             }
             cstatus.levels.write().push(LevelCompactStatus::default());
         }
         // Compare manifest against directory, check for existent/non-existent files, and remove.
-        revert_to_manifest(&kv, mf, get_id_map(&kv.opt.dir))?;
+        let mf = manifest.read().await.manifest.clone();
+        {
+            revert_to_manifest(opt.dir.as_str(), &mf, get_id_map(&opt.dir)).await?;
+        }
 
         // Some files may be deleted. Let's reload.
         let mut tables: Vec<Vec<Table>> = vec![vec![]; levels.len()];
         let mut max_file_id = 0;
-        for (file_id, table_manifest) in &mf.tables {
-            let file_name = new_file_name(*file_id, kv.opt.dir.as_str());
-            let fd = open_existing_synced_file(&file_name, true);
-            if fd.is_err() {
-                return Err(
-                    format!("Openfile file: {}, err: {:?}", file_name, fd.unwrap_err()).into(),
-                );
-            }
+        {
+            let mf = mf.write().await;
+            for (file_id, table_manifest) in &mf.tables {
+                let file_name = new_file_name(*file_id, opt.dir.as_str());
+                let fd = open_existing_synced_file(&file_name, true);
+                if fd.is_err() {
+                    return Err(format!(
+                        "Openfile file: {}, err: {:?}",
+                        file_name,
+                        fd.unwrap_err()
+                    )
+                    .into());
+                }
 
-            let tb = TableCore::open_table(fd.unwrap(), &file_name, kv.opt.table_loading_mode);
-            if let Err(err) = tb {
-                return Err(format!("Openfile file: {}, err: {:?}", file_name, err).into());
-            }
-            let table = Table::new(tb.unwrap());
-            tables[table_manifest.level as usize].push(table);
-            if *file_id > max_file_id {
-                max_file_id = *file_id;
+                let tb = TableCore::open_table(fd.unwrap(), &file_name, opt.table_loading_mode);
+                if let Err(err) = tb {
+                    return Err(format!("Openfile file: {}, err: {:?}", file_name, err).into());
+                }
+                let table = Table::new(tb.unwrap());
+                tables[table_manifest.level as usize].push(table);
+                if *file_id > max_file_id {
+                    max_file_id = *file_id;
+                }
             }
         }
 
@@ -106,21 +116,22 @@ impl LevelsController {
         for (i, tbls) in tables.into_iter().enumerate() {
             levels[i].init_tables(tbls);
         }
-
         // Make sure key ranges do not overlap etc.
         let level_controller = LevelsController {
             levels: Arc::new(levels),
-            kv: WeakKV::from(&kv),
             next_file_id: Arc::new(AtomicU64::new(next_file_id)),
             compact_worker_wg: Arc::new(Default::default()),
             c_status: Arc::new(cstatus),
+            manifest,
+            opt: opt.clone(),
+            last_unstalled: Arc::new(tokio::sync::RwLock::new(SystemTime::now())),
         };
         if let Err(err) = level_controller.validate() {
             let _ = level_controller.cleanup_levels();
             return Err(format!("Level validation, err:{}", err).into());
         }
         // Sync directory (because we have at least removed some files, or previously created the manifest file).
-        if let Err(err) = sync_directory(kv.opt.dir.as_str()) {
+        if let Err(err) = async_sync_directory(*opt.dir.clone()).await {
             let _ = level_controller.close();
             return Err(err);
         }
@@ -139,6 +150,22 @@ impl LevelsController {
         self.cleanup_levels()
     }
 
+    // returns the found value if any. If not found, we return nil.
+    pub(crate) fn get(&self, key: &[u8]) -> Option<ValueStruct> {
+        // It's important that we iterate the levels from 0 on upward.  The reason is, if we iterated
+        // in opposite order, or in parallel (naively calling all the h.RLock() in some order) we could
+        // read level L's tables post-compaction and level L+1's tables pre-compaction.  (If we do
+        // parallelize this, we will need to call the h.RLock() function by increasing order of level
+        // number.)
+        for h in self.levels.iter() {
+            let item = h.get(key);
+            if item.is_some() {
+                return Some(item.unwrap().value().clone());
+            }
+        }
+        None
+    }
+
     // cleanup all level's handler
     fn cleanup_levels(&self) -> Result<()> {
         for level in self.levels.iter() {
@@ -148,8 +175,8 @@ impl LevelsController {
     }
 
     // start compact
-    fn start_compact(&self, lc: Closer) {
-        for i in 0..self.must_kv().opt.num_compactors {
+    pub(crate) fn start_compact(&self, lc: Closer) {
+        for i in 0..self.opt.num_compactors {
             let lc = lc.spawn();
             let _self = self.clone();
             tokio::spawn(async move {
@@ -160,10 +187,12 @@ impl LevelsController {
 
     // compact worker
     async fn run_worker(&self, lc: Closer) {
-        if self.must_kv().opt.do_not_compact {
+        if self.opt.do_not_compact {
             lc.done();
             return;
         }
+        defer! {lc.done()};
+        defer! {info!("Exit level controller worker");};
         // random sleep avoid all worker compact at same time
         {
             let duration = thread_rng_n(1000);
@@ -203,10 +232,8 @@ impl LevelsController {
     // Picks some table on level l and compacts it away to the next level.
     async fn do_compact(&self, p: CompactionPriority) -> Result<bool> {
         let l = p.level;
-        assert!(l + 1 < self.must_kv().opt.max_levels); //  Sanity check.
-        let mut cd = CompactDef::default();
-        cd.this_level = (self.levels[l]).clone();
-        cd.next_level = (self.levels[l + 1]).clone();
+        assert!(l + 1 < self.opt.max_levels); //  Sanity check.
+        let mut cd = CompactDef::new(self.levels[l].clone(), self.levels[l + 1].clone());
         info!("Got compaction priority: {:?}", p);
         // While picking tables to be compacted, both level's tables are expected to
         // remain unchanged.
@@ -257,8 +284,7 @@ impl LevelsController {
                 .with_op(CREATE)
                 .build();
             let changes = vec![delete_change, create_change];
-            let kv = self.must_kv();
-            let mut manifest = kv.manifest.write().await;
+            let mut manifest = self.manifest.write().await;
             manifest.add_changes(changes).await?;
             // We have to add to next_level before we remove from this_level, not after. This way, we
             // don't have a bug where reads would see keys missing from both levels.
@@ -291,8 +317,7 @@ impl LevelsController {
 
         // We write to the manifest _before_ we delete files (and after we created files)
         {
-            let kv = self.must_kv();
-            let mut manifest = kv.manifest.write().await;
+            let mut manifest = self.manifest.write().await;
             manifest.add_changes(change_set).await?;
         }
 
@@ -313,6 +338,89 @@ impl LevelsController {
         );
 
         Ok(())
+    }
+
+    // async to add level0 table
+    pub(crate) async fn add_level0_table(&self, table: Table) -> Result<()> {
+        // We update the manifest _before_ the table becomes part of a levelHandler, because at that
+        // point it could get used in some compaction.  This ensures the manifest file gets updated in
+        // the proper order. (That means this update happens before that of some compaction which
+        // deletes the table.)
+        self.manifest
+            .write()
+            .await
+            .add_changes(vec![ManifestChangeBuilder::new(table.id())
+                .with_level(0)
+                .with_op(CREATE)
+                .build()])
+            .await?;
+        while !self.levels[0].try_add_level0_table(table.clone()).await {
+            // Stall. Make sure all levels are healthy before we unstall.
+            let mut start_time = SystemTime::now();
+            {
+                info!(
+                    "STALLED STALLED STALLED STALLED STALLED STALLED STALLED STALLED: {}ms",
+                    self.last_unstalled
+                        .read()
+                        .await
+                        .elapsed()
+                        .unwrap()
+                        .as_millis()
+                );
+                let c_status = self.c_status.levels.write();
+                for i in 0..self.opt.max_levels {
+                    info!(
+                        "level={}, status={}, size={}",
+                        i,
+                        c_status[i],
+                        c_status[i].get_del_size()
+                    )
+                }
+                start_time = SystemTime::now();
+            }
+            // Before we unstall, we need to make sure that level 0 and 1 are healthy. Otherwise, we
+            // will very quickly fill up level 0 again and if the compaction strategy favors level 0,
+            // then level 1 is going to super full.
+            loop {
+                // Passing 0 for delSize to compactable means we're treating incomplete compactions as
+                // not having finished -- we wait for them to finish.  Also, it's crucial this behavior
+                // replicates pickCompactLevels' behavior in computing compactability in order to
+                // guarantee progress.
+                if !self.is_level0_compactable() && !self.levels[1].is_compactable(0) {
+                    break;
+                }
+                // sleep millis, try it again
+                sleep(Duration::from_millis(10)).await;
+            }
+
+            info!(
+                "UNSTALLED UNSTALLED UNSTALLED UNSTALLED UNSTALLED UNSTALLED: {}ms",
+                start_time.elapsed().unwrap().as_millis()
+            );
+            *self.last_unstalled.write().await = SystemTime::now();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn as_iterator(
+        &self,
+        reverse: bool,
+    ) -> Vec<Box<dyn Xiterator<Output = IteratorItem>>> {
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        for level in self.levels.iter() {
+            if level.level() == 0 {
+                for table in level.tables.read().iter().rev() {
+                    let itr = Box::new(IteratorImpl::new(table.clone(), reverse));
+                    itrs.push(itr);
+                }
+            } else {
+                for table in level.tables.read().iter() {
+                    let itr = Box::new(IteratorImpl::new(table.clone(), reverse));
+                    itrs.push(itr);
+                }
+            }
+        }
+        itrs
     }
 
     // Merge top tables and bot tables to from a List of new tables.
@@ -348,7 +456,7 @@ impl LevelsController {
                 let start_time = SystemTime::now();
                 let mut builder = Builder::default();
                 while let Some(value) = mitr.next() {
-                    if builder.reached_capacity(self.must_kv().opt.max_table_size) {
+                    if builder.reached_capacity(self.opt.max_table_size) {
                         break;
                     }
                     assert!(builder.add(value.key(), value.value()).is_ok());
@@ -364,11 +472,11 @@ impl LevelsController {
                 );
 
                 let file_id = self.reserve_file_id();
-                let dir = self.must_kv().opt.dir.clone();
+                let dir = self.opt.dir.clone();
                 let file_name = new_file_name(file_id, &dir);
-                let kv = self.must_kv();
                 let worker = g.worker();
                 let tx = tx.clone();
+                let loading_mode = self.opt.table_loading_mode;
                 tokio::spawn(async move {
                     defer! {worker.done();}
                     let fd = create_synced_file(&file_name, true);
@@ -382,8 +490,7 @@ impl LevelsController {
                             tx.send(Err(format!("Unable to write to file: {}", file_id).into()));
                         return;
                     }
-                    let tbl =
-                        TableCore::open_table(fd.unwrap(), &file_name, kv.opt.table_loading_mode);
+                    let tbl = TableCore::open_table(fd.unwrap(), &file_name, loading_mode);
                     if tbl.is_err() {
                         let _ = tx.send(Err(format!("Unable to open table: {}", file_name).into()));
                     } else {
@@ -418,7 +525,7 @@ impl LevelsController {
             // Ensure created files's directory entries are visible, We don't mind the extra latency
             // from not doing this ASAP after all file creation has finished because this is a
             // background operation
-            first_err = sync_directory(&self.must_kv().opt.dir);
+            first_err = sync_directory(&self.opt.dir);
         }
         new_tables.sort_by(|a, b| a.to_ref().biggest().cmp(b.to_ref().biggest()));
         if first_err.is_err() {
@@ -584,7 +691,7 @@ impl LevelsController {
             prios.push(CompactionPriority {
                 level: 0,
                 score: (self.levels[0].num_tables() as f64)
-                    / (self.must_kv().opt.num_level_zero_tables as f64),
+                    / (self.opt.num_level_zero_tables as f64),
             })
         }
 
@@ -608,14 +715,10 @@ impl LevelsController {
     // Return true if level zero may be compacted, without accounting for compactions that already
     // might be happening.
     fn is_level0_compactable(&self) -> bool {
-        self.levels[0].num_tables() >= self.must_kv().opt.num_level_zero_tables
+        self.levels[0].num_tables() >= self.opt.num_level_zero_tables
     }
 
-    fn must_kv(&self) -> Arc<KV> {
-        self.kv.x.upgrade().unwrap()
-    }
-
-    fn reserve_file_id(&self) -> u64 {
+    pub(crate) fn reserve_file_id(&self) -> u64 {
         let id = self.next_file_id.fetch_add(1, Ordering::Relaxed);
         id
     }
@@ -662,30 +765,19 @@ impl Display for CompactDef {
     }
 }
 
-impl Default for CompactDef {
-    fn default() -> Self {
-        // CompactDef {
-        //     this_level: XWeak::new(),
-        //     next_level: XWeak::new(),
-        //     top: RwLockReadGuard::,
-        //     bot: RwLock::new(vec![]),
-        //     this_range: KeyRange {
-        //         left: vec![],
-        //         right: vec![],
-        //         inf: false,
-        //     },
-        //     next_range: KeyRange {
-        //         left: vec![],
-        //         right: vec![],
-        //         inf: false,
-        //     },
-        //     this_size: Default::default(),
-        // }
-        todo!()
-    }
-}
-
 impl CompactDef {
+    pub(crate) fn new(this_level: LevelHandler, next_level: LevelHandler) -> Self {
+        CompactDef {
+            this_level,
+            next_level,
+            top: vec![],
+            bot: vec![],
+            this_range: KeyRange::default(),
+            next_range: KeyRange::default(),
+            this_size: Default::default(),
+        }
+    }
+
     #[inline]
     fn lock_shared_levels(&self) {
         self.this_level.lock_shared();
@@ -698,25 +790,30 @@ impl CompactDef {
         self.this_level.unlock_shared();
     }
 
-    #[inline]
-    fn lock_exclusive_levels(&self) {
-        self.this_level.lock_exclusive();
-        self.next_level.lock_exclusive();
-    }
-
-    #[inline]
-    fn unlock_exclusive_levels(&self) {
-        self.next_level.unlock_exclusive();
-        self.this_level.unlock_exclusive();
-    }
+    // #[inline]
+    // fn lock_exclusive_levels(&self) {
+    //     self.this_level.lock_exclusive();
+    //     self.next_level.lock_exclusive();
+    // }
+    //
+    // #[inline]
+    // fn unlock_exclusive_levels(&self) {
+    //     self.next_level.unlock_exclusive();
+    //     self.this_level.unlock_exclusive();
+    // }
 }
 
 // Checks that all necessary table files exist and removes all table files not
 // referenced by the manifest. id_map is a set of table file id's that were read from the directory
 // listing.
-fn revert_to_manifest(kv: &XArc<KV>, mf: &Manifest, id_map: HashSet<u64>) -> Result<()> {
+async fn revert_to_manifest(
+    dir: &str,
+    mf: &Arc<tokio::sync::RwLock<Manifest>>,
+    id_map: HashSet<u64>,
+) -> Result<()> {
+    let tables = mf.write().await;
     // 1. Check all files in manifest exist.
-    for id in &mf.tables {
+    for id in &tables.tables {
         if !id_map.contains(id.0) {
             return Err(format!("file does not exist for table {}", id.0).into());
         }
@@ -724,9 +821,9 @@ fn revert_to_manifest(kv: &XArc<KV>, mf: &Manifest, id_map: HashSet<u64>) -> Res
 
     // 2. Delete files that shouldn't exist.
     for id in &id_map {
-        if !mf.tables.contains_key(id) {
+        if !tables.tables.contains_key(id) {
             error!("table file {} not referenced in MANIFEST", id);
-            let file_name = new_file_name(*id, &kv.opt.dir);
+            let file_name = new_file_name(*id, dir);
             if let Err(err) = remove_file(file_name) {
                 error!("While removing table {}, err: {}", id, err);
             }
