@@ -37,6 +37,8 @@ use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use std::{string, vec};
+use anyhow::__private::kind::TraitKind;
+use async_channel::RecvError;
 use tokio::fs::create_dir_all;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{RwLock, RwLockWriteGuard};
@@ -329,6 +331,22 @@ impl KV {
         }
 
         self.must_lc().get(key).ok_or(NotFound)
+    }
+
+    // Sets the provided value for a given key. If key is not present, it is created.  If it is
+    // present, the existing value is overwritten with the one provided.
+    // Along with key and value, Set can also take an optional userMeta byte. This byte is stored
+    // alongside the key, and can be used as an aid to interpret the value or store other contextual
+    // bits corresponding to the key-value pair.
+    pub(crate) async fn set(&self, key: Vec<u8>, value: Vec<u8>, user_meta: u8) -> Result<()> {
+        let mut entry = Entry::default();
+        entry.key = key;
+        entry.value = value;
+        entry.user_meta = user_meta;
+        let res = self.batch_set(vec![entry]).await?;
+        assert_eq!(res.len(), 1);
+        let first = res.first().unwrap().get_req();
+        first.get_resp().await
     }
 
     // Returns the current `mem_tables` and get references.
@@ -668,6 +686,7 @@ impl ArcKV {
 impl ArcKV {
     async fn do_writes(&self, lc: Closer) {
         info!("start do writes task!");
+        defer! {info!("exit writes task!")};
         defer! {lc.done();};
         // TODO add metrics
         let has_been_close = lc.has_been_closed();
@@ -675,7 +694,9 @@ impl ArcKV {
         let reqs = ArcMx::<Vec<ArcRequest>>::new(Mutex::new(vec![]));
         loop {
             tokio::select! {
-                _ = has_been_close.recv() => {
+                ret = has_been_close.recv() => {
+                    info!("receive ==> {:?}", ret.unwrap_err());
+                    let err = RecvError::fr
                     break;
                 },
                 req = write_ch.recv() => {
