@@ -162,6 +162,7 @@ impl Closer {
 
     /// Spawn a worker
     pub fn spawn(&self) -> Self {
+        info!("spawn a new closer: Worker-{}-{}", self.name, self.wait.load(Ordering::Relaxed));
         self.add_running(1);
         self.clone()
     }
@@ -296,6 +297,19 @@ impl<T> Deref for XVec<T> {
     fn deref(&self) -> &Self::Target {
         &self.0
     }
+}
+
+#[tokio::test]
+async fn it_closer1() {
+    let closer = Closer::new("test".to_owned());
+    let ch = closer.has_been_closed();
+    tokio::select! {
+        ret = ch.recv() => {
+             println!("{:?}", ret);
+        }
+    }
+    // let err = closer.has_been_closed().recv().await;
+    // println!("{:?}", err);
 }
 
 #[test]

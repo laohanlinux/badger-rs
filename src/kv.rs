@@ -47,12 +47,12 @@ pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
 // Prefix for internal keys used by badger.
 pub const _HEAD: &[u8; 11] = b"!bager!head"; // For Storing value offset for replay.
 
-struct Closers {
-    update_size: Closer,
-    compactors: Closer,
-    mem_table: Closer, // Wait flush job exit
-    writes: Closer,
-    value_gc: Closer,
+pub struct Closers {
+    pub update_size: Closer,
+    pub compactors: Closer,
+    pub mem_table: Closer, // Wait flush job exit
+    pub writes: Closer,
+    pub value_gc: Closer,
 }
 
 struct FlushTask {
@@ -76,11 +76,11 @@ pub struct KV {
     // write_chan: Channel<Request>,
     dir_lock_guard: File,
     value_dir_guard: File,
-    closers: Closers,
+    pub closers: Closers,
     // Our latest (actively written) in-memory table.
     mem_st_manger: Arc<SkipListManager>,
     // Add here only AFTER pushing to flush_ch
-    write_ch: Channel<ArcRequest>,
+    pub write_ch: Channel<ArcRequest>,
     // Incremented in the non-concurrently accessed write loop.  But also accessed outside. So
     // we use an atomic op.
     last_used_cas_counter: AtomicU64,
@@ -92,6 +92,12 @@ pub struct KV {
 
 unsafe impl Send for KV {}
 unsafe impl Sync for KV {}
+
+impl Drop for KV {
+    fn drop(&mut self) {
+        info!("Drop kv");
+    }
+}
 
 pub struct BoxKV {
     pub kv: *const KV,
@@ -173,6 +179,7 @@ impl KV {
 
         let xout = XArc::new(out);
 
+
         // update size
         {
             let _out = xout.clone();
@@ -209,7 +216,7 @@ impl KV {
         if !item.value.is_empty() {
             vptr.dec(&mut Cursor::new(value))?;
         }
-        let replay_closer = Closer::new("tmp_replay".to_owned());
+        let replay_closer = Closer::new("tmp_writer_closer".to_owned());
         {
             let _out = xout.clone();
             let replay_closer = replay_closer.spawn();
@@ -266,6 +273,7 @@ impl KV {
             .await?;
         // Wait for replay to be applied first.
         replay_closer.signal_and_wait().await;
+
         // Mmap writeable log
         let max_fid = xout.must_vlog().max_fid.load(Ordering::Relaxed);
         let lf = xout.must_vlog().pick_log_by_vlog_id(&max_fid);
@@ -287,7 +295,6 @@ impl KV {
                 _out.must_vlog().wait_on_gc(closer).await;
             });
         }
-
         Ok(xout)
     }
 }
@@ -296,7 +303,7 @@ impl KV {
     async fn walk_dir(dir: &str) -> Result<(u64, u64)> {
         let mut lsm_size = 0;
         let mut vlog_size = 0;
-        let mut entries = tokio::fs::read_dir("dir").await?;
+        let mut entries = tokio::fs::read_dir(dir).await?;
         while let Some(entry) = entries.next_entry().await? {
             let meta = entry.metadata().await?;
             if meta.is_dir() {
@@ -687,7 +694,7 @@ impl ArcKV {
     async fn do_writes(&self, lc: Closer) {
         info!("start do writes task!");
         defer! {info!("exit writes task!")};
-        defer! {lc.done();};
+        defer! {lc.done()};
         // TODO add metrics
         let has_been_close = lc.has_been_closed();
         let write_ch = self.write_ch.clone();
@@ -695,11 +702,13 @@ impl ArcKV {
         loop {
             tokio::select! {
                 ret = has_been_close.recv() => {
-                    info!("receive ==> {:?}", ret.unwrap_err());
-                    let err = RecvError::fr
                     break;
                 },
                 req = write_ch.recv() => {
+                    if req.is_err() {
+                        info!("receive a invalid write task, err: {:?}", req.unwrap_err());
+                        break;
+                    }
                     reqs.lock().push(req.unwrap());
                 }
             }
@@ -722,6 +731,7 @@ impl ArcKV {
         }
 
         // clear future requests
+        info!("close write channel");
         write_ch.close();
         loop {
             let req = write_ch.try_recv();

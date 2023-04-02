@@ -12,7 +12,7 @@ use rand::random;
 use serde_json::to_vec;
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
-use std::fmt::Formatter;
+use std::fmt::{Display, Formatter};
 use std::fs::{read_dir, remove_file, File, OpenOptions};
 use std::future::Future;
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
@@ -290,9 +290,15 @@ impl Request {
 }
 
 #[derive(Clone)]
-pub(crate) struct ArcRequest {
+pub struct ArcRequest {
     inner: Arc<Request>,
     err: Arc<Mutex<Result<()>>>,
+}
+
+impl std::fmt::Debug for ArcRequest {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ArcRequest").finish()
+    }
 }
 
 unsafe impl Send for ArcRequest {}

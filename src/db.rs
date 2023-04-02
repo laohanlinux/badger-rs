@@ -6,12 +6,12 @@ pub struct DataBase {
     kv: XArc<KV>,
     VL: Option<VL>,
 }
-
-impl DataBase {
-    async fn new() {
-        let kv = KV::open(Options::default()).await;
-    }
-}
+//
+// impl DataBase {
+//     async fn new() {
+//         let kv = KV::open(Options::default()).await;
+//     }
+// }
 
 pub struct VL {
     kv: XWeak<KV>,
