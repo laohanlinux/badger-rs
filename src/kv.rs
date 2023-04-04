@@ -17,6 +17,8 @@ use crate::{
     Decode, Error, MergeIterOverBuilder, MergeIterOverIterator, Node, SkipList, SkipListManager,
     UniIterator, Xiterator,
 };
+use anyhow::__private::kind::TraitKind;
+use async_channel::RecvError;
 use atomic::Atomic;
 use bytes::BufMut;
 use crossbeam_epoch::Shared;
@@ -37,8 +39,6 @@ use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use std::{string, vec};
-use anyhow::__private::kind::TraitKind;
-use async_channel::RecvError;
 use tokio::fs::create_dir_all;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{RwLock, RwLockWriteGuard};
@@ -64,6 +64,11 @@ impl FlushTask {
     fn must_mt(&self) -> &SkipList {
         self.mt.as_ref().unwrap()
     }
+}
+
+pub struct KVBuilder {
+    opt: Options,
+    kv: BoxKV,
 }
 
 pub struct KV {
@@ -179,7 +184,6 @@ impl KV {
 
         let xout = XArc::new(out);
 
-
         // update size
         {
             let _out = xout.clone();
@@ -187,6 +191,7 @@ impl KV {
                 _out.spawn_update_size().await;
             });
         }
+
         // mem_table closer
         {
             let _out = xout.clone();
@@ -221,10 +226,11 @@ impl KV {
             let _out = xout.clone();
             let replay_closer = replay_closer.spawn();
             tokio::spawn(async move {
-                _out.do_writes(replay_closer).await;
+                _out.do_writes(replay_closer, true).await;
             });
         }
 
+        // replay data from vlog
         let mut first = true;
         xout.vlog
             .as_ref()
@@ -284,7 +290,7 @@ impl KV {
             let closer = xout.closers.writes.spawn();
             let _out = xout.clone();
             tokio::spawn(async move {
-                _out.do_writes(closer).await;
+                _out.do_writes(closer, false).await;
             });
         }
 
@@ -495,7 +501,9 @@ impl KV {
             }
             let arc_req = ArcRequest::from(req);
             reqs.push(arc_req.clone());
+            assert!(!self.write_ch.is_close());
             self.write_ch.send(arc_req).await.unwrap();
+            info!("send task to write");
         }
         if !bad.is_empty() {
             let req = Request::default();
@@ -691,7 +699,7 @@ impl ArcKV {
 }
 
 impl ArcKV {
-    async fn do_writes(&self, lc: Closer) {
+    async fn do_writes(&self, lc: Closer, without_close_write_ch: bool) {
         info!("start do writes task!");
         defer! {info!("exit writes task!")};
         defer! {lc.done()};
@@ -706,6 +714,7 @@ impl ArcKV {
                 },
                 req = write_ch.recv() => {
                     if req.is_err() {
+                        assert!(write_ch.is_close());
                         info!("receive a invalid write task, err: {:?}", req.unwrap_err());
                         break;
                     }
@@ -731,11 +740,14 @@ impl ArcKV {
         }
 
         // clear future requests
-        info!("close write channel");
-        write_ch.close();
+        if !without_close_write_ch {
+            assert!(!write_ch.is_close());
+            write_ch.close();
+        }
         loop {
             let req = write_ch.try_recv();
             if req.is_err() {
+                assert!(req.unwrap_err().is_closed());
                 break;
             }
             let req = req.unwrap();

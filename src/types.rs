@@ -82,9 +82,17 @@ impl<T> Channel<T> {
 
     /// close *Channel*, Sender will be consumed
     pub fn close(&self) {
+        info!("close channel");
         if let Some(tx) = &self.tx {
             tx.close();
         }
+    }
+
+    pub fn is_close(&self) -> bool {
+        if let Some(tx) = &self.tx {
+            return tx.is_closed();
+        }
+        true
     }
 }
 
@@ -162,7 +170,11 @@ impl Closer {
 
     /// Spawn a worker
     pub fn spawn(&self) -> Self {
-        info!("spawn a new closer: Worker-{}-{}", self.name, self.wait.load(Ordering::Relaxed));
+        info!(
+            "spawn a new closer: Worker-{}-{}",
+            self.name,
+            self.wait.load(Ordering::Relaxed)
+        );
         self.add_running(1);
         self.clone()
     }
