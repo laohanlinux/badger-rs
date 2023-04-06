@@ -102,8 +102,12 @@ unsafe impl<T> Send for OnlyLayoutAllocate<T> {}
 unsafe impl<T> Sync for OnlyLayoutAllocate<T> {}
 
 impl<T> OnlyLayoutAllocate<T> {
-    fn size() -> usize {
+    pub(crate) fn size() -> usize {
         size_of::<T>()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len.load(Ordering::Relaxed)
     }
 
     pub fn new(n: usize) -> Self {
@@ -215,7 +219,7 @@ unsafe impl Send for SliceAllocate {}
 unsafe impl Sync for SliceAllocate {}
 
 impl SliceAllocate {
-    fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         self.len.load(Ordering::Relaxed)
     }
 

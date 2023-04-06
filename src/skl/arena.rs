@@ -44,8 +44,9 @@ impl Arena {
         }
     }
 
+    // TODO
     pub(crate) fn size(&self) -> u32 {
-        todo!()
+        (self.slice.size() + self.node_alloc.len()) as u32
     }
 
     pub(crate) fn cap(&self) -> usize {

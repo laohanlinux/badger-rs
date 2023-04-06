@@ -22,11 +22,12 @@ use anyhow::__private::kind::TraitKind;
 use async_channel::RecvError;
 use atomic::Atomic;
 use bytes::BufMut;
-use crossbeam_epoch::Shared;
+use crossbeam_epoch::{Owned, Shared};
 use drop_cell::defer;
 use fs2::FileExt;
 use log::{info, Log};
-use parking_lot::Mutex;
+use parking_lot::lock_api::MutexGuard;
+use parking_lot::{Mutex, RawMutex};
 use std::cell::RefCell;
 use std::fs::File;
 use std::fs::{try_exists, OpenOptions};
@@ -392,6 +393,7 @@ impl KV {
             "write_requests called. Writing to value log, count: {}",
             reqs.len()
         );
+
         // CAS counter for all operations has to go onto value log. Otherwise, if it is just in
         // memtable for a long time, and following CAS operations use that as a check, when
         // replaying, we will think that these CAS operations should fail, when they are actually
@@ -406,21 +408,26 @@ impl KV {
                 entry.write().mut_entry().cas_counter = counter_base + idx as u64;
             }
         }
-        info!("Writing to memory table");
+
+        // TODO add error set
         self.vlog.as_ref().unwrap().write(reqs.clone())?;
 
+        info!("Writing to memory table");
         let mut count = 0;
         for req in reqs.iter() {
             if req.get_req().entries.read().is_empty() {
                 continue;
             }
             count += req.get_req().entries.read().len();
-            // while let Err(err) = xout.ensure_room_for_write().await {
-            //     tokio::time::sleep(Duration::from_millis(10)).await;
-            // }
-
-            // xout.must_mt().put(&entry.key, v);
+            info!("waiting for write");
+            while let Err(err) = self.ensure_room_for_write().await {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            info!("waiting for write");
+            self.write_to_lsm(req.clone())?;
+            self.update_offset(req.get_req().ptrs.lock());
         }
+        info!("{} entries written", count);
         Ok(())
     }
 
@@ -591,7 +598,7 @@ impl KV {
             }
         }
 
-        todo!()
+        Ok(())
     }
 
     fn exists(&self, key: &[u8]) -> Result<bool> {
@@ -611,8 +618,61 @@ impl KV {
             .fetch_add(how_many, Ordering::Relaxed)
     }
 
+    async fn ensure_room_for_write(&self) -> Result<()> {
+        defer! {info!("exit ensure room for write!")}
+        // TODO a special global lock for this function
+        info!("(((((())))))))))))))");
+        let _ = self.share_lock.write().await;
+        info!("====))))))))");
+        if self.must_mt().mem_size() < self.opt.max_table_size as u32 {
+            info!("))))))))");
+            return Ok(());
+        }
+        // A nil mt indicates that KV is being closed.
+        info!(")11)))))))");
+        assert!(!self.must_mt().empty());
+        info!(")11)))))))");
+        let flush_task = FlushTask {
+            mt: Some(self.must_mt().clone()),
+            vptr: self.must_vptr(),
+        };
+        if let Ok(_) = self.flush_chan.try_send(flush_task) {
+            info!("Flushing value log to disk if async mode.");
+            // Ensure value log is synced to disk so this memtable's contents wouldn't be lost.
+            self.must_vlog().sync()?;
+            info!(
+                "Flushing memtable, mt.size={} size of flushChan: {}",
+                self.must_mt().mem_size(),
+                self.flush_chan.tx().len()
+            );
+            // We manage to push this task. Let's modify imm.
+            self.mem_st_manger.swap_st(self.opt.clone());
+            // New memtable is empty. We certainly have room.
+            Ok(())
+        } else {
+            Err(Unexpected("No room for write".into()))
+        }
+    }
+
     fn should_write_value_to_lsm(&self, entry: &Entry) -> bool {
         entry.value.len() < self.opt.value_threshold
+    }
+
+    fn update_offset(&self, ptrs: MutexGuard<RawMutex, Vec<Option<ValuePointer>>>) {
+        let mut ptr = &ValuePointer::default();
+        for tmp_ptr in ptrs.iter().rev() {
+            if tmp_ptr.is_none() || tmp_ptr.as_ref().unwrap().is_zero() {
+                continue;
+            }
+            ptr = tmp_ptr.as_ref().unwrap();
+            break;
+        }
+
+        if ptr.is_zero() {
+            return;
+        }
+
+        self.vptr.store(Owned::new(ptr.clone()), Ordering::Release);
     }
 }
 
@@ -625,6 +685,8 @@ impl KV {
     fn must_mt(&self) -> &SkipList {
         let p = crossbeam_epoch::pin();
         let st = self.mem_st_manger.mt_ref(&p).as_raw();
+        assert!(!st.is_null());
+        info!("wat the fuct");
         unsafe { &*st }
     }
 
@@ -860,43 +922,6 @@ impl ArcKV {
             for req in to_reqs.clone().to_vec() {
                 req.set_err(res.clone()).await;
             }
-        }
-    }
-
-    fn should_write_value_to_lsm(&self, entry: &Entry) -> bool {
-        entry.value.len() < self.opt.value_threshold
-    }
-
-    // Always called serially.
-    async fn ensure_room_for_write(&self) -> Result<()> {
-        // TODO a special global lock for this function
-        let _ = self.share_lock.write().await;
-        if self.must_mt().mem_size() < self.opt.max_table_size as u32 {
-            return Ok(());
-        }
-
-        // A nil mt indicates that KV is being closed.
-        assert!(!self.must_mt().empty());
-
-        let flush_task = FlushTask {
-            mt: Some(self.must_mt().clone()),
-            vptr: self.must_vptr(),
-        };
-        if let Ok(_) = self.flush_chan.try_send(flush_task) {
-            info!("Flushing value log to disk if async mode.");
-            // Ensure value log is synced to disk so this memtable's contents wouldn't be lost.
-            self.must_vlog().sync()?;
-            info!(
-                "Flushing memtable, mt.size={} size of flushChan: {}",
-                self.must_mt().mem_size(),
-                self.flush_chan.tx().len()
-            );
-            // We manage to push this task. Let's modify imm.
-            self.mem_st_manger.swap_st(self.opt.clone());
-            // New memtable is empty. We certainly have room.
-            Ok(())
-        } else {
-            Err(Unexpected("No room for write".into()))
         }
     }
 

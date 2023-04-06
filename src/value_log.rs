@@ -372,7 +372,6 @@ impl Request {
 #[derive(Clone)]
 pub struct ArcRequest {
     inner: Arc<Request>,
-    err: Arc<Mutex<Result<()>>>,
 }
 
 impl std::fmt::Debug for ArcRequest {
@@ -395,7 +394,6 @@ impl ArcRequest {
     }
 
     pub(crate) async fn set_err(&self, err: Result<()>) {
-        *self.err.lock() = err.clone();
         self.inner.res.send(err).await.expect("TODO: panic message");
     }
 
@@ -408,7 +406,6 @@ impl From<Request> for ArcRequest {
     fn from(value: Request) -> Self {
         ArcRequest {
             inner: Arc::new(value),
-            err: Arc::new(Mutex::new(Ok(()))),
         }
     }
 }
