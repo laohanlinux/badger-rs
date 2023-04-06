@@ -4,6 +4,7 @@ use bitflags::bitflags;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crc32fast::Hasher;
 use drop_cell::defer;
+use either::Either;
 use log::info;
 use log::kv::Source;
 use memmap::{Mmap, MmapMut};
@@ -261,9 +262,88 @@ impl Decode for ValuePointer {
     }
 }
 
+pub(crate) struct EntryType(Either<Entry, Result<()>>);
+
+impl EntryType {
+    pub(crate) fn entry(&self) -> &Entry {
+        match self.0 {
+            Either::Left(ref entry) => entry,
+            _ => panic!("It should be not happen"),
+        }
+    }
+
+    pub(crate) fn mut_entry(&mut self) -> &mut Entry {
+        match self.0 {
+            Either::Left(ref mut entry) => entry,
+            _ => panic!("It should be not happen"),
+        }
+    }
+
+    pub(crate) fn ret(&self) -> &Result<()> {
+        match self.0 {
+            Either::Right(ref m) => m,
+            _ => panic!("It should be not happen"),
+        }
+    }
+
+    pub(crate) fn set_resp(&mut self, ret: Result<()>) {
+        self.0 = Either::Right(ret);
+    }
+}
+
+impl Deref for EntryType {
+    type Target = Either<Entry, Result<()>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<Entry> for EntryType {
+    fn from(value: Entry) -> Self {
+        Self(Either::Left(value))
+    }
+}
+
+impl From<Result<()>> for EntryType {
+    fn from(value: Result<()>) -> Self {
+        Self(Either::Right(value))
+    }
+}
+
+pub(crate) struct EntryPair {
+    entry: Entry,
+    ret: RwLock<Result<()>>,
+}
+
+impl EntryPair {
+    pub(crate) fn new(entry: Entry) -> Self {
+        EntryPair {
+            entry,
+            ret: RwLock::new(Ok(())),
+        }
+    }
+
+    pub(crate) fn set_resp(&self, ret: Result<()>) {
+        *self.ret.write() = ret
+    }
+
+    pub(crate) fn entry(&self) -> &Entry {
+        &self.entry
+    }
+
+    pub(crate) fn mut_entry(&mut self) -> &mut Entry {
+        &mut self.entry
+    }
+
+    pub(crate) fn resp(&self) -> Result<()> {
+        self.ret.read().clone()
+    }
+}
+
 pub(crate) struct Request {
     // Input values, NOTE: RefCell<Entry> is called concurrency
-    pub(crate) entries: RwLock<Vec<RefCell<Entry>>>,
+    pub(crate) entries: RwLock<Vec<RwLock<EntryType>>>,
     // Output Values and wait group stuff below
     pub(crate) ptrs: Mutex<Vec<Option<ValuePointer>>>,
     pub(crate) res: Channel<Result<()>>,
@@ -316,7 +396,7 @@ impl ArcRequest {
 
     pub(crate) async fn set_err(&self, err: Result<()>) {
         *self.err.lock() = err.clone();
-        self.inner.res.send(err).await;
+        self.inner.res.send(err).await.expect("TODO: panic message");
     }
 
     pub(crate) fn to_inner(self) -> Request {
@@ -663,6 +743,7 @@ impl ValueLogCore {
 
     // write is thread-unsafe by design and should not be called concurrently.
     pub(crate) fn write(&self, reqs: Arc<Vec<ArcRequest>>) -> Result<()> {
+        defer! {info!("finished write value log");}
         let cur_vlog_file = self.pick_log_by_vlog_id(&self.max_fid.load(Ordering::Acquire));
         let to_disk = || -> Result<()> {
             if self.buf.read().buffer().is_empty() {
@@ -702,10 +783,16 @@ impl ValueLogCore {
         };
 
         for req in reqs.iter() {
-            for (idx, entry) in req.get_req().entries.read().iter().enumerate() {
-                if !self.opt.sync_writes && entry.borrow().value.len() < self.opt.value_threshold {
+            let req = req.get_req();
+            for (idx, entry) in req.entries.read().iter().enumerate() {
+                if !self.opt.sync_writes
+                    && entry.read().entry().value.len() < self.opt.value_threshold
+                {
                     // No need to write to value log.
-                    req.get_req().ptrs.lock()[idx] = None;
+                    info!("ptrs {}", req.ptrs.lock().len());
+                    req.ptrs.lock()[idx] = None;
+                    info!("to disk~");
+
                     continue;
                 }
 
@@ -715,7 +802,7 @@ impl ValueLogCore {
                 ptr.offset = self.writable_log_offset.load(Ordering::Acquire)
                     + self.buf.read().buffer().len() as u32;
                 let mut buf = self.buf.write();
-                entry.borrow_mut().enc(&mut *buf)?;
+                entry.write().entry().enc(&mut *buf)?;
             }
         }
         to_disk()

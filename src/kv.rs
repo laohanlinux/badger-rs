@@ -7,7 +7,8 @@ use crate::table::iterator::{IteratorImpl, IteratorItem};
 use crate::table::table::{new_file_name, Table, TableCore};
 use crate::types::{ArcMx, Channel, Closer, TArcMx, XArc, XWeak};
 use crate::value_log::{
-    ArcRequest, Entry, MetaBit, Request, ValueLogCore, ValuePointer, MAX_KEY_SIZE,
+    ArcRequest, Entry, EntryPair, EntryType, MetaBit, Request, ValueLogCore, ValuePointer,
+    MAX_KEY_SIZE,
 };
 use crate::y::{
     async_sync_directory, create_synced_file, sync_directory, Encode, Result, ValueStruct,
@@ -387,7 +388,10 @@ impl KV {
         if reqs.is_empty() {
             return Ok(());
         }
-        info!("write_requests called. Writing to value log");
+        info!(
+            "write_requests called. Writing to value log, count: {}",
+            reqs.len()
+        );
         // CAS counter for all operations has to go onto value log. Otherwise, if it is just in
         // memtable for a long time, and following CAS operations use that as a check, when
         // replaying, we will think that these CAS operations should fail, when they are actually
@@ -396,18 +400,26 @@ impl KV {
         // There is code (in flush_mem_table) whose correctness depends on us generating CAS Counter
         // values _before_ we modify s.vptr here.
         for req in reqs.iter() {
-            let entries = req.req_ref().entries.write();
+            let entries = req.req_ref().entries.read();
             let counter_base = self.new_cas_counter(entries.len() as u64);
             for (idx, entry) in entries.iter().enumerate() {
-                entry.borrow_mut().cas_counter = counter_base + idx as u64;
+                entry.write().mut_entry().cas_counter = counter_base + idx as u64;
             }
         }
-
-        self.vlog.as_ref().unwrap().write(reqs.clone())?;
         info!("Writing to memory table");
+        self.vlog.as_ref().unwrap().write(reqs.clone())?;
+
         let mut count = 0;
         for req in reqs.iter() {
+            if req.get_req().entries.read().is_empty() {
+                continue;
+            }
             count += req.get_req().entries.read().len();
+            // while let Err(err) = xout.ensure_room_for_write().await {
+            //     tokio::time::sleep(Duration::from_millis(10)).await;
+            // }
+
+            // xout.must_mt().put(&entry.key, v);
         }
         Ok(())
     }
@@ -489,7 +501,10 @@ impl KV {
             count += 1;
             sz += self.opt.estimate_size(&entry) as u64;
             let req = b.last_mut().unwrap();
-            req.entries.write().push(RefCell::new(entry));
+            req.entries
+                .write()
+                .push(parking_lot::RwLock::new(EntryType::from(entry)));
+            req.ptrs.lock().push(None);
             if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_count {
                 b.push(Request::default());
             }
@@ -507,8 +522,11 @@ impl KV {
         }
         if !bad.is_empty() {
             let req = Request::default();
-            *req.entries.write() =
-                Vec::from_iter(bad.into_iter().map(|bad| RefCell::new(bad)).into_iter());
+            *req.entries.write() = Vec::from_iter(
+                bad.into_iter()
+                    .map(|bad| parking_lot::RwLock::new(EntryType::from(bad)))
+                    .into_iter(),
+            );
             let arc_req = ArcRequest::from(req);
             arc_req
                 .set_err(Err("key too big or value to big".into()))
@@ -518,9 +536,83 @@ impl KV {
         Ok(reqs)
     }
 
+    fn write_to_lsm(&self, req: ArcRequest) -> Result<()> {
+        let req = req.get_req(); //.entries.read();
+        let ptrs = req.ptrs.lock();
+        let entries = req.entries.read();
+        assert_eq!(entries.len(), ptrs.len());
+
+        for (i, pair) in entries.iter().enumerate() {
+            let mut entry_pair = pair.write();
+            let entry = entry_pair.entry();
+            if entry.cas_counter_check != 0 {
+                let old_value = self.get(&entry.key)?;
+                // No need to decode existing value. Just need old CAS counter.
+                if old_value.cas_counter != entry.cas_counter_check {
+                    entry_pair.set_resp(Err(Error::ValueCasMisMatch));
+                    continue;
+                }
+            }
+
+            if entry.meta == MetaBit::BIT_SET_IF_ABSENT.bits() {
+                // Someone else might have written a value, so lets check again if key exists.
+                let exits = self.exists(&entry.key)?;
+                // Value already exists. don't write.
+                if exits {
+                    entry_pair.set_resp(Err(Error::ValueKeyExists));
+                    continue;
+                }
+            }
+
+            if self.should_write_value_to_lsm(entry) {
+                // Will include deletion/tombstone case.
+                self.must_mt().put(
+                    &entry.key,
+                    ValueStruct::new(
+                        entry.value.clone(), // TODO avoid value clone
+                        entry.meta,
+                        entry.user_meta,
+                        entry.cas_counter,
+                    ),
+                );
+            } else {
+                let ptr = ptrs.get(i).unwrap().as_ref().unwrap();
+                let mut wt = Cursor::new(vec![0u8; ValuePointer::value_pointer_encoded_size()]);
+                ptr.enc(&mut wt).unwrap();
+                self.must_mt().put(
+                    &entry.key,
+                    ValueStruct::new(
+                        wt.into_inner(),
+                        entry.meta | MetaBit::BIT_VALUE_POINTER.bits(),
+                        entry.user_meta,
+                        entry.cas_counter,
+                    ),
+                );
+            }
+        }
+
+        todo!()
+    }
+
+    fn exists(&self, key: &[u8]) -> Result<bool> {
+        let value = self.get(key)?;
+        if value.value.is_empty() && value.meta == 0 {
+            return Ok(false);
+        }
+        if value.meta & MetaBit::BIT_DELETE.bits() != 0 {
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
+
     fn new_cas_counter(&self, how_many: u64) -> u64 {
         self.last_used_cas_counter
             .fetch_add(how_many, Ordering::Relaxed)
+    }
+
+    fn should_write_value_to_lsm(&self, entry: &Entry) -> bool {
+        entry.value.len() < self.opt.value_threshold
     }
 }
 
@@ -707,6 +799,16 @@ impl ArcKV {
         let has_been_close = lc.has_been_closed();
         let write_ch = self.write_ch.clone();
         let reqs = ArcMx::<Vec<ArcRequest>>::new(Mutex::new(vec![]));
+        let to_reqs = || {
+            let to_reqs = reqs
+                .lock()
+                .clone()
+                .into_iter()
+                .map(|req| req.clone())
+                .collect::<Vec<_>>();
+            reqs.lock().clear();
+            Arc::new(to_reqs)
+        };
         loop {
             tokio::select! {
                 ret = has_been_close.recv() => {
@@ -721,21 +823,23 @@ impl ArcKV {
                     reqs.lock().push(req.unwrap());
                 }
             }
-            // TODO avoid memory allocate again
-            if reqs.lock().len() == 100 {
-                let to_reqs = reqs
-                    .lock()
-                    .clone()
-                    .into_iter()
-                    .map(|req| req.clone())
-                    .collect::<Vec<_>>();
-                let to_reqs = Arc::new(to_reqs);
-                if let Err(err) = self.write_requests(to_reqs).await {
-                    // for req in reqs.lock().iter() {
-                    //     req.set_err(Err(err.clone())).await;
-                    // }
+
+            let to_reqs = if reqs.lock().len() == 100 {
+                to_reqs()
+            } else {
+                if let Ok(req) = write_ch.try_recv() {
+                    reqs.lock().push(req);
+                    Arc::new(vec![])
+                } else {
+                    to_reqs()
                 }
-                reqs.lock().clear();
+            };
+
+            if !to_reqs.is_empty() {
+                let res = self.write_requests(to_reqs.clone()).await;
+                for req in to_reqs.clone().to_vec() {
+                    req.set_err(res.clone()).await;
+                }
             }
         }
 
@@ -746,22 +850,15 @@ impl ArcKV {
         }
         loop {
             let req = write_ch.try_recv();
-            if req.is_err() {
-                assert!(req.unwrap_err().is_closed());
+            if let Err(err) = &req {
+                assert!(err.is_closed() || err.is_empty(), "{:?}", err);
                 break;
             }
-            let req = req.unwrap();
-            reqs.lock().push(req);
-            let to_reqs = reqs
-                .lock()
-                .clone()
-                .into_iter()
-                .map(|req| req.clone())
-                .collect::<Vec<_>>();
-            if let Err(err) = self.write_requests(Arc::new(to_reqs)).await {
-                // for req in reqs.lock().iter() {
-                //     req.set_err(Err(err.clone())).await;
-                // }
+            reqs.lock().push(req.unwrap());
+            let to_reqs = to_reqs();
+            let res = self.write_requests(to_reqs.clone()).await;
+            for req in to_reqs.clone().to_vec() {
+                req.set_err(res.clone()).await;
             }
         }
     }
