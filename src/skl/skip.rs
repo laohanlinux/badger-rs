@@ -2,7 +2,7 @@ use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
 use crate::table::iterator::IteratorItem;
 use crate::Xiterator;
 use atom_box::AtomBox;
-use log::info;
+use log::{debug, info};
 use rand::random;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -13,6 +13,7 @@ use std::ptr::null_mut;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
 use std::{cmp, ptr, ptr::NonNull, sync::atomic::AtomicI32};
+use tracing::field::debug;
 
 use crate::y::ValueStruct;
 
@@ -67,12 +68,10 @@ impl SkipList {
     }
 
     pub(crate) fn arena_ref(&self) -> &Arena {
-        // unsafe {self.arena.as_ref()}
         &self.arena
     }
 
     pub(crate) fn arena_mut_ref(&self) -> &Arena {
-        // unsafe  {self.arena.as_mut()}
         &self.arena
     }
 
@@ -108,7 +107,6 @@ impl SkipList {
     ) -> (Option<&Node>, bool) {
         let mut x = self.get_head();
         let mut level = self.get_height() - 1;
-        //println!("start to hight: {}", level);
         loop {
             // Assume x.key < key
             let mut next = self.get_next(x, level);
@@ -348,11 +346,11 @@ impl SkipList {
     // gets the value associated with the key.
     // FIXME: maybe return Option<&ValueStruct>
     pub(crate) fn get(&self, key: &[u8]) -> Option<ValueStruct> {
+        info!("find a key: {:?}", key);
         let (node, found) = self.find_near(key, false, true);
         if !found {
             return None;
         }
-        // println!("find a key: {:?}", key);
         let (value_offset, value_size) = node.unwrap().get_value_offset();
         Some(self.arena_ref().get_val(value_offset, value_size))
     }
@@ -395,7 +393,6 @@ impl Drop for SkipList {
     fn drop(&mut self) {
         let _ref = self._ref.load(Ordering::Relaxed);
         info!("Drop SkipList, reference: {}", _ref);
-        self.arena_mut_ref().reset();
     }
 }
 
@@ -601,63 +598,6 @@ impl SkipIterator {
         self.node.store(node, Ordering::Relaxed);
     }
 }
-
-// impl Xiterator for SkipIterator {
-//     type Output = IteratorItem;
-//
-//     fn next(&self) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn rewind(&self) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-//         if self.node.load(Ordering::Relaxed).is_null() {
-//             return None;
-//         }
-//
-//         let node = self.node.load(Ordering::Relaxed);
-//         if node.is_null() {
-//             return None;
-//         }
-//         let key = node.key(self.st.arena_ref()).to_vec();
-//         let value = node.value.load(Ordering::Relaxed);
-//         Some(IteratorItem{ key: node.key(self.st.arena_ref()).to_vec(), value: Default::default() })
-//     }
-//
-//     fn peek(&self) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn close(&self) {
-//         todo!()
-//     }
-// }
-
-// impl<'a> Xiterator for SkipIterator<'a> {
-//     type Output = &'a Node;
-//     fn next(&self) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn rewind(&self) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn peek(&self) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn close(&self) {
-//         self.st.decr_ref();
-//     }
-// }
 
 mod tests {
     use crate::skl::node::Node;
@@ -1089,30 +1029,15 @@ mod tests {
 }
 
 mod tests2 {
-    use crate::SkipList;
+    use crate::{SkipList, ValueStruct};
 
     const ARENA_SIZE: usize = 1 << 20;
 
     #[test]
     fn atomic_swap_skip_list() {
         let mut st = SkipList::new(ARENA_SIZE);
-    }
-
-    #[test]
-    fn gat() {
-        // #![allow(unused)]
-
-        // trait IterableTypes {
-        //     type Item<'me>;
-        //     type Iterator<'me>: Iterator<Item = Self::Item<'me>>;
-        // }
-
-        // trait Iterable: IterableTypes {
-        //     fn iter<'a>(&'a self) -> Self::Iterator<'a>;
-        // }
-
-        // struct GatSimple {}
-
-        // impl GatSimple {}
+        st.put(b"hello", ValueStruct::new(vec![], 0, 0, 0));
+        let got = st.get(b"hello");
+        assert!(got.is_some());
     }
 }

@@ -35,6 +35,8 @@ mod value_log_tests;
 mod y;
 
 mod compaction;
+#[cfg(test)]
+mod kv_test;
 mod level_handler;
 mod levels;
 mod mmap;
@@ -42,8 +44,6 @@ mod pb;
 mod st_manager;
 #[cfg(test)]
 mod test_util;
-#[cfg(test)]
-mod kv_test;
 
 mod db;
 

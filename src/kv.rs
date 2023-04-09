@@ -625,7 +625,7 @@ impl KV {
         let _ = self.share_lock.write().await;
         info!("====))))))))");
         if self.must_mt().mem_size() < self.opt.max_table_size as u32 {
-            info!("))))))))");
+            info!(")))))))) {}", self.must_mt().mem_size());
             return Ok(());
         }
         // A nil mt indicates that KV is being closed.
