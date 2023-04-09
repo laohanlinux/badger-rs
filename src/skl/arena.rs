@@ -3,11 +3,9 @@ use crate::skl::alloc::{OnlyLayoutAllocate, SliceAllocate};
 use crate::skl::node::Node;
 use crate::skl::Allocate;
 use crate::skl::{alloc::Chunk, SmartAllocate};
-use crate::test_util::{mock_log, mock_log_terminal, tracing_log};
 use crate::y::ValueStruct;
 use std::default;
 use std::fmt::format;
-use std::io::Write;
 use std::marker::PhantomData;
 use std::mem::{size_of, ManuallyDrop};
 use std::ptr::{addr_of, slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
@@ -17,9 +15,6 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
-use tracing::info;
-
-use super::alloc::FixSizeAllocate;
 
 const OFFSET_SIZE: usize = size_of::<u32>();
 // FIXME: i don't know
@@ -28,8 +23,8 @@ const PTR_ALIGN: usize = 7;
 /// `Arena` should be lock-free.
 #[derive(Debug)]
 pub struct Arena {
-    slice: FixSizeAllocate<u8>,
-    node_alloc: FixSizeAllocate<Node>,
+    slice: SliceAllocate,
+    node_alloc: OnlyLayoutAllocate<Node>,
 }
 
 unsafe impl Send for Arena {}
@@ -39,12 +34,10 @@ unsafe impl Sync for Arena {}
 impl Arena {
     pub(crate) fn new(n: usize) -> Self {
         assert!(n > 0);
-        let slice_alloc = FixSizeAllocate::new(n + 1);
-        let node_alloc = FixSizeAllocate::new(n + Node::size());
+        let slice_alloc = SliceAllocate::new(n);
+        let node_alloc = OnlyLayoutAllocate::new(n);
         // Don't store data at position 0 in order to reverse offset = 0 as a kind
         // of nil pointer
-        slice_alloc.alloc();
-        node_alloc.alloc();
         Self {
             slice: slice_alloc,
             node_alloc,
@@ -55,8 +48,14 @@ impl Arena {
         (self.slice.len() + self.node_alloc.len()) as u32
     }
 
+    // TODO: maybe use MaybeUint instead
+    pub(crate) fn reset(&self) {
+        self.slice.reset();
+        self.node_alloc.reset();
+    }
+
     pub(crate) fn valid(&self) -> bool {
-        !self.slice.empty()
+        !self.slice.ptr.is_empty()
     }
 
     // Returns a pointer to the node located at offset. If the offset is
@@ -72,15 +71,12 @@ impl Arena {
         if offset == 0 {
             return None;
         }
-        Some(self.node_alloc.get(offset))
+        Some(self.node_alloc.get_mut(offset))
     }
 
     // Returns start location
     pub(crate) fn put_key(&self, key: &[u8]) -> u32 {
-        let (mut buffer, offset) = self.slice.alloc_slice(key.len());
-        buffer.copy_from_slice(key);
-        println!("==》 {:?}, {:?}", buffer, key);
-        offset as u32
+        self.slice.append(key) as u32
     }
 
     // Put will *copy* val into arena. To make better use of this, reuse your input
@@ -95,19 +91,20 @@ impl Arena {
 
     // Returns byte slice at offset.
     pub(crate) fn get_key(&self, offset: u32, size: u16) -> &[u8] {
-        self.slice.get_slice(offset as usize, size as usize)
+        self.slice.get(offset as usize, size as usize)
     }
 
     // Returns byte slice at offset. The given size should be just the value
     // size and should NOT include the meta bytes.
     pub(crate) fn get_val(&self, offset: u32, size: u16) -> ValueStruct {
-        let buffer = self.slice.get_slice(offset as usize, size as usize);
+        let buffer = self.slice.get(offset as usize, size as usize);
         ValueStruct::from(buffer)
     }
 
     // Return byte slice at offset.
+    // FIXME:
     pub(crate) fn put_node(&self, height: isize) -> u32 {
-        let (_, offset) = self.node_alloc.alloc();
+        let (_, offset) = self.node_alloc.alloc_offset();
         offset as u32
     }
 
@@ -118,9 +115,8 @@ impl Arena {
             return 0;
         }
         let node = node as *const u8;
-        let ptr = self.node_alloc.get_data_ptr() as *const u8;
+        let ptr = self.node_alloc.ptr.as_ptr();
         let offset = unsafe { node.offset_from(ptr) };
-        info!("node offset {}", offset);
         offset as usize
     }
 
@@ -160,45 +156,31 @@ fn t_arena_value() {
 }
 
 #[test]
-fn t_arena_memory_allocator() {
-    tracing_log();
-    let sz = 1 << 20;
-    let n = sz / Node::size();
-    let arena = Arena::new(sz);
-    for i in 1..=n {
-        let start = arena.put_node(0);
-        let mut node = arena.get_mut_node(start as usize);
-        assert!(node.is_some());
-    }
-    let len = arena.node_alloc.len();
-    // had a zero node
-    assert_eq!(len, n * 96 + Node::size());
-}
-
-#[test]
 fn t_arena_store_node() {
-    tracing_log();
-    let sz = 1 << 20;
-    let n = sz / Node::size();
-    let arena = Arena::new(sz);
+    let arena = Arena::new(1 << 20);
     let mut starts = vec![];
-    for i in 1..=n {
-        let start = arena.put_node(0);
+    for i in 0..5 {
+        let start = arena.put_node(i);
         let mut node = arena.get_mut_node(start as usize).unwrap();
-        node.value.fetch_add(i as u64, Ordering::Release);
+        node.height = i as u16;
+        node.value.fetch_add(i as u64, Ordering::Relaxed);
         starts.push((i, start));
     }
 
     for (i, start) in starts {
         let node = arena.get_mut_node(start as usize).unwrap();
-        let value = node.value.load(Ordering::Acquire);
+        let value = node.value.load(Ordering::Relaxed);
+        assert_eq!(node.height, i as u16);
         assert_eq!(value, i as u64);
     }
+
+    let second_node = arena.get_node(Node::size()).unwrap();
+    let offset = arena.get_node_offset(second_node);
+    assert_eq!(offset, Node::size());
 }
 
 #[test]
 fn t_arena_currency() {
-    mock_log();
     let arena = Arc::new(Arena::new(1 << 20));
     let mut waits = vec![];
     for i in 0..100 {

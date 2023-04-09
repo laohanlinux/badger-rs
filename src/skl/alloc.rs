@@ -5,7 +5,10 @@ use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::mem::{align_of, size_of, ManuallyDrop};
 
+use either::Either;
+use libc::off_t;
 use log::info;
+use std::alloc::alloc;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -30,6 +33,53 @@ pub trait Chunk: Send + Sync {
     fn get_data_mut(&self) -> &mut [u8];
     #[inline]
     fn size(&self) -> usize;
+}
+
+pub struct EitherAllocate {
+    pub(crate) alloc: FixSizeAllocate<Either<Vec<u8>, Node>>,
+    byte_size: AtomicUsize,
+}
+
+impl EitherAllocate {
+    pub fn new(n: usize) -> Self {
+        EitherAllocate {
+            alloc: FixSizeAllocate::new(n),
+            byte_size: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn alloc_vec(&self, sz: usize) -> (&mut Vec<u8>, usize) {
+        let (either, offset) = self.alloc.alloc();
+        *either = Either::Left(vec![0u8; sz]);
+        self.byte_size.fetch_add(sz, Ordering::Relaxed);
+        (either.as_mut().left().unwrap(), offset)
+    }
+
+    pub fn alloc_node(&self) -> (&mut Node, usize) {
+        let (either, offset) = self.alloc.alloc();
+        self.byte_size.fetch_add(Node::size(), Ordering::Relaxed);
+        *either = Either::Right(Node::default());
+        (either.as_mut().right().unwrap(), offset)
+    }
+
+    pub fn get_vec(&self, offset: usize) -> &mut Vec<u8> {
+        let either = self.alloc.get(offset);
+        either.as_mut().unwrap_left()
+    }
+
+    pub fn get_node(&self, offset: usize) -> &mut Node {
+        let either = self.alloc.get(offset);
+        either.as_mut().unwrap_right()
+    }
+
+    pub fn first_node(&self) -> &mut Node {
+        let either = self.alloc.get(0);
+        either.as_mut().unwrap_right()
+    }
+
+    pub fn len(&self) -> usize {
+        self.byte_size.load(Ordering::Relaxed)
+    }
 }
 
 /// FixSizeAllocate fixed size memory allocator, WARNING: zero offset not store any T that for wrap Arena
@@ -66,37 +116,34 @@ impl<T> FixSizeAllocate<T> {
 
     #[inline]
     pub fn alloc(&self) -> (&mut T, usize) {
-        let offset = self.len.fetch_add(Self::size(), Ordering::Release);
-        let end = offset + Self::size();
-        // println!("{}, {}, {}", offset, end, self.cap.load(Ordering::Acquire));
-        assert!(end <= self.cap.load(Ordering::Acquire));
+        let offset = self.len.fetch_add(1, Ordering::Release);
         let ptr = self.get_data_mut_ptr();
-        let ref_data = unsafe { &mut *slice_from_raw_parts_mut(ptr.add(offset), end - offset) };
+        let ref_data =
+            unsafe { &mut *slice_from_raw_parts_mut(ptr.add(self.cal_offset(offset)), 1) };
         (&mut ref_data[0], offset)
     }
 
     #[inline]
     pub fn alloc_slice(&self, sz: usize) -> (&mut [T], usize) {
         let offset = self.len.fetch_add(Self::size() * sz, Ordering::Release);
-        let end = offset + sz * Self::size();
-        assert!(end <= self.cap.load(Ordering::Acquire));
         let ptr = self.get_data_mut_ptr();
-        let mut ref_data =
-            unsafe { &mut *slice_from_raw_parts_mut(ptr.add(offset), (end - offset)) };
+        let mut ref_data = unsafe { &mut *slice_from_raw_parts_mut(ptr.add(offset), sz) };
         (ref_data, offset)
     }
 
     #[inline]
     pub fn get(&self, offset: usize) -> &mut T {
         let mut ptr = self.get_data_mut_ptr();
-        let mut ref_data = unsafe { &mut *slice_from_raw_parts_mut(ptr.add(offset), Self::size()) };
+        let mut ref_data =
+            unsafe { &mut *slice_from_raw_parts_mut(ptr.add(self.cal_offset(offset)), 1) };
         &mut ref_data[0]
     }
 
     #[inline]
     pub fn get_slice(&self, offset: usize, n: usize) -> &mut [T] {
         let ptr = self.get_data_mut_ptr();
-        let mut ref_data = unsafe { &mut *slice_from_raw_parts_mut(ptr.add(offset), n) };
+        let mut ref_data =
+            unsafe { &mut *slice_from_raw_parts_mut(ptr.add(self.cal_offset(offset)), n) };
         ref_data
     }
 
@@ -108,6 +155,11 @@ impl<T> FixSizeAllocate<T> {
     #[inline]
     pub fn empty(&self) -> bool {
         self.len.load(Ordering::Acquire) == 0
+    }
+
+    #[inline]
+    pub(crate) fn cal_offset(&self, offset: usize) -> usize {
+        offset * size_of::<T>()
     }
 
     #[inline]
@@ -221,7 +273,7 @@ impl Chunk for BlockBytes {
 #[derive(Debug, Clone)]
 pub struct OnlyLayoutAllocate<T> {
     cursor: Arc<AtomicUsize>,
-    len: Arc<AtomicUsize>,
+    cap: Arc<AtomicUsize>,
     pub(crate) ptr: ManuallyDrop<Vec<u8>>,
     _data: PhantomData<T>,
 }
@@ -236,13 +288,13 @@ impl<T> OnlyLayoutAllocate<T> {
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.len.load(Ordering::Relaxed)
+        self.cursor.load(Ordering::Relaxed)
     }
 
     pub fn new(n: usize) -> Self {
         OnlyLayoutAllocate {
             cursor: Arc::from(AtomicUsize::new(Self::size())),
-            len: Arc::from(AtomicUsize::new(n)),
+            cap: Arc::from(AtomicUsize::new(n)),
             ptr: ManuallyDrop::new(vec![0u8; n]),
             _data: Default::default(),
         }
@@ -252,7 +304,7 @@ impl<T> OnlyLayoutAllocate<T> {
     /// **Note** if more than len, it will be panic.
     pub fn alloc(&self, start: usize) -> &T {
         let end = self.cursor.fetch_add(Self::size(), Ordering::Acquire);
-        assert!(end < self.len.load(Ordering::Relaxed));
+        assert!(end < self.cap.load(Ordering::Relaxed));
         let ptr = self.borrow_slice(start, Self::size());
         let (pre, mid, suf) = unsafe { ptr.align_to() };
         assert!(pre.is_empty());
@@ -263,7 +315,7 @@ impl<T> OnlyLayoutAllocate<T> {
     /// **Note** if more than len, it will be panic.
     pub fn mut_alloc(&self, start: usize) -> &mut T {
         let end = self.cursor.fetch_add(Self::size(), Ordering::Relaxed);
-        assert!(end < self.len.load(Ordering::Relaxed));
+        assert!(end < self.cap.load(Ordering::Relaxed));
         let ptr = self.borrow_mut_slice(start, Self::size());
         let (pre, mid, _) = unsafe { ptr.align_to_mut() };
         assert!(pre.is_empty());
@@ -272,7 +324,7 @@ impl<T> OnlyLayoutAllocate<T> {
 
     pub fn alloc_offset(&self) -> (&T, usize) {
         let offset = self.cursor.fetch_add(Self::size(), Ordering::Relaxed);
-        assert!(offset + Self::size() < self.len.load(Ordering::Relaxed));
+        assert!(offset + Self::size() < self.cap.load(Ordering::Relaxed));
         let ptr = self.borrow_slice(offset, Self::size());
         let (pre, mid, _) = unsafe { ptr.align_to() };
         assert!(pre.is_empty());
@@ -296,7 +348,7 @@ impl<T> OnlyLayoutAllocate<T> {
     }
 
     pub(crate) fn reset(&self) {
-        self.len.store(0, Ordering::Relaxed);
+        self.cap.store(0, Ordering::Relaxed);
         self.cursor.store(0, Ordering::Relaxed);
     }
 
@@ -326,7 +378,6 @@ impl<T> OnlyLayoutAllocate<T> {
 impl<T> Drop for OnlyLayoutAllocate<T> {
     fn drop(&mut self) {
         self.cursor.store(0, Ordering::Relaxed);
-        self.cursor.store(0, Ordering::Relaxed);
         unsafe {
             ManuallyDrop::drop(&mut self.ptr);
         }
@@ -337,23 +388,21 @@ impl<T> Drop for OnlyLayoutAllocate<T> {
 #[derive(Debug)]
 pub struct SliceAllocate {
     cursor: Arc<AtomicUsize>,
-    len: Arc<AtomicUsize>,
+    cap: Arc<AtomicUsize>,
     pub(crate) ptr: ManuallyDrop<Vec<u8>>,
 }
 
 unsafe impl Send for SliceAllocate {}
 
-unsafe impl Sync for SliceAllocate {}
-
 impl SliceAllocate {
-    pub(crate) fn size(&self) -> usize {
-        self.len.load(Ordering::Relaxed)
+    pub fn len(&self) -> usize {
+        self.cursor.load(Ordering::Relaxed)
     }
 
     pub(crate) fn new(n: usize) -> Self {
         SliceAllocate {
             cursor: Arc::from(AtomicUsize::new(1)),
-            len: Arc::from(AtomicUsize::new(n)),
+            cap: Arc::from(AtomicUsize::new(n)),
             ptr: ManuallyDrop::new(vec![0u8; n]),
         }
     }
@@ -365,19 +414,19 @@ impl SliceAllocate {
     // Return the start locate offset
     pub(crate) fn alloc(&self, size: usize) -> &[u8] {
         let offset = self.cursor.fetch_add(size, Ordering::Relaxed);
-        assert!(self.cursor.load(Ordering::Relaxed) < self.len.load(Ordering::Relaxed));
+        assert!(self.cursor.load(Ordering::Relaxed) < self.cap.load(Ordering::Relaxed));
         self.borrow_slice(offset, size)
     }
 
     fn alloc_mut(&self, size: usize) -> &mut [u8] {
         let offset = self.cursor.fetch_add(size, Ordering::Relaxed);
-        assert!(self.cursor.load(Ordering::Relaxed) < self.len.load(Ordering::Relaxed));
+        assert!(self.cursor.load(Ordering::Relaxed) < self.cap.load(Ordering::Relaxed));
         self.borrow_mut_slice(offset, size)
     }
 
     pub fn append(&self, bytes: &[u8]) -> usize {
         let offset = self.cursor.fetch_add(bytes.len(), Ordering::Relaxed);
-        assert!(self.cursor.load(Ordering::Relaxed) < self.len.load(Ordering::Relaxed));
+        assert!(self.cursor.load(Ordering::Relaxed) < self.cap.load(Ordering::Relaxed));
         let buffer = self.borrow_mut_slice(offset, bytes.len());
         buffer.copy_from_slice(bytes);
         offset
@@ -390,7 +439,7 @@ impl SliceAllocate {
     }
 
     pub fn reset(&self) {
-        self.len.swap(0, Ordering::Relaxed);
+        self.cap.swap(0, Ordering::Relaxed);
         self.cursor.store(0, Ordering::Relaxed);
         //self.ptr.clear();
     }
@@ -477,4 +526,37 @@ fn t_block_bytes() {
     for datum in 0..block.size() {
         assert_eq!(buffer[datum], datum as u8);
     }
+}
+
+#[test]
+fn t_enum() {
+    let mut alloc = EitherAllocate::new(1 << 10);
+    let mut offsets = vec![];
+    for i in 0..1 << 10 {
+        if i % 2 == 0 {
+            let (mut slice, offset) = alloc.alloc_vec(i);
+            slice.fill((i % u8::MAX as usize) as u8);
+            offsets.push(offset);
+        } else {
+            let (mut node, offset) = alloc.alloc_node();
+            offsets.push(offset);
+            node.value.store(i as u64, Ordering::Relaxed);
+        }
+    }
+
+    for i in 0..1 << 10 {
+        if i % 2 == 0 {
+            let slice = alloc.get_vec(offsets[i]);
+            let value = (i % u8::MAX as usize) as u8;
+            assert_eq!(slice.len(), i);
+            let mut v = vec![0u8; slice.len()];
+            v.fill(value);
+            assert_eq!(&mut v, slice);
+        } else {
+            let node = alloc.get_node(offsets[i]);
+            assert_eq!(node.value.load(Ordering::Relaxed), i as u64);
+        }
+    }
+    let len = alloc.len();
+    println!("{}", len);
 }

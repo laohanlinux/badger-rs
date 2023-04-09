@@ -419,7 +419,6 @@ impl KV {
                 continue;
             }
             count += req.get_req().entries.read().len();
-            info!("waiting for write");
             while let Err(err) = self.ensure_room_for_write().await {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -621,17 +620,13 @@ impl KV {
     async fn ensure_room_for_write(&self) -> Result<()> {
         defer! {info!("exit ensure room for write!")}
         // TODO a special global lock for this function
-        info!("(((((())))))))))))))");
         let _ = self.share_lock.write().await;
-        info!("====))))))))");
         if self.must_mt().mem_size() < self.opt.max_table_size as u32 {
-            info!(")))))))) {}", self.must_mt().mem_size());
             return Ok(());
         }
+        info!("flush memory table");
         // A nil mt indicates that KV is being closed.
-        info!(")11)))))))");
         assert!(!self.must_mt().empty());
-        info!(")11)))))))");
         let flush_task = FlushTask {
             mt: Some(self.must_mt().clone()),
             vptr: self.must_vptr(),
@@ -686,7 +681,6 @@ impl KV {
         let p = crossbeam_epoch::pin();
         let st = self.mem_st_manger.mt_ref(&p).as_raw();
         assert!(!st.is_null());
-        info!("wat the fuct");
         unsafe { &*st }
     }
 
