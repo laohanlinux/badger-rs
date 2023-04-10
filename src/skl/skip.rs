@@ -346,7 +346,7 @@ impl SkipList {
     // gets the value associated with the key.
     // FIXME: maybe return Option<&ValueStruct>
     pub(crate) fn get(&self, key: &[u8]) -> Option<ValueStruct> {
-        info!("find a key: {:?}", key);
+        // info!("find a key: {:?}", key);
         let (node, found) = self.find_near(key, false, true);
         if !found {
             return None;

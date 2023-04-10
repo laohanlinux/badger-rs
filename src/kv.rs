@@ -1,11 +1,11 @@
-use crate::iterator::{IteratorExt, IteratorOptions, KVItemInner};
+use crate::iterator::{IteratorExt, IteratorOptions, KVItem, KVItemInner};
 use crate::levels::{LevelsController, XLevelsController};
 use crate::manifest::{open_or_create_manifest_file, Manifest, ManifestFile};
 use crate::options::Options;
 use crate::table::builder::Builder;
 use crate::table::iterator::{IteratorImpl, IteratorItem};
 use crate::table::table::{new_file_name, Table, TableCore};
-use crate::types::{ArcMx, Channel, Closer, TArcMx, XArc, XWeak};
+use crate::types::{ArcMx, Channel, Closer, TArcMx, TArcRW, XArc, XWeak};
 use crate::value_log::{
     ArcRequest, Entry, EntryPair, EntryType, MetaBit, Request, ValueLogCore, ValuePointer,
     MAX_KEY_SIZE,
@@ -85,7 +85,7 @@ pub struct KV {
     value_dir_guard: File,
     pub closers: Closers,
     // Our latest (actively written) in-memory table.
-    mem_st_manger: Arc<SkipListManager>,
+    pub mem_st_manger: Arc<SkipListManager>,
     // Add here only AFTER pushing to flush_ch
     pub write_ch: Channel<ArcRequest>,
     // Incremented in the non-concurrently accessed write loop.  But also accessed outside. So
@@ -205,7 +205,7 @@ impl KV {
         }
 
         // Get the lasted ValueLog Recover Pointer
-        let item = match xout.get(_HEAD) {
+        let item = match xout._get(_HEAD) {
             Err(NotFound) => ValueStruct::default(), // Give it a default value
             Err(_) => return Err("Retrieving head".into()),
             Ok(item) => item,
@@ -251,7 +251,7 @@ impl KV {
 
                     // TODO why?
                     if entry.cas_counter_check != 0 {
-                        let old_value = xout.get(&entry.key)?;
+                        let old_value = xout._get(&entry.key)?;
                         if old_value.cas_counter != entry.cas_counter_check {
                             return Ok(true);
                         }
@@ -328,10 +328,10 @@ impl KV {
 
     // get returns the value in `mem_table` or disk for given key.
     // Note that value will include meta byte.
-    pub(crate) fn get(&self, key: &[u8]) -> Result<ValueStruct> {
+    pub(crate) fn _get(&self, key: &[u8]) -> Result<ValueStruct> {
         let p = crossbeam_epoch::pin();
         let tables = self.get_mem_tables(&p);
-
+        // info!("tabels {}", tables.len());
         // TODO add metrics
         for tb in tables {
             let vs = unsafe { tb.as_ref().unwrap().get(key) };
@@ -340,7 +340,7 @@ impl KV {
             }
             let vs = vs.unwrap();
             // TODO why
-            if vs.meta != 0 && !vs.value.is_empty() {
+            if vs.meta != 0 || !vs.value.is_empty() {
                 return Ok(vs);
             }
         }
@@ -492,7 +492,8 @@ impl KV {
     // TODO
     pub(crate) async fn batch_set(&self, entries: Vec<Entry>) -> Result<Vec<ArcRequest>> {
         let mut bad = vec![];
-        let mut b = vec![Request::default()];
+        let mut batch_reqs = vec![];
+        let mut b = Some(Request::default());
         let mut count = 0;
         let mut sz = 0u64;
         for entry in entries {
@@ -506,25 +507,42 @@ impl KV {
             }
             count += 1;
             sz += self.opt.estimate_size(&entry) as u64;
-            let req = b.last_mut().unwrap();
-            req.entries
-                .write()
-                .push(parking_lot::RwLock::new(EntryType::from(entry)));
-            req.ptrs.lock().push(None);
+
+            {
+                b.as_ref()
+                    .unwrap()
+                    .entries
+                    .write()
+                    .push(parking_lot::RwLock::new(EntryType::from(entry)));
+                b.as_ref().unwrap().ptrs.lock().push(None);
+            }
+
             if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_count {
-                b.push(Request::default());
+                let task_req = b.replace(Request::default());
+                batch_reqs.push(task_req.unwrap());
+                count = 0;
+                sz = 0;
             }
         }
+        if let Some(req) = b {
+            if !req.entries.read().is_empty() {
+                batch_reqs.push(req);
+            }
+        }
+
         let mut reqs = vec![];
-        for req in b {
+        for req in batch_reqs {
             if req.entries.read().is_empty() {
                 break;
             }
             let arc_req = ArcRequest::from(req);
             reqs.push(arc_req.clone());
             assert!(!self.write_ch.is_close());
+            info!(
+                "send tasks to write, entries: {}",
+                arc_req.get_req().entries.read().len()
+            );
             self.write_ch.send(arc_req).await.unwrap();
-            info!("send task to write");
         }
         if !bad.is_empty() {
             let req = Request::default();
@@ -552,7 +570,7 @@ impl KV {
             let mut entry_pair = pair.write();
             let entry = entry_pair.entry();
             if entry.cas_counter_check != 0 {
-                let old_value = self.get(&entry.key)?;
+                let old_value = self._get(&entry.key)?;
                 // No need to decode existing value. Just need old CAS counter.
                 if old_value.cas_counter != entry.cas_counter_check {
                     entry_pair.set_resp(Err(Error::ValueCasMisMatch));
@@ -601,7 +619,7 @@ impl KV {
     }
 
     fn exists(&self, key: &[u8]) -> Result<bool> {
-        let value = self.get(key)?;
+        let value = self._get(key)?;
         if value.value.is_empty() && value.meta == 0 {
             return Ok(false);
         }
@@ -677,7 +695,7 @@ impl KV {
         lc
     }
 
-    fn must_mt(&self) -> &SkipList {
+    pub(crate) fn must_mt(&self) -> &SkipList {
         let p = crossbeam_epoch::pin();
         let st = self.mem_st_manger.mt_ref(&p).as_raw();
         assert!(!st.is_null());
@@ -735,6 +753,12 @@ impl ArcKV {
 
     pub async fn manifest_wl(&self) -> RwLockWriteGuard<'_, ManifestFile> {
         self.manifest.write().await
+    }
+
+    pub async fn get(&self, key: &[u8]) -> Result<Vec<u8>> {
+        let got = self._get(key)?;
+        let inner = KVItemInner::new(key.to_vec(), got, self.clone());
+        inner.get_value().await
     }
 
     /// Closes a KV. It's crucial to call it to ensure all the pending updates

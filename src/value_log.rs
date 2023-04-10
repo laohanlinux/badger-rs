@@ -341,7 +341,7 @@ impl EntryPair {
     }
 }
 
-pub(crate) struct Request {
+pub struct Request {
     // Input values, NOTE: RefCell<Entry> is called concurrency
     pub(crate) entries: RwLock<Vec<RwLock<EntryType>>>,
     // Output Values and wait group stuff below
@@ -385,20 +385,29 @@ unsafe impl Send for ArcRequest {}
 unsafe impl Sync for ArcRequest {}
 
 impl ArcRequest {
-    pub(crate) fn get_req(&self) -> Arc<Request> {
-        self.inner.clone()
+    pub fn req_ref(&self) -> &Arc<Request> {
+        &self.inner
     }
 
-    pub(crate) fn req_ref(&self) -> &Arc<Request> {
-        &self.inner
+    pub fn to_inner(self) -> Request {
+        Arc::into_inner(self.inner).unwrap()
+    }
+
+    pub async fn is_ok(&self) -> bool {
+        let resp = self.get_req().get_resp().await;
+        resp.is_ok()
+    }
+
+    pub async fn get_resp(&self) -> Result<()> {
+        self.get_req().get_resp().await
     }
 
     pub(crate) async fn set_err(&self, err: Result<()>) {
         self.inner.res.send(err).await.expect("TODO: panic message");
     }
 
-    pub(crate) fn to_inner(self) -> Request {
-        Arc::into_inner(self.inner).unwrap()
+    pub(crate) fn get_req(&self) -> Arc<Request> {
+        self.inner.clone()
     }
 }
 
@@ -833,7 +842,7 @@ impl ValueLogCore {
             }
             // TODO don't need decode vptr
             let entry = &mut entries[0].0;
-            let vs = kv.get(&entry.key);
+            let vs = kv._get(&entry.key);
             if let Err(ref err) = vs {
                 if err.is_not_found() {
                     info!(
@@ -1094,7 +1103,7 @@ impl SafeValueLog {
                     if start.elapsed().unwrap().as_secs() > 10 {
                         return Err("stop iteration".into());
                     }
-                    let vs = kv.get(&entry.key)?;
+                    let vs = kv._get(&entry.key)?;
                     if (vs.meta & MetaBit::BIT_DELETE.bits()) > 0 {
                         // Key has been deleted. Discard.
                         reason.discard += esz;

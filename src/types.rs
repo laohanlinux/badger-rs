@@ -311,19 +311,6 @@ impl<T> Deref for XVec<T> {
     }
 }
 
-#[tokio::test]
-async fn it_closer1() {
-    let closer = Closer::new("test".to_owned());
-    let ch = closer.has_been_closed();
-    tokio::select! {
-        ret = ch.recv() => {
-             println!("{:?}", ret);
-        }
-    }
-    // let err = closer.has_been_closed().recv().await;
-    // println!("{:?}", err);
-}
-
 #[test]
 fn it_closer() {
     let runtime = tokio::runtime::Runtime::new().unwrap();

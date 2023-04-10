@@ -107,6 +107,3 @@ impl Default for Options {
         }
     }
 }
-
-#[test]
-fn it() {}

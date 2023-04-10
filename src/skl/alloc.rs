@@ -5,6 +5,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
 use std::mem::{align_of, size_of, ManuallyDrop};
 
+use atom_box::AtomBox;
 use either::Either;
 use libc::off_t;
 use log::info;
@@ -35,234 +36,33 @@ pub trait Chunk: Send + Sync {
     fn size(&self) -> usize;
 }
 
-pub struct EitherAllocate {
-    pub(crate) alloc: FixSizeAllocate<Either<Vec<u8>, Node>>,
-    byte_size: AtomicUsize,
-}
-
-impl EitherAllocate {
-    pub fn new(n: usize) -> Self {
-        EitherAllocate {
-            alloc: FixSizeAllocate::new(n),
-            byte_size: AtomicUsize::new(0),
-        }
-    }
-
-    pub fn alloc_vec(&self, sz: usize) -> (&mut Vec<u8>, usize) {
-        let (either, offset) = self.alloc.alloc();
-        *either = Either::Left(vec![0u8; sz]);
-        self.byte_size.fetch_add(sz, Ordering::Relaxed);
-        (either.as_mut().left().unwrap(), offset)
-    }
-
-    pub fn alloc_node(&self) -> (&mut Node, usize) {
-        let (either, offset) = self.alloc.alloc();
-        self.byte_size.fetch_add(Node::size(), Ordering::Relaxed);
-        *either = Either::Right(Node::default());
-        (either.as_mut().right().unwrap(), offset)
-    }
-
-    pub fn get_vec(&self, offset: usize) -> &mut Vec<u8> {
-        let either = self.alloc.get(offset);
-        either.as_mut().unwrap_left()
-    }
-
-    pub fn get_node(&self, offset: usize) -> &mut Node {
-        let either = self.alloc.get(offset);
-        either.as_mut().unwrap_right()
-    }
-
-    pub fn first_node(&self) -> &mut Node {
-        let either = self.alloc.get(0);
-        either.as_mut().unwrap_right()
-    }
-
-    pub fn len(&self) -> usize {
-        self.byte_size.load(Ordering::Relaxed)
-    }
-}
-
-/// FixSizeAllocate fixed size memory allocator, WARNING: zero offset not store any T that for wrap Arena
-pub struct FixSizeAllocate<T> {
-    ptr: NonNull<T>,
-    cap: AtomicUsize,
-    len: AtomicUsize,
-}
-
-impl<T> Debug for FixSizeAllocate<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FixSizeAllocate")
-            .field("cap", &self.cap)
-            .field("len", &self.cap)
-            .finish()
-    }
-}
-
-impl<T> FixSizeAllocate<T> {
-    pub(crate) fn size() -> usize {
-        size_of::<T>()
-    }
-
-    pub fn new(mut sz: usize) -> Self {
-        let layout = std::alloc::Layout::array::<T>(sz).unwrap();
-        let ptr = unsafe { std::alloc::alloc(layout) } as *mut T;
-        let mut allocate = FixSizeAllocate {
-            ptr: NonNull::new(ptr).unwrap(),
-            cap: AtomicUsize::new(sz),
-            len: AtomicUsize::new(0),
-        };
-        allocate
-    }
-
-    #[inline]
-    pub fn alloc(&self) -> (&mut T, usize) {
-        let offset = self.len.fetch_add(1, Ordering::Release);
-        let ptr = self.get_data_mut_ptr();
-        let ref_data =
-            unsafe { &mut *slice_from_raw_parts_mut(ptr.add(self.cal_offset(offset)), 1) };
-        (&mut ref_data[0], offset)
-    }
-
-    #[inline]
-    pub fn alloc_slice(&self, sz: usize) -> (&mut [T], usize) {
-        let offset = self.len.fetch_add(Self::size() * sz, Ordering::Release);
-        let ptr = self.get_data_mut_ptr();
-        let mut ref_data = unsafe { &mut *slice_from_raw_parts_mut(ptr.add(offset), sz) };
-        (ref_data, offset)
-    }
-
-    #[inline]
-    pub fn get(&self, offset: usize) -> &mut T {
-        let mut ptr = self.get_data_mut_ptr();
-        let mut ref_data =
-            unsafe { &mut *slice_from_raw_parts_mut(ptr.add(self.cal_offset(offset)), 1) };
-        &mut ref_data[0]
-    }
-
-    #[inline]
-    pub fn get_slice(&self, offset: usize, n: usize) -> &mut [T] {
-        let ptr = self.get_data_mut_ptr();
-        let mut ref_data =
-            unsafe { &mut *slice_from_raw_parts_mut(ptr.add(self.cal_offset(offset)), n) };
-        ref_data
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.len.load(Ordering::Acquire)
-    }
-
-    #[inline]
-    pub fn empty(&self) -> bool {
-        self.len.load(Ordering::Acquire) == 0
-    }
-
-    #[inline]
-    pub(crate) fn cal_offset(&self, offset: usize) -> usize {
-        offset * size_of::<T>()
-    }
-
-    #[inline]
-    pub(crate) fn get_data_mut_ptr(&self) -> *mut T {
-        self.get_data_ptr() as *mut T
-    }
-
-    #[inline]
-    pub(crate) fn get_data_ptr(&self) -> *const T {
-        self.ptr.as_ptr()
-    }
-}
-
-impl<T> Drop for FixSizeAllocate<T> {
-    fn drop(&mut self) {
-        info!(
-            "Drop fix size allocator, cap:{}, len:{}",
-            self.cap.load(Ordering::Acquire),
-            self.len.load(Ordering::Acquire)
-        );
-        if self.cap.load(Ordering::Acquire) != 0 {
-            let layout = std::alloc::Layout::array::<T>(self.cap.load(Ordering::Acquire)).unwrap();
-            unsafe {
-                std::alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
-            }
-        }
-    }
-}
-
 #[derive(Debug)]
 #[repr(C)]
-pub struct SmartAllocate {
-    pub(crate) ptr: std::mem::ManuallyDrop<Vec<u8>>,
-    pub(crate) count: AtomicU64,
-}
-
-impl Allocate for SmartAllocate {
-    type Block = impl Chunk;
-    #[inline]
-    fn alloc(&self, start: usize, n: usize) -> Self::Block {
-        assert!(start + n <= self.size());
-        self.count.store((start + n) as u64, Ordering::Release);
-        let ptr = self.get_data_ptr();
-        let block_ptr = unsafe { ptr.add(start) as *mut u8 };
-        let block = BlockBytes::new(NonNull::new(block_ptr).unwrap(), n);
-        block
-    }
-    #[inline]
-    fn size(&self) -> usize {
-        self.ptr.len()
-    }
-    #[inline]
-    fn used_count(&self) -> usize {
-        self.count.load(Ordering::Acquire) as usize
-    }
-}
-
-impl SmartAllocate {
-    pub(crate) fn new(m: std::mem::ManuallyDrop<Vec<u8>>) -> Self {
-        SmartAllocate {
-            ptr: m,
-            count: Default::default(),
-        }
-    }
-
-    #[inline]
-    pub(crate) fn get_data_ptr(&self) -> *const u8 {
-        self.ptr.as_ptr()
-    }
-}
-
-impl Drop for SmartAllocate {
-    fn drop(&mut self) {
-        unsafe { std::mem::ManuallyDrop::drop(&mut self.ptr) };
-    }
-}
-
-#[derive(Clone, Debug)]
-#[repr(C)]
 pub struct BlockBytes {
-    start: NonNull<u8>,
+    start: AtomicPtr<u8>,
     n: usize,
 }
 
-unsafe impl Send for BlockBytes {}
-
-unsafe impl Sync for BlockBytes {}
-
 impl BlockBytes {
-    pub(crate) fn new(start: NonNull<u8>, n: usize) -> Self {
-        BlockBytes { start, n }
+    pub(crate) fn new(start: *mut u8, n: usize) -> Self {
+        BlockBytes {
+            start: AtomicPtr::new(start),
+            n,
+        }
     }
 }
 
 impl Chunk for BlockBytes {
     #[inline]
     fn get_data(&self) -> &[u8] {
-        unsafe { &*slice_from_raw_parts(self.start.as_ptr(), self.n) }
+        unsafe { &*slice_from_raw_parts(self.start.load(Ordering::Relaxed), self.n) }
     }
+
     #[inline]
     fn get_data_mut(&self) -> &mut [u8] {
-        unsafe { &mut *slice_from_raw_parts_mut(self.start.as_ptr(), self.n) }
+        unsafe { &mut *slice_from_raw_parts_mut(self.start.load(Ordering::Relaxed), self.n) }
     }
+
     #[inline]
     fn size(&self) -> usize {
         self.n
@@ -516,7 +316,7 @@ fn t_onlylayoutalloc_slice() {
 #[test]
 fn t_block_bytes() {
     let mut buffer = vec![0u8; 1024];
-    let block = BlockBytes::new(NonNull::new(buffer.as_mut_ptr()).unwrap(), 10);
+    let block = BlockBytes::new(buffer.as_mut_ptr(), 10);
     {
         let data = block.get_data_mut();
         for datum in 0..data.len() {
@@ -526,37 +326,4 @@ fn t_block_bytes() {
     for datum in 0..block.size() {
         assert_eq!(buffer[datum], datum as u8);
     }
-}
-
-#[test]
-fn t_enum() {
-    let mut alloc = EitherAllocate::new(1 << 10);
-    let mut offsets = vec![];
-    for i in 0..1 << 10 {
-        if i % 2 == 0 {
-            let (mut slice, offset) = alloc.alloc_vec(i);
-            slice.fill((i % u8::MAX as usize) as u8);
-            offsets.push(offset);
-        } else {
-            let (mut node, offset) = alloc.alloc_node();
-            offsets.push(offset);
-            node.value.store(i as u64, Ordering::Relaxed);
-        }
-    }
-
-    for i in 0..1 << 10 {
-        if i % 2 == 0 {
-            let slice = alloc.get_vec(offsets[i]);
-            let value = (i % u8::MAX as usize) as u8;
-            assert_eq!(slice.len(), i);
-            let mut v = vec![0u8; slice.len()];
-            v.fill(value);
-            assert_eq!(&mut v, slice);
-        } else {
-            let node = alloc.get_node(offsets[i]);
-            assert_eq!(node.value.load(Ordering::Relaxed), i as u64);
-        }
-    }
-    let len = alloc.len();
-    println!("{}", len);
 }
