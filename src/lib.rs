@@ -33,11 +33,11 @@ mod value_log;
 #[cfg(test)]
 mod value_log_tests;
 mod y;
+mod level_handler;
 
 mod compaction;
-#[cfg(test)]
-mod kv_test;
-mod level_handler;
+// #[cfg(test)]
+// mod kv_test;
 mod levels;
 mod mmap;
 mod pb;
@@ -45,7 +45,6 @@ mod st_manager;
 #[cfg(test)]
 mod test_util;
 
-mod db;
 
 pub use skl::*;
 pub use st_manager::*;

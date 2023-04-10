@@ -52,7 +52,8 @@ pub const _HEAD: &[u8; 11] = b"!bager!head"; // For Storing value offset for rep
 pub struct Closers {
     pub update_size: Closer,
     pub compactors: Closer,
-    pub mem_table: Closer, // Wait flush job exit
+    pub mem_table: Closer,
+    // Wait flush job exit
     pub writes: Closer,
     pub value_gc: Closer,
 }
@@ -98,6 +99,7 @@ pub struct KV {
 }
 
 unsafe impl Send for KV {}
+
 unsafe impl Sync for KV {}
 
 impl Drop for KV {
@@ -580,7 +582,7 @@ impl KV {
 
             if entry.meta == MetaBit::BIT_SET_IF_ABSENT.bits() {
                 // Someone else might have written a value, so lets check again if key exists.
-                let exits = self.exists(&entry.key)?;
+                let exits = self._exists(&entry.key)?;
                 // Value already exists. don't write.
                 if exits {
                     entry_pair.set_resp(Err(Error::ValueKeyExists));
@@ -618,7 +620,7 @@ impl KV {
         Ok(())
     }
 
-    fn exists(&self, key: &[u8]) -> Result<bool> {
+    fn _exists(&self, key: &[u8]) -> Result<bool> {
         let value = self._get(key)?;
         if value.value.is_empty() && value.meta == 0 {
             return Ok(false);
@@ -755,10 +757,116 @@ impl ArcKV {
         self.manifest.write().await
     }
 
+    /// Return a value that will async load value, if want not return value, should be `exists`
     pub async fn get(&self, key: &[u8]) -> Result<Vec<u8>> {
         let got = self._get(key)?;
         let inner = KVItemInner::new(key.to_vec(), got, self.clone());
         inner.get_value().await
+    }
+
+    /// Set sets the provided value for a given key. If key is not present, it is created. If it is
+    /// present, the existing value is overwritten with the one provided.
+    /// Along with key and value, Set can also take an optional userMeta byte. This byte is stored
+    /// alongside the key, and can be used as an aid to interpret the value or store other contextual
+    /// bits corresponding to the key-value pair.
+    pub async fn set(&self, key: Vec<u8>, value: Vec<u8>, user_meta: u8) -> Result<()> {
+        self.to_ref().set(key, value, user_meta).await
+    }
+
+    /// Sets value of key if key is not present.
+    /// If it is present, it returns the key_exists error.
+    /// TODO it should be atomic operate
+    pub async fn set_if_ab_sent(&self, key: Vec<u8>, value: Vec<u8>, user_meta: u8) -> Result<()> {
+        let exists = self.exists(&key).await?;
+        // found the key, return key_exists
+        if exists {
+            return Err(Error::ValueKeyExists);
+        }
+        let entry = Entry::default()
+            .key(key)
+            .value(value)
+            .user_meta(user_meta)
+            .meta(MetaBit::BIT_SET_IF_ABSENT.bits());
+        let ret = self.batch_set(vec![entry]).await;
+        ret[0].to_owned()
+    }
+
+    /// Return Ok(true) if key exists, Ok(false) if key not exists, Otherwise Err(err) if happen some error.
+    pub async fn exists(&self, key: &[u8]) -> Result<bool> {
+        return self._exists(key);
+    }
+
+    /// Batch set entries, returns result sets
+    pub async fn batch_set(&self, entries: Vec<Entry>) -> Vec<Result<()>> {
+        let reqs = self.to_ref().batch_set(entries).await.unwrap();
+        let mut res = Vec::with_capacity(reqs.len());
+        for req in reqs {
+            let ret = req.get_resp().await;
+            res.push(ret);
+        }
+        res
+    }
+
+    /// CompareAndSetAsync is the asynchronous version of CompareAndSet. It accepts a callback function
+    /// which is called when the CompareAndSet completes. Any error encountered during execution is
+    /// passed as an argument to the callback function.
+    pub async fn compare_and_set(
+        &self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        cas_counter: u64,
+    ) -> Result<()> {
+        let entry = Entry::default()
+            .key(key)
+            .value(value)
+            .cas_counter_check(cas_counter);
+        let ret = self.batch_set(vec![entry]).await;
+        ret[0].to_owned()
+    }
+
+    /// Delete deletes a key.
+    /// Exposing this so that user does not have to specify the Entry directly.
+    /// For example, BitDelete seems internal to badger.
+    pub async fn delete(&self, key: Vec<u8>) -> Result<()> {
+        let entry = Entry::default().key(key);
+        let ret = self.batch_set(vec![entry]).await;
+        ret[0].to_owned()
+    }
+
+    /// CompareAndDelete deletes a key ensuring that it has not been changed since last read.
+    /// If existing key has different casCounter, this would not delete the key and return an error.
+    pub async fn compare_and_delete(&self, key: Vec<u8>, cas_counter: u64) -> Result<()> {
+        let entry = Entry::default().key(key).cas_counter_check(cas_counter);
+        let ret = self.batch_set(vec![entry]).await;
+        ret[0].to_owned()
+    }
+
+    /// RunValueLogGC would trigger a value log garbage collection with no guarantees that a call would
+    /// result in a space reclaim. Every run would in the best case rewrite only one log file. So,
+    /// repeated calls may be necessary.
+    ///
+    /// The way it currently works is that it would randomly pick up a value log file, and sample it. If
+    /// the sample shows that we can discard at least discardRatio space of that file, it would be
+    /// rewritten. Else, an ErrNoRewrite error would be returned indicating that the GC didn't result in
+    /// any file rewrite.
+    ///
+    /// We recommend setting discardRatio to 0.5, thus indicating that a file be rewritten if half the
+    /// space can be discarded.  This results in a lifetime value log write amplification of 2 (1 from
+    /// original write + 0.5 rewrite + 0.25 + 0.125 + ... = 2). Setting it to higher value would result
+    /// in fewer space reclaims, while setting it to a lower value would result in more space reclaims at
+    /// the cost of increased activity on the LSM tree. discardRatio must be in the range (0.0, 1.0),
+    /// both endpoints excluded, otherwise an ErrInvalidRequest is returned.
+    ///
+    /// Only one GC is allowed at a time. If another value log GC is running, or KV has been closed, this
+    /// would return an ErrRejected.
+    ///
+    /// Note: Every time GC is run, it would produce a spike of activity on the LSM tree.
+    pub async fn run_value_log_gc(&self, discard_ratio: f64) -> Result<()> {
+        // if discard_ratio >= 1.0 || discard_ratio <= 0.0 {
+        //     Err(Error::ValueInvalidRequest);
+        // }
+        // self.must_vlog().wait_on_gc(lc)
+        todo!()
     }
 
     /// Closes a KV. It's crucial to call it to ensure all the pending updates
