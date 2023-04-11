@@ -44,6 +44,8 @@ mod pb;
 mod st_manager;
 #[cfg(test)]
 mod test_util;
+#[cfg(test)]
+mod kv_test;
 
 
 pub use skl::*;

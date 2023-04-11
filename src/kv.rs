@@ -764,6 +764,12 @@ impl ArcKV {
         inner.get_value().await
     }
 
+    pub(crate) async fn get_with_ext(&self, key: &[u8]) -> Result<KVItem> {
+        let got = self._get(key)?;
+        let inner = KVItemInner::new(key.to_vec(), got, self.clone());
+        Ok(TArcRW::new(tokio::sync::RwLock::new(inner)))
+    }
+
     /// Set sets the provided value for a given key. If key is not present, it is created. If it is
     /// present, the existing value is overwritten with the one provided.
     /// Along with key and value, Set can also take an optional userMeta byte. This byte is stored
@@ -862,11 +868,10 @@ impl ArcKV {
     ///
     /// Note: Every time GC is run, it would produce a spike of activity on the LSM tree.
     pub async fn run_value_log_gc(&self, discard_ratio: f64) -> Result<()> {
-        // if discard_ratio >= 1.0 || discard_ratio <= 0.0 {
-        //     Err(Error::ValueInvalidRequest);
-        // }
-        // self.must_vlog().wait_on_gc(lc)
-        todo!()
+        if discard_ratio >= 1.0 || discard_ratio <= 0.0 {
+            return Err(Error::ValueInvalidRequest);
+        }
+        self.must_vlog().trigger_gc(discard_ratio).await
     }
 
     /// Closes a KV. It's crucial to call it to ensure all the pending updates
@@ -1089,23 +1094,4 @@ async fn write_level0_table(st: &SkipList, f: &mut tokio::fs::File) -> Result<()
 
 fn arena_size(opt: &Options) -> usize {
     (opt.max_table_size + opt.max_batch_size + opt.max_batch_count * Node::size() as u64) as usize
-}
-
-#[test]
-fn t_pointer() {
-    struct Ext {
-        v: Vec<u32>,
-        name: String,
-    }
-
-    let t = Ext {
-        v: vec![],
-        name: "Name".to_owned(),
-    };
-
-    let p = unsafe { &t as *const Ext };
-
-    let arc_p = Arc::new(t);
-
-    print!("==> {:?}", p);
 }
