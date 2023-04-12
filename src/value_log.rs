@@ -374,6 +374,7 @@ pub struct Request {
     pub(crate) entries: RwLock<Vec<RwLock<EntryType>>>,
     // Output Values and wait group stuff below
     pub(crate) ptrs: Mutex<Vec<Option<ValuePointer>>>,
+    // The res not same to EntryType.1 error
     pub(crate) res: Channel<Result<()>>,
 }
 

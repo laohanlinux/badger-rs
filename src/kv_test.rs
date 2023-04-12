@@ -2,6 +2,7 @@ use log::info;
 use log::kv::ToValue;
 use std::env::temp_dir;
 use std::io::Write;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::iterator::IteratorOptions;
@@ -120,9 +121,10 @@ async fn t_cas() {
     }
 
     for i in 0..n {
-        let key = format!("{}", i).as_bytes().to_vec();
-        let value = format!("{}", i).as_bytes().to_vec();
-        let mut cc = entries[i].cas_counter;
+        let key = format!("{}", i).into_bytes();
+        let value = format!("{}", i).into_bytes();
+        let mut cc = items[i].read().await.counter();
+        println!("counter: {}", cc);
         if cc == 5 {
             cc = 6;
         } else {

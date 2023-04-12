@@ -91,7 +91,7 @@ pub struct KV {
     pub write_ch: Channel<ArcRequest>,
     // Incremented in the non-concurrently accessed write loop.  But also accessed outside. So
     // we use an atomic op.
-    last_used_cas_counter: AtomicU64,
+    pub(crate) last_used_cas_counter: AtomicU64,
     share_lock: tokio::sync::RwLock<()>,
     // TODO user ctx replace closer
     ctx: tokio_context::context::Context,
@@ -166,7 +166,7 @@ impl KV {
             value_dir_guard,
             closers,
             write_ch: Channel::new(1),
-            last_used_cas_counter: Default::default(),
+            last_used_cas_counter: AtomicU64::new(1),
             mem_st_manger: Arc::new(SkipListManager::new(opt.arena_size() as usize)),
             share_lock: tokio::sync::RwLock::new(()),
             ctx,
@@ -408,6 +408,7 @@ impl KV {
             let counter_base = self.new_cas_counter(entries.len() as u64);
             for (idx, entry) in entries.iter().enumerate() {
                 entry.write().mut_entry().cas_counter = counter_base + idx as u64;
+                info!("update cas counter: {}", entry.read().entry().cas_counter);
             }
         }
 
@@ -562,6 +563,76 @@ impl KV {
         Ok(reqs)
     }
 
+    pub(crate) async fn batch_set2(&self, entries: Vec<Entry>) -> Result<Vec<ArcRequest>> {
+        let mut bad = vec![];
+        let mut batch_reqs = vec![];
+        let mut b = Some(Request::default());
+        let mut count = 0;
+        let mut sz = 0u64;
+        for entry in entries {
+            if entry.key.len() > MAX_KEY_SIZE {
+                bad.push(entry);
+                continue;
+            }
+            if entry.value.len() as u64 > self.opt.value_log_file_size {
+                bad.push(entry);
+                continue;
+            }
+            count += 1;
+            sz += self.opt.estimate_size(&entry) as u64;
+
+            {
+                b.as_ref()
+                    .unwrap()
+                    .entries
+                    .write()
+                    .push(parking_lot::RwLock::new(EntryType::from(entry)));
+                b.as_ref().unwrap().ptrs.lock().push(None);
+            }
+
+            if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_count {
+                let task_req = b.replace(Request::default());
+                batch_reqs.push(task_req.unwrap());
+                count = 0;
+                sz = 0;
+            }
+        }
+        if let Some(req) = b {
+            if !req.entries.read().is_empty() {
+                batch_reqs.push(req);
+            }
+        }
+
+        let mut reqs = vec![];
+        for req in batch_reqs {
+            if req.entries.read().is_empty() {
+                break;
+            }
+            let arc_req = ArcRequest::from(req);
+            reqs.push(arc_req.clone());
+            assert!(!self.write_ch.is_close());
+            info!(
+                "send tasks to write, entries: {}",
+                arc_req.get_req().entries.read().len()
+            );
+            self.write_ch.send(arc_req).await.unwrap();
+        }
+        if !bad.is_empty() {
+            let req = Request::default();
+            *req.entries.write() = Vec::from_iter(
+                bad.into_iter()
+                    .map(|bad| parking_lot::RwLock::new(EntryType::from(bad)))
+                    .into_iter(),
+            );
+            let arc_req = ArcRequest::from(req);
+            arc_req
+                .set_err(Err("key too big or value to big".into()))
+                .await;
+            reqs.push(arc_req);
+        }
+        Ok(reqs)
+    }
+
     fn write_to_lsm(&self, req: ArcRequest) -> Result<()> {
         let req = req.get_req(); //.entries.read();
         let ptrs = req.ptrs.lock();
@@ -633,8 +704,7 @@ impl KV {
     }
 
     fn new_cas_counter(&self, how_many: u64) -> u64 {
-        self.last_used_cas_counter
-            .fetch_add(how_many, Ordering::Relaxed)
+        self.last_used_cas_counter.fetch_add(how_many, Ordering::Relaxed) + 1
     }
 
     async fn ensure_room_for_write(&self) -> Result<()> {
@@ -971,7 +1041,7 @@ impl ArcKV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -986,8 +1056,10 @@ impl ArcKV {
 impl ArcKV {
     async fn do_writes(&self, lc: Closer, without_close_write_ch: bool) {
         info!("start do writes task!");
-        defer! {info!("exit writes task!")};
-        defer! {lc.done()};
+        defer! {info!("exit writes task!")}
+        ;
+        defer! {lc.done()}
+        ;
         // TODO add metrics
         let has_been_close = lc.has_been_closed();
         let write_ch = self.write_ch.clone();
@@ -1060,7 +1132,7 @@ impl ArcKV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         // no value
         if !item.has_value() {
