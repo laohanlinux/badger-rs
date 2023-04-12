@@ -360,10 +360,9 @@ impl KV {
         entry.key = key;
         entry.value = value;
         entry.user_meta = user_meta;
-        let res = self.batch_set(vec![entry]).await?;
+        let res = self.batch_set(vec![entry]).await;
         assert_eq!(res.len(), 1);
-        let first = res.first().unwrap().get_req();
-        first.get_resp().await
+        res[0].to_owned()
     }
 
     // Returns the current `mem_tables` and get references.
@@ -413,7 +412,11 @@ impl KV {
         }
 
         // TODO add error set
-        self.vlog.as_ref().unwrap().write(reqs.clone())?;
+        if let Err(err) = self.vlog.as_ref().unwrap().write(reqs.clone()) {
+            for req in reqs.iter() {
+                req.set_err(Err(err.clone()));
+            }
+        }
 
         info!("Writing to memory table");
         let mut count = 0;
@@ -426,7 +429,11 @@ impl KV {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             info!("waiting for write");
-            self.write_to_lsm(req.clone())?;
+            if let Err(err) = self.write_to_lsm(req.clone()) {
+                req.set_err(Err(err));
+            } else {
+                req.set_err(Ok(()));
+            }
             self.update_offset(req.get_req().ptrs.lock());
         }
         info!("{} entries written", count);
@@ -493,144 +500,120 @@ impl KV {
     //      Check(e.Error);
     // }
     // TODO
-    pub(crate) async fn batch_set(&self, entries: Vec<Entry>) -> Result<Vec<ArcRequest>> {
-        let mut bad = vec![];
-        let mut batch_reqs = vec![];
-        let mut b = Some(Request::default());
+    // pub(crate) async fn batch_set(&self, entries: Vec<Entry>) -> Result<Vec<ArcRequest>> {
+    //     let mut bad = vec![];
+    //     let mut batch_reqs = vec![];
+    //     let mut b = Some(Request::default());
+    //     let mut count = 0;
+    //     let mut sz = 0u64;
+    //     for entry in entries {
+    //         if entry.key.len() > MAX_KEY_SIZE {
+    //             bad.push(entry);
+    //             continue;
+    //         }
+    //         if entry.value.len() as u64 > self.opt.value_log_file_size {
+    //             bad.push(entry);
+    //             continue;
+    //         }
+    //         count += 1;
+    //         sz += self.opt.estimate_size(&entry) as u64;
+    //
+    //         {
+    //             b.as_ref()
+    //                 .unwrap()
+    //                 .entries
+    //                 .write()
+    //                 .push(parking_lot::RwLock::new(EntryType::from(entry)));
+    //             b.as_ref().unwrap().ptrs.lock().push(None);
+    //         }
+    //
+    //         if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_count {
+    //             let task_req = b.replace(Request::default());
+    //             batch_reqs.push(task_req.unwrap());
+    //             count = 0;
+    //             sz = 0;
+    //         }
+    //     }
+    //     if let Some(req) = b {
+    //         if !req.entries.read().is_empty() {
+    //             batch_reqs.push(req);
+    //         }
+    //     }
+    //
+    //     let mut reqs = vec![];
+    //     for req in batch_reqs {
+    //         if req.entries.read().is_empty() {
+    //             break;
+    //         }
+    //         let arc_req = ArcRequest::from(req);
+    //         reqs.push(arc_req.clone());
+    //         assert!(!self.write_ch.is_close());
+    //         info!(
+    //             "send tasks to write, entries: {}",
+    //             arc_req.get_req().entries.read().len()
+    //         );
+    //         self.write_ch.send(arc_req).await.unwrap();
+    //     }
+    //     if !bad.is_empty() {
+    //         let req = Request::default();
+    //         *req.entries.write() = Vec::from_iter(
+    //             bad.into_iter()
+    //                 .map(|bad| parking_lot::RwLock::new(EntryType::from(bad)))
+    //                 .into_iter(),
+    //         );
+    //         let arc_req = ArcRequest::from(req);
+    //         arc_req
+    //             .set_err(Err("key too big or value to big".into()))
+    //             .await;
+    //         reqs.push(arc_req);
+    //     }
+    //     Ok(reqs)
+    // }
+    pub(crate) async fn batch_set(&self, entries: Vec<Entry>) -> Vec<Result<()>> {
         let mut count = 0;
         let mut sz = 0u64;
+        let mut res = vec![];
+        let mut req = ArcRequest::from(Request::default());
         for entry in entries {
             if entry.key.len() > MAX_KEY_SIZE {
-                bad.push(entry);
+                res.push(Err("Key too big".into()));
                 continue;
             }
             if entry.value.len() as u64 > self.opt.value_log_file_size {
-                bad.push(entry);
+                res.push(Err("Value to big".into()));
                 continue;
             }
             count += 1;
             sz += self.opt.estimate_size(&entry) as u64;
 
-            {
-                b.as_ref()
-                    .unwrap()
-                    .entries
-                    .write()
-                    .push(parking_lot::RwLock::new(EntryType::from(entry)));
-                b.as_ref().unwrap().ptrs.lock().push(None);
-            }
+            req.req_ref()
+                .entries
+                .write()
+                .push(parking_lot::RwLock::new(EntryType::from(entry)));
+            req.req_ref().ptrs.lock().push(None);
 
             if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_count {
-                let task_req = b.replace(Request::default());
-                batch_reqs.push(task_req.unwrap());
+                assert!(!self.write_ch.is_close());
+                info!(
+                    "send tasks to write, entries: {}",
+                    req.get_req().entries.read().len()
+                );
+                self.write_ch.send(req.clone()).await.unwrap();
                 count = 0;
                 sz = 0;
+                let errs = req.get_req().get_errs();
+                res.extend(errs.into_iter());
+                req.req_ref().entries.write().clear();
+                req.req_ref().ptrs.lock().clear();
             }
         }
-        if let Some(req) = b {
-            if !req.entries.read().is_empty() {
-                batch_reqs.push(req);
-            }
+        if !req.req_ref().entries.read().is_empty() {
+            self.write_ch.send(req.clone()).await.unwrap();
+            res.extend(req.get_req().get_errs().into_iter());
+            req.req_ref().entries.write().clear();
+            req.req_ref().ptrs.lock().clear();
         }
-
-        let mut reqs = vec![];
-        for req in batch_reqs {
-            if req.entries.read().is_empty() {
-                break;
-            }
-            let arc_req = ArcRequest::from(req);
-            reqs.push(arc_req.clone());
-            assert!(!self.write_ch.is_close());
-            info!(
-                "send tasks to write, entries: {}",
-                arc_req.get_req().entries.read().len()
-            );
-            self.write_ch.send(arc_req).await.unwrap();
-        }
-        if !bad.is_empty() {
-            let req = Request::default();
-            *req.entries.write() = Vec::from_iter(
-                bad.into_iter()
-                    .map(|bad| parking_lot::RwLock::new(EntryType::from(bad)))
-                    .into_iter(),
-            );
-            let arc_req = ArcRequest::from(req);
-            arc_req
-                .set_err(Err("key too big or value to big".into()))
-                .await;
-            reqs.push(arc_req);
-        }
-        Ok(reqs)
-    }
-
-    pub(crate) async fn batch_set2(&self, entries: Vec<Entry>) -> Result<Vec<ArcRequest>> {
-        let mut bad = vec![];
-        let mut batch_reqs = vec![];
-        let mut b = Some(Request::default());
-        let mut count = 0;
-        let mut sz = 0u64;
-        for entry in entries {
-            if entry.key.len() > MAX_KEY_SIZE {
-                bad.push(entry);
-                continue;
-            }
-            if entry.value.len() as u64 > self.opt.value_log_file_size {
-                bad.push(entry);
-                continue;
-            }
-            count += 1;
-            sz += self.opt.estimate_size(&entry) as u64;
-
-            {
-                b.as_ref()
-                    .unwrap()
-                    .entries
-                    .write()
-                    .push(parking_lot::RwLock::new(EntryType::from(entry)));
-                b.as_ref().unwrap().ptrs.lock().push(None);
-            }
-
-            if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_count {
-                let task_req = b.replace(Request::default());
-                batch_reqs.push(task_req.unwrap());
-                count = 0;
-                sz = 0;
-            }
-        }
-        if let Some(req) = b {
-            if !req.entries.read().is_empty() {
-                batch_reqs.push(req);
-            }
-        }
-
-        let mut reqs = vec![];
-        for req in batch_reqs {
-            if req.entries.read().is_empty() {
-                break;
-            }
-            let arc_req = ArcRequest::from(req);
-            reqs.push(arc_req.clone());
-            assert!(!self.write_ch.is_close());
-            info!(
-                "send tasks to write, entries: {}",
-                arc_req.get_req().entries.read().len()
-            );
-            self.write_ch.send(arc_req).await.unwrap();
-        }
-        if !bad.is_empty() {
-            let req = Request::default();
-            *req.entries.write() = Vec::from_iter(
-                bad.into_iter()
-                    .map(|bad| parking_lot::RwLock::new(EntryType::from(bad)))
-                    .into_iter(),
-            );
-            let arc_req = ArcRequest::from(req);
-            arc_req
-                .set_err(Err("key too big or value to big".into()))
-                .await;
-            reqs.push(arc_req);
-        }
-        Ok(reqs)
+        res
     }
 
     fn write_to_lsm(&self, req: ArcRequest) -> Result<()> {
@@ -704,7 +687,9 @@ impl KV {
     }
 
     fn new_cas_counter(&self, how_many: u64) -> u64 {
-        self.last_used_cas_counter.fetch_add(how_many, Ordering::Relaxed) + 1
+        self.last_used_cas_counter
+            .fetch_add(how_many, Ordering::Relaxed)
+            + 1
     }
 
     async fn ensure_room_for_write(&self) -> Result<()> {
@@ -874,13 +859,7 @@ impl ArcKV {
 
     /// Batch set entries, returns result sets
     pub async fn batch_set(&self, entries: Vec<Entry>) -> Vec<Result<()>> {
-        let reqs = self.to_ref().batch_set(entries).await.unwrap();
-        let mut res = Vec::with_capacity(reqs.len());
-        for req in reqs {
-            let ret = req.get_resp().await;
-            res.push(ret);
-        }
-        res
+        self.to_ref().batch_set(entries).await
     }
 
     /// CompareAndSetAsync is the asynchronous version of CompareAndSet. It accepts a callback function
@@ -1041,7 +1020,7 @@ impl ArcKV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1056,10 +1035,8 @@ impl ArcKV {
 impl ArcKV {
     async fn do_writes(&self, lc: Closer, without_close_write_ch: bool) {
         info!("start do writes task!");
-        defer! {info!("exit writes task!")}
-        ;
-        defer! {lc.done()}
-        ;
+        defer! {info!("exit writes task!")};
+        defer! {lc.done()};
         // TODO add metrics
         let has_been_close = lc.has_been_closed();
         let write_ch = self.write_ch.clone();
@@ -1101,10 +1078,9 @@ impl ArcKV {
             };
 
             if !to_reqs.is_empty() {
-                let res = self.write_requests(to_reqs.clone()).await;
-                for req in to_reqs.clone().to_vec() {
-                    req.set_err(res.clone()).await;
-                }
+                self.write_requests(to_reqs.clone())
+                    .await
+                    .expect("TODO: panic message");
             }
         }
 
@@ -1121,10 +1097,9 @@ impl ArcKV {
             }
             reqs.lock().push(req.unwrap());
             let to_reqs = to_reqs();
-            let res = self.write_requests(to_reqs.clone()).await;
-            for req in to_reqs.clone().to_vec() {
-                req.set_err(res.clone()).await;
-            }
+            self.write_requests(to_reqs.clone())
+                .await
+                .expect("TODO: panic message");
         }
     }
 
@@ -1132,7 +1107,7 @@ impl ArcKV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // no value
         if !item.has_value() {

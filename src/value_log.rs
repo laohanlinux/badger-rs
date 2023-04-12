@@ -374,8 +374,6 @@ pub struct Request {
     pub(crate) entries: RwLock<Vec<RwLock<EntryType>>>,
     // Output Values and wait group stuff below
     pub(crate) ptrs: Mutex<Vec<Option<ValuePointer>>>,
-    // The res not same to EntryType.1 error
-    pub(crate) res: Channel<Result<()>>,
 }
 
 impl Default for Request {
@@ -383,18 +381,33 @@ impl Default for Request {
         Request {
             entries: Default::default(),
             ptrs: Default::default(),
-            res: Channel::new(1),
         }
     }
 }
 
 impl Request {
-    pub(crate) async fn get_resp(&self) -> Result<()> {
-        self.res.recv().await.unwrap()
+    pub(crate) fn set_entries_resp(&self, ret: Result<()>) {
+        for entry in self.entries.write().iter_mut() {
+            info!("set resp");
+            entry.get_mut().set_resp(ret.clone());
+        }
     }
 
-    pub(crate) async fn set_resp(&self, ret: Result<()>) {
-        self.res.send(ret).await.unwrap()
+    pub async fn get_first_err(&self) -> Result<()> {
+        for entry in self.entries.read().iter() {
+            if let Err(err) = entry.read().as_ref().right().unwrap() {
+                return Err(err.clone());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_errs(&self) -> Vec<Result<()>> {
+        let mut res = vec![];
+        for entry in self.entries.read().iter() {
+            res.push(entry.read().as_ref().right().unwrap().clone());
+        }
+        res
     }
 }
 
@@ -402,7 +415,7 @@ impl Request {
 /// Eg: compare_and_set
 #[derive(Clone)]
 pub struct ArcRequest {
-    inner: Arc<Request>,
+    pub(crate) inner: Arc<Request>,
 }
 
 impl std::fmt::Debug for ArcRequest {
@@ -425,16 +438,16 @@ impl ArcRequest {
     }
 
     pub async fn is_ok(&self) -> bool {
-        let resp = self.get_req().get_resp().await;
+        let resp = self.get_req().get_first_err().await;
         resp.is_ok()
     }
 
     pub async fn get_resp(&self) -> Result<()> {
-        self.get_req().get_resp().await
+        self.get_req().get_first_err().await
     }
 
-    pub(crate) async fn set_err(&self, err: Result<()>) {
-        self.inner.res.send(err).await.expect("TODO: panic message");
+    pub fn set_err(&self, err: Result<()>) {
+        self.inner.set_entries_resp(err);
     }
 
     pub(crate) fn get_req(&self) -> Arc<Request> {
@@ -800,7 +813,6 @@ impl ValueLogCore {
                 .unwrap()
                 .write(self.buf.read().buffer())?;
             // todo add metrics
-            info!("Done");
             self.writable_log_offset
                 .fetch_add(n as u32, Ordering::Release);
             self.buf.write().get_mut().clear();
@@ -827,10 +839,8 @@ impl ValueLogCore {
                     && entry.read().entry().value.len() < self.opt.value_threshold
                 {
                     // No need to write to value log.
-                    info!("ptrs {}", req.ptrs.lock().len());
+                    // WARN: if mt not flush into disk but process abort, that will discard data(the data not write into vlog that WAL file)
                     req.ptrs.lock()[idx] = None;
-                    info!("to disk~");
-
                     continue;
                 }
 
@@ -840,7 +850,7 @@ impl ValueLogCore {
                 ptr.offset = self.writable_log_offset.load(Ordering::Acquire)
                     + self.buf.read().buffer().len() as u32;
                 let mut buf = self.buf.write();
-                entry.write().entry().enc(&mut *buf)?;
+                entry.write().entry().enc(&mut *buf).unwrap();
             }
         }
         to_disk()
@@ -950,7 +960,7 @@ impl ValueLogCore {
             count
         );
         info!("REWRITE: Removing fid: {}", lf.read().fid);
-        kv.batch_set(write_batch).await?;
+        kv.batch_set(write_batch).await;
         info!("REWRITE: Processed {} entries in total", count);
         info!("REWRITE: Removing fid: {}", lf.read().fid);
         let mut deleted_file_now = false;
