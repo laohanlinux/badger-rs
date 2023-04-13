@@ -16,6 +16,7 @@ use std::future::Future;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::ops::Deref;
 use std::pin::Pin;
+use std::sync::atomic::AtomicU64;
 use std::task::{Context, Poll};
 use std::time::SystemTime;
 
@@ -168,7 +169,7 @@ impl LogFile {
             entry.offset = record_offset;
             entry.meta = h.meta;
             entry.user_meta = h.user_mata;
-            entry.cas_counter = h.cas_counter;
+            entry.cas_counter = AtomicU64::new(h.cas_counter);
             entry.cas_counter_check = h.cas_counter_check;
             let ok = fd.read_u32::<BigEndian>();
             if is_eof(&ok) {

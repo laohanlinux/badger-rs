@@ -14,7 +14,7 @@ use rand::random;
 use serde_json::to_vec;
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::fs::{read_dir, remove_file, File, OpenOptions};
 use std::future::Future;
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
@@ -106,7 +106,7 @@ impl Decode for Header {
 /// Entry provides Key, Value and if required, cas_counter_check to kv.batch_set() API.
 /// If cas_counter_check is provided, it would be compared against the current `cas_counter`
 /// assigned to this key-value. Set be done on this key only if the counters match.
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Debug)]
 pub struct Entry {
     pub(crate) key: Vec<u8>,
     pub(crate) meta: u8,
@@ -116,7 +116,21 @@ pub struct Entry {
     pub(crate) cas_counter_check: u64,
     // Fields maintained internally.
     pub(crate) offset: u32,
-    pub(crate) cas_counter: u64,
+    pub(crate) cas_counter: AtomicU64,
+}
+
+impl Clone for Entry {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            meta: self.meta.clone(),
+            user_meta: self.user_meta.clone(),
+            value: self.value.clone(),
+            cas_counter_check: self.cas_counter_check.clone(),
+            offset: self.offset.clone(),
+            cas_counter: AtomicU64::new(self.get_cas_counter()),
+        }
+    }
 }
 
 impl Entry {
@@ -144,6 +158,10 @@ impl Entry {
         self.cas_counter_check = cas;
         self
     }
+
+    pub fn get_cas_counter(&self) -> u64 {
+        self.cas_counter.load(Ordering::Relaxed)
+    }
 }
 
 impl Entry {
@@ -157,7 +175,7 @@ impl Entry {
         entry.value = vec![0u8; h.v_len as usize];
         entry.meta = h.meta;
         entry.offset = cursor_offset as u32;
-        entry.cas_counter = h.cas_counter;
+        entry.cas_counter = AtomicU64::new(h.cas_counter);
         entry.user_meta = h.user_mata;
         entry.cas_counter_check = h.cas_counter_check;
         let mut start = cursor_offset as usize + Header::encoded_size();
@@ -185,7 +203,7 @@ impl Encode for Entry {
         h.v_len = self.value.len() as u32;
         h.meta = self.meta;
         h.user_mata = self.user_meta;
-        h.cas_counter = self.cas_counter;
+        h.cas_counter = self.cas_counter.load(Ordering::Relaxed);
         h.cas_counter_check = self.cas_counter_check;
         let mut buffer = vec![0u8; Header::encoded_size() + (h.k_len + h.v_len + 4) as usize];
         // write header
@@ -215,7 +233,7 @@ impl Decode for Entry {
         self.value = vec![0u8; h.v_len as usize];
         self.meta = h.meta;
         // self.offset = cursor_offset as u32;
-        self.cas_counter = h.cas_counter;
+        self.cas_counter = AtomicU64::new(h.cas_counter);
         self.user_meta = h.user_mata;
         self.cas_counter_check = h.cas_counter_check;
         let sz = rd.read(&mut self.key)?;
@@ -236,7 +254,7 @@ impl fmt::Display for Entry {
             .field("user_meta", &self.user_meta)
             .field("offset", &self.offset)
             .field("value", &self.value)
-            .field("case=", &self.cas_counter)
+            .field("case=", &self.get_cas_counter())
             .field("check", &self.cas_counter_check)
             .finish()
     }
@@ -332,11 +350,12 @@ impl From<Entry> for EntryType {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Request {
     // Input values, NOTE: RefCell<Entry> is called concurrency
-    pub(crate) entries: Vec<tokio::sync::RwLock<EntryType>>,
+    pub(crate) entries: Vec<EntryType>,
     // Output Values and wait group stuff below
-    pub(crate) ptrs: tokio::sync::RwLock<Vec<Option<ValuePointer>>>,
+    pub(crate) ptrs: Vec<Option<ValuePointer>>,
 }
 
 // unsafe impl Send for Request {}
@@ -1123,7 +1142,7 @@ impl ValueLogCore {
                             let mut unexpect_entry = Entry::default();
                             unexpect_entry.dec(&mut io::Cursor::new(buf))?;
                             unexpect_entry.offset = vptr.offset;
-                            if unexpect_entry.cas_counter == entry.cas_counter {
+                            if unexpect_entry.get_cas_counter() == entry.get_cas_counter() {
                                 info!("Latest Entry Header in LSM: {}", unexpect_entry);
                                 info!("Latest Entry in Log: {}", entry);
                             }

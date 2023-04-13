@@ -87,7 +87,7 @@ pub struct KV {
     // Our latest (actively written) in-memory table.
     pub mem_st_manger: Arc<SkipListManager>,
     // Add here only AFTER pushing to flush_ch
-    pub write_ch: Channel<ArcRequest>,
+    pub write_ch: Channel<Request>,
     // Incremented in the non-concurrently accessed write loop.  But also accessed outside. So
     // we use an atomic op.
     pub(crate) last_used_cas_counter: AtomicU64,
@@ -245,9 +245,11 @@ impl KV {
                         info!("First key={}", string::String::from_utf8_lossy(&entry.key));
                     }
                     first = false;
-                    if xout.last_used_cas_counter.load(Ordering::Relaxed) < entry.cas_counter {
+                    if xout.last_used_cas_counter.load(Ordering::Relaxed)
+                        < entry.cas_counter.load(Ordering::Relaxed)
+                    {
                         xout.last_used_cas_counter
-                            .store(entry.cas_counter, Ordering::Relaxed);
+                            .store(entry.cas_counter.load(Ordering::Relaxed), Ordering::Relaxed);
                     }
 
                     // TODO why?
@@ -269,7 +271,7 @@ impl KV {
                     let v = ValueStruct {
                         meta,
                         user_meta: entry.user_meta,
-                        cas_counter: entry.cas_counter,
+                        cas_counter: entry.get_cas_counter(),
                         value: nv,
                     };
                     while let Err(err) = xout.ensure_room_for_write().await {
@@ -407,8 +409,11 @@ impl KV {
             let counter_base = self.new_cas_counter(entries.len() as u64);
             for (idx, entry) in entries.iter().enumerate() {
                 let mut entry = entry.write().await;
-                entry.mut_entry().cas_counter = counter_base + idx as u64;
-                info!("update cas counter: {}", entry.entry().cas_counter);
+                entry
+                    .entry()
+                    .cas_counter
+                    .store(counter_base + idx as u64, Ordering::Relaxed);
+                info!("update cas counter: {}", entry.entry().get_cas_counter());
             }
         }
 
@@ -528,10 +533,7 @@ impl KV {
 
             if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_count {
                 assert!(!self.write_ch.is_close());
-                info!(
-                    "send tasks to write, entries: {}",
-                    req.entries.len()
-                );
+                info!("send tasks to write, entries: {}", req.entries.len());
                 let arc_req = ArcRequest::from(req);
                 self.write_ch.send(arc_req.clone()).await.unwrap();
                 {
@@ -600,7 +602,7 @@ impl KV {
                         entry.value.clone(), // TODO avoid value clone
                         entry.meta,
                         entry.user_meta,
-                        entry.cas_counter,
+                        entry.get_cas_counter(),
                     ),
                 );
             } else {
@@ -613,7 +615,7 @@ impl KV {
                         wt.into_inner(),
                         entry.meta | MetaBit::BIT_VALUE_POINTER.bits(),
                         entry.user_meta,
-                        entry.cas_counter,
+                        entry.get_cas_counter(),
                     ),
                 );
             }
