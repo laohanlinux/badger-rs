@@ -7,8 +7,7 @@ use crate::table::iterator::{IteratorImpl, IteratorItem};
 use crate::table::table::{new_file_name, Table, TableCore};
 use crate::types::{ArcMx, Channel, Closer, TArcMx, TArcRW, XArc, XWeak};
 use crate::value_log::{
-    ArcRequest, Entry, EntryType, MetaBit, Request, ValueLogCore, ValuePointer,
-    MAX_KEY_SIZE,
+    ArcRequest, Entry, EntryType, MetaBit, Request, ValueLogCore, ValuePointer, MAX_KEY_SIZE,
 };
 use crate::y::{
     async_sync_directory, create_synced_file, sync_directory, Encode, Result, ValueStruct,
@@ -21,7 +20,7 @@ use crate::{
 use anyhow::__private::kind::TraitKind;
 use async_channel::RecvError;
 use atomic::Atomic;
-use bytes::BufMut;
+use bytes::{Buf, BufMut};
 use crossbeam_epoch::{Owned, Shared};
 use drop_cell::defer;
 use fs2::FileExt;
@@ -356,7 +355,12 @@ impl KV {
     // alongside the key, and can be used as an aid to interpret the value or store other contextual
     // bits corresponding to the key-value pair.
     pub(crate) async fn set(&self, key: Vec<u8>, value: Vec<u8>, user_meta: u8) -> Result<()> {
-        let res = self.batch_set(vec![Entry::default().key(key).value(value).user_meta(user_meta)]).await;
+        let res = self
+            .batch_set(vec![Entry::default()
+                .key(key)
+                .value(value)
+                .user_meta(user_meta)])
+            .await;
         assert_eq!(res.len(), 1);
         res[0].to_owned()
     }
@@ -399,11 +403,12 @@ impl KV {
         // There is code (in flush_mem_table) whose correctness depends on us generating CAS Counter
         // values _before_ we modify s.vptr here.
         for req in reqs.iter() {
-            let entries = req.req_ref().entries.read().await;
+            let entries = &req.req_ref().entries;
             let counter_base = self.new_cas_counter(entries.len() as u64);
             for (idx, entry) in entries.iter().enumerate() {
-                entry.write().await.mut_entry().cas_counter = counter_base + idx as u64;
-                info!("update cas counter: {}", entry.read().await.entry().cas_counter);
+                let mut entry = entry.write().await;
+                entry.mut_entry().cas_counter = counter_base + idx as u64;
+                info!("update cas counter: {}", entry.entry().cas_counter);
             }
         }
 
@@ -418,10 +423,10 @@ impl KV {
         info!("Writing to memory table");
         let mut count = 0;
         for req in reqs.iter() {
-            if req.get_req().entries.read().await.is_empty() {
+            if req.get_req().entries.is_empty() {
                 continue;
             }
-            count += req.get_req().entries.read().await.len();
+            count += req.get_req().entries.len();
             while let Err(err) = self.ensure_room_for_write().await {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -500,7 +505,7 @@ impl KV {
         let mut count = 0;
         let mut sz = 0u64;
         let mut res = vec![Ok(()); entries.len()];
-        let mut req = ArcRequest::from(Request::default());
+        let mut req = Request::default();
         let mut req_index = vec![];
 
         for (i, entry) in entries.into_iter().enumerate() {
@@ -515,12 +520,9 @@ impl KV {
             {
                 count += 1;
                 sz += self.opt.estimate_size(&entry) as u64;
-                req.req_ref()
-                    .entries
-                    .write()
-                    .await
+                req.entries
                     .push(tokio::sync::RwLock::new(EntryType::from(entry)));
-                req.req_ref().ptrs.write().await.push(None);
+                req.ptrs.write().await.push(None);
                 req_index.push(i);
             }
 
@@ -528,47 +530,48 @@ impl KV {
                 assert!(!self.write_ch.is_close());
                 info!(
                     "send tasks to write, entries: {}",
-                    req.get_req().entries.read().await.len()
+                    req.entries.len()
                 );
-                self.write_ch.send(req.clone()).await.unwrap();
+                let arc_req = ArcRequest::from(req);
+                self.write_ch.send(arc_req.clone()).await.unwrap();
                 {
                     count = 0;
                     sz = 0;
-                    for (index, err) in req.get_req().get_errs().await.into_iter().enumerate() {
+                    for (index, err) in arc_req.req_ref().get_errs().await.into_iter().enumerate() {
                         let entry_index = req_index[index];
                         res[entry_index] = err;
                     }
-                    req.req_ref().entries.write().await.clear();
-                    req.req_ref().ptrs.write().await.clear();
+                    req = Request::default();
                     req_index.clear();
                 }
             }
         }
-        if !req.req_ref().entries.read().await.is_empty() {
-            self.write_ch.send(req.clone()).await.unwrap();
+        if !req.entries.is_empty() {
+            let arc_req = ArcRequest::from(req);
+            self.write_ch.send(arc_req.clone()).await.unwrap();
             {
                 count = 0;
                 sz = 0;
-                for (index, err) in req.get_req().get_errs().await.into_iter().enumerate() {
+                for (index, err) in arc_req.get_req().get_errs().await.into_iter().enumerate() {
                     let entry_index = req_index[index];
                     res[entry_index] = err;
                 }
-                req.req_ref().entries.write().await.clear();
-                req.req_ref().ptrs.write().await.clear();
+                req = Request::default();
                 req_index.clear();
             }
         }
         res
     }
 
-   async fn write_to_lsm(&self, req: ArcRequest) -> Result<()> {
+    async fn write_to_lsm(&self, req: ArcRequest) -> Result<()> {
+        defer! {info!("exit write to lsm")}
         let req = req.get_req(); //.entries.read();
         let ptrs = req.ptrs.read().await;
-        let entries = req.entries.read().await;
+        let entries = &req.entries;
         assert_eq!(entries.len(), ptrs.len());
 
         for (i, pair) in entries.iter().enumerate() {
-            let mut entry_pair = pair.write().await;
+            let entry_pair = pair.read().await;
             let entry = entry_pair.entry();
             if entry.cas_counter_check != 0 {
                 let old_value = self._get(&entry.key)?;
@@ -965,7 +968,7 @@ impl ArcKV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1052,7 +1055,7 @@ impl ArcKV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // no value
         if !item.has_value() {

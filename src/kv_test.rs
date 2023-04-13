@@ -20,9 +20,10 @@ fn get_test_option(dir: &str) -> Options {
 }
 
 #[tokio::test]
-async fn t_write() {
+async fn t_1_write() {
     use crate::test_util::{mock_log, mock_log_terminal, random_tmp_dir, tracing_log};
     tracing_log();
+    // console_subscriber::init();
     let dir = random_tmp_dir();
     let kv = KV::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();

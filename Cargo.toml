@@ -10,7 +10,7 @@ serde = { version = "1.0.131", features = ["derive"] }
 serde_json = { version = "1.0", default-features = true, features = ["alloc"] }
 anyhow = "1.0.31"
 thiserror = "1.0"
-tokio = { version = "1.16.1", features = ["full"] }
+tokio = { version = "1.16.1", features = ["full", "tracing"] }
 byteorder = "1.4.3"
 rand = "0.8.5"
 maligned = "0.2.1"
@@ -47,6 +47,7 @@ eieio = "1.0.0"
 either = "1.8.1"
 enum-unitary = "0.5.0"
 atom_box = "0.1.2"
+console-subscriber = "0.1.8"
 [dev-dependencies]
 tracing-subscriber = "0.3.16"
 tracing-log = "0.1.3"
@@ -54,3 +55,5 @@ chrono = "0.4.22"
 env_logger = "0.9.1"
 console_log = { version = "0.2.0", features = ["color"] }
 
+[build]
+rustflags = ["--cfg", "tokio_unstable"]

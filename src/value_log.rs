@@ -37,7 +37,7 @@ use crate::log_file::LogFile;
 use crate::options::Options;
 use crate::skl::BlockBytes;
 use crate::table::iterator::BlockSlice;
-use crate::types::{ArcMx, ArcRW, Channel, Closer, TArcMx, XArc};
+use crate::types::{ArcMx, ArcRW, Channel, Closer, TArcMx, TArcRW, XArc};
 use crate::y::{
     create_synced_file, is_eof, open_existing_synced_file, read_at, sync_directory, Decode, Encode,
 };
@@ -310,7 +310,7 @@ impl EntryType {
         self.fut_ch.rx()
     }
 
-    pub(crate) async fn set_resp(&mut self, ret: Result<()>) {
+    pub(crate) async fn set_resp(&self, ret: Result<()>) {
         self.fut_ch.tx().send(ret).await.unwrap();
     }
 }
@@ -334,7 +334,7 @@ impl From<Entry> for EntryType {
 
 pub struct Request {
     // Input values, NOTE: RefCell<Entry> is called concurrency
-    pub(crate) entries: tokio::sync::RwLock<Vec<tokio::sync::RwLock<EntryType>>>,
+    pub(crate) entries: Vec<tokio::sync::RwLock<EntryType>>,
     // Output Values and wait group stuff below
     pub(crate) ptrs: tokio::sync::RwLock<Vec<Option<ValuePointer>>>,
 }
@@ -354,25 +354,25 @@ impl Default for Request {
 
 impl Request {
     pub(crate) async fn set_entries_resp(&self, ret: Result<()>) {
-        for entry in self.entries.write().await.iter_mut() {
+        for entry in self.entries.iter() {
             info!("set resp");
-            entry.get_mut().set_resp(ret.clone()).await;
+            entry.read().await.set_resp(ret.clone()).await;
         }
     }
 
     pub async fn get_first_err(&self) -> Result<()> {
-        let ret = self.entries.read().await;
-        if let Some(ret) = ret.get(0) {
+        if let Some(ret) = self.entries.get(0) {
             ret.read().await.ret().recv().await.unwrap()
-        }else {
+        } else {
             Ok(())
         }
     }
 
     pub async fn get_errs(&self) -> Vec<Result<()>> {
         let mut res = vec![];
-        for entry in self.entries.read().await.iter() {
-            let ret = entry.read().await.ret().recv().await.unwrap();
+        for entry in self.entries.iter() {
+            let ch = entry.read().await.fut_ch.rx();
+            let ret = ch.recv().await.unwrap();
             res.push(ret);
         }
         res
@@ -415,7 +415,7 @@ impl ArcRequest {
     }
 
     pub async fn set_err(&self, err: Result<()>) {
-        self.inner.set_entries_resp(err);
+        self.inner.set_entries_resp(err).await;
     }
 
     pub(crate) fn get_req(&self) -> Arc<Request> {
@@ -444,7 +444,7 @@ pub struct ValueLogCore {
     // A refcount of iterators -- when this hits zero, we can delete the files_to_be_deleted. Why?
     num_active_iterators: AtomicI32,
     writable_log_offset: AtomicU32,
-    buf: ArcRW<BufWriter<Vec<u8>>>,
+    buf: TArcRW<BufWriter<Vec<u8>>>,
     opt: Options,
     kv: BoxKV,
     // Only allow one GC at a time.
@@ -461,7 +461,7 @@ impl Default for ValueLogCore {
             dirty_vlogs: Arc::new(Default::default()),
             num_active_iterators: Default::default(),
             writable_log_offset: Default::default(),
-            buf: Arc::new(RwLock::new(BufWriter::new(vec![0u8; 0]))),
+            buf: Arc::new(tokio::sync::RwLock::new(BufWriter::new(vec![0u8; 0]))),
             opt: Default::default(),
             kv: BoxKV::new(ptr::null_mut()),
             garbage_ch: Channel::new(1),
@@ -600,7 +600,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-                .into());
+            .into());
         }
 
         self.read_value_bytes(vp, |buffer| {
@@ -619,7 +619,7 @@ impl ValueLogCore {
     pub async fn async_read(
         &self,
         vp: &ValuePointer,
-        consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // Check for valid offset if we are reading to writable log.
         if vp.fid == self.max_fid.load(Ordering::Acquire)
@@ -630,7 +630,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-                .into());
+            .into());
         }
         self.async_read_bytes(vp, consumer).await?;
         Ok(())
@@ -643,7 +643,7 @@ impl ValueLogCore {
         mut f: impl for<'a> FnMut(
             &'a Entry,
             &'a ValuePointer,
-        ) -> Pin<Box<dyn Future<Output=Result<bool>> + 'a>>,
+        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
     ) -> Result<()> {
         let vlogs = self.pick_log_guard();
         info!("Seeking at value pointer: {:?}", vp);
@@ -747,7 +747,7 @@ impl ValueLogCore {
     async fn async_read_bytes(
         &self,
         vp: &ValuePointer,
-        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         let mut buffer = self.pick_log_by_vlog_id(&vp.fid).read().read(&vp)?.to_vec();
         let value_buffer = buffer.split_off(Header::encoded_size());
@@ -764,45 +764,10 @@ impl ValueLogCore {
     pub(crate) async fn write(&self, reqs: Arc<Vec<ArcRequest>>) -> Result<()> {
         defer! {info!("finished write value log");}
         let cur_vlog_file = self.pick_log_by_vlog_id(&self.max_fid.load(Ordering::Acquire));
-        let to_disk = || -> Result<()> {
-            if self.buf.read().buffer().is_empty() {
-                return Ok(());
-            }
-            info!(
-                " Flushing {} blocks of total size: {}",
-                reqs.len(),
-                self.buf.read().buffer().len()
-            );
-
-            let n = cur_vlog_file
-                .write()
-                .fd
-                .as_mut()
-                .unwrap()
-                .write(self.buf.read().buffer())?;
-            // todo add metrics
-            self.writable_log_offset
-                .fetch_add(n as u32, Ordering::Release);
-            self.buf.write().get_mut().clear();
-
-            if self.writable_log_offset.load(Ordering::Acquire)
-                > self.opt.value_log_file_size as u32
-            {
-                cur_vlog_file
-                    .write()
-                    .done_writing(self.writable_log_offset.load(Ordering::Acquire))?;
-
-                let new_id = self.max_fid.fetch_add(1, Ordering::Release);
-                assert!(new_id < 1 << 16, "newid will overflow u16: {}", new_id);
-                *cur_vlog_file.write() =
-                    self.create_mmap_vlog_file(new_id, 2 * self.opt.value_log_file_size)?;
-            }
-            Ok(())
-        };
 
         for req in reqs.iter() {
             let req = req.get_req();
-            for (idx, entry) in req.entries.read().await.iter().enumerate() {
+            for (idx, entry) in req.entries.iter().enumerate() {
                 if !self.opt.sync_writes
                     && entry.read().await.entry().value.len() < self.opt.value_threshold
                 {
@@ -816,14 +781,45 @@ impl ValueLogCore {
                 ptr.fid = cur_vlog_file.read().fid;
                 // Use the offset including buffer length so far.
                 ptr.offset = self.writable_log_offset.load(Ordering::Acquire)
-                    + self.buf.read().buffer().len() as u32;
-                let mut buf = self.buf.write();
+                    + self.buf.read().await.buffer().len() as u32;
+                let mut buf = self.buf.write().await;
                 let mut entry = entry.write().await;
                 let mut entry = entry.mut_entry();
-                entry.enc(&mut *buf).unwrap();
+                entry.enc(buf.get_mut()).unwrap();
             }
         }
-        to_disk()
+        {
+            if self.buf.read().await.buffer().is_empty() {
+                return Ok(());
+            }
+            info!(
+                " Flushing {} blocks of total size: {}",
+                reqs.len(),
+                self.buf.read().await.buffer().len()
+            );
+
+            let mut buffer = self.buf.write().await;
+            let mut buffer = buffer.get_mut();
+            let mut cur_vlog_file_wt = cur_vlog_file.write();
+            let fp = cur_vlog_file_wt.fd.as_mut().unwrap();
+            let n = fp.write(&buffer)?;
+            // todo add metrics
+            self.writable_log_offset
+                .fetch_add(n as u32, Ordering::Release);
+            buffer.clear();
+
+            if self.writable_log_offset.load(Ordering::Acquire)
+                > self.opt.value_log_file_size as u32
+            {
+                cur_vlog_file_wt.done_writing(self.writable_log_offset.load(Ordering::Acquire))?;
+
+                let new_id = self.max_fid.fetch_add(1, Ordering::Release);
+                assert!(new_id < 1 << 16, "newid will overflow u16: {}", new_id);
+                *cur_vlog_file_wt =
+                    self.create_mmap_vlog_file(new_id, 2 * self.opt.value_log_file_size)?;
+            }
+            Ok(())
+        }
     }
 
     // rewrite the log_file
@@ -1025,8 +1021,8 @@ impl ValueLogCore {
     pub(crate) async fn wait_on_gc(&self, lc: Closer) {
         defer! {lc.done()}
         lc.wait().await; // wait for lc to be closed.
-        // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
-        // the channel of size 1.
+                         // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
+                         // the channel of size 1.
         self.garbage_ch.send(()).await.unwrap();
     }
 
