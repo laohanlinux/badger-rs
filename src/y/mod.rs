@@ -79,6 +79,10 @@ pub enum Error {
     /////////////////////////////////
     #[error("Not found")]
     NotFound,
+    ////////////////////////////////
+    // GC
+    #[error("Stop iteration")]
+    StopGC,
 }
 
 impl Default for Error {

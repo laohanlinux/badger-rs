@@ -99,7 +99,7 @@ impl LogFile {
         Ok((v, cursor_offset))
     }
 
-    // async iterate from offset that must be call with thread safty
+    // async iterate from offset that must be call with thread safety
     pub(crate) async fn iterate_by_offset(
         &self,
         mut offset: u32,

@@ -1,8 +1,8 @@
 // use crate::skl::{Node, OwnedNode, MAX_HEIGHT, MAX_NODE_SIZE};
+use crate::skl::alloc::Chunk;
 use crate::skl::alloc::{OnlyLayoutAllocate, SliceAllocate};
 use crate::skl::node::Node;
 use crate::skl::Allocate;
-use crate::skl::{alloc::Chunk, SmartAllocate};
 use crate::y::ValueStruct;
 use std::default;
 use std::fmt::format;
@@ -27,10 +27,6 @@ pub struct Arena {
     node_alloc: OnlyLayoutAllocate<Node>,
 }
 
-unsafe impl Send for Arena {}
-
-unsafe impl Sync for Arena {}
-
 impl Arena {
     pub(crate) fn new(n: usize) -> Self {
         assert!(n > 0);
@@ -45,12 +41,7 @@ impl Arena {
     }
 
     pub(crate) fn size(&self) -> u32 {
-        todo!()
-    }
-
-    pub(crate) fn cap(&self) -> usize {
-        // self.slice.size()
-        todo!()
+        (self.slice.len() + self.node_alloc.len()) as u32
     }
 
     // TODO: maybe use MaybeUint instead

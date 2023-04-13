@@ -1,13 +1,13 @@
 use crate::iterator::PreFetchStatus::Prefetched;
 use crate::kv::_BADGER_PREFIX;
-use crate::types::{ArcMx, ArcRW, Closer, TArcMx, TArcRW};
-use crate::MergeIterOverIterator;
+use crate::types::{ArcMx, ArcRW, Channel, Closer, TArcMx, TArcRW};
 use crate::{
     kv::KV,
     types::XArc,
     value_log::{MetaBit, ValuePointer},
     Decode, Result, Xiterator,
 };
+use crate::{MergeIterOverIterator, ValueStruct};
 use log::Metadata;
 use parking_lot::RwLock;
 use std::future::Future;
@@ -15,6 +15,8 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
+use tokio::io::AsyncWriteExt;
+use tokio::time::Sleep;
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum PreFetchStatus {
@@ -22,7 +24,7 @@ pub(crate) enum PreFetchStatus {
     Prefetched,
 }
 
-type KVItem = TArcRW<KVItemInner>;
+pub(crate) type KVItem = TArcRW<KVItemInner>;
 
 // Returned during iteration. Both the key() and value() output is only valid until
 // iterator.next() is called.
@@ -41,9 +43,37 @@ pub(crate) struct KVItemInner {
 }
 
 impl KVItemInner {
+    pub(crate) fn new(key: Vec<u8>, value: ValueStruct, kv: XArc<KV>) -> KVItemInner {
+        Self {
+            status: Arc::new(tokio::sync::RwLock::new(PreFetchStatus::Empty)),
+            kv,
+            key,
+            value: Arc::new(Default::default()),
+            vptr: value.value,
+            meta: value.meta,
+            user_meta: value.user_meta,
+            cas_counter: Arc::new(AtomicU64::new(value.cas_counter)),
+            wg: Closer::new("kv".to_owned()),
+            err: Ok(()),
+        }
+    }
+
     // Returns the key. Remember to copy if you need to access it outside the iteration loop.
     pub(crate) fn key(&self) -> &[u8] {
         &self.key
+    }
+
+    pub async fn get_value(&self) -> Result<Vec<u8>> {
+        let ch = Channel::new(1);
+        self.value(|value| {
+            let tx = ch.tx();
+            Box::pin(async move {
+                tx.send(value).await.unwrap();
+                Ok(())
+            })
+        })
+        .await?;
+        Ok(ch.recv().await.unwrap())
     }
 
     // Value retrieves the value of the item from the value log. It calls the

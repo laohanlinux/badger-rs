@@ -75,6 +75,10 @@ impl<T> Channel<T> {
         self.tx.as_ref().unwrap().clone()
     }
 
+    pub fn rx(&self) -> Receiver<T> {
+        self.rx.as_ref().unwrap().clone()
+    }
+
     /// consume tx and return it if exist
     pub fn take_tx(&mut self) -> Option<Sender<T>> {
         self.tx.take()
@@ -82,9 +86,17 @@ impl<T> Channel<T> {
 
     /// close *Channel*, Sender will be consumed
     pub fn close(&self) {
+        info!("close channel");
         if let Some(tx) = &self.tx {
             tx.close();
         }
+    }
+
+    pub fn is_close(&self) -> bool {
+        if let Some(tx) = &self.tx {
+            return tx.is_closed();
+        }
+        true
     }
 }
 
@@ -162,6 +174,11 @@ impl Closer {
 
     /// Spawn a worker
     pub fn spawn(&self) -> Self {
+        info!(
+            "spawn a new closer: Worker-{}-{}",
+            self.name,
+            self.wait.load(Ordering::Relaxed)
+        );
         self.add_running(1);
         self.clone()
     }
