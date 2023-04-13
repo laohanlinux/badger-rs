@@ -75,6 +75,10 @@ impl<T> Channel<T> {
         self.tx.as_ref().unwrap().clone()
     }
 
+    pub fn rx(&self) -> Receiver<T> {
+        self.rx.as_ref().unwrap().clone()
+    }
+
     /// consume tx and return it if exist
     pub fn take_tx(&mut self) -> Option<Sender<T>> {
         self.tx.take()

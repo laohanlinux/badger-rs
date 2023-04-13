@@ -7,7 +7,7 @@ use crate::table::iterator::{IteratorImpl, IteratorItem};
 use crate::table::table::{new_file_name, Table, TableCore};
 use crate::types::{ArcMx, Channel, Closer, TArcMx, TArcRW, XArc, XWeak};
 use crate::value_log::{
-    ArcRequest, Entry, EntryPair, EntryType, MetaBit, Request, ValueLogCore, ValuePointer,
+    ArcRequest, Entry, EntryType, MetaBit, Request, ValueLogCore, ValuePointer,
     MAX_KEY_SIZE,
 };
 use crate::y::{
@@ -43,7 +43,7 @@ use std::time::Duration;
 use std::{string, vec};
 use tokio::fs::create_dir_all;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{RwLock, RwLockWriteGuard};
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
 // Prefix for internal keys used by badger.
@@ -356,11 +356,7 @@ impl KV {
     // alongside the key, and can be used as an aid to interpret the value or store other contextual
     // bits corresponding to the key-value pair.
     pub(crate) async fn set(&self, key: Vec<u8>, value: Vec<u8>, user_meta: u8) -> Result<()> {
-        let mut entry = Entry::default();
-        entry.key = key;
-        entry.value = value;
-        entry.user_meta = user_meta;
-        let res = self.batch_set(vec![entry]).await;
+        let res = self.batch_set(vec![Entry::default().key(key).value(value).user_meta(user_meta)]).await;
         assert_eq!(res.len(), 1);
         res[0].to_owned()
     }
@@ -403,38 +399,39 @@ impl KV {
         // There is code (in flush_mem_table) whose correctness depends on us generating CAS Counter
         // values _before_ we modify s.vptr here.
         for req in reqs.iter() {
-            let entries = req.req_ref().entries.read();
+            let entries = req.req_ref().entries.read().await;
             let counter_base = self.new_cas_counter(entries.len() as u64);
             for (idx, entry) in entries.iter().enumerate() {
-                entry.write().mut_entry().cas_counter = counter_base + idx as u64;
-                info!("update cas counter: {}", entry.read().entry().cas_counter);
+                entry.write().await.mut_entry().cas_counter = counter_base + idx as u64;
+                info!("update cas counter: {}", entry.read().await.entry().cas_counter);
             }
         }
 
         // TODO add error set
-        if let Err(err) = self.vlog.as_ref().unwrap().write(reqs.clone()) {
+        if let Err(err) = self.vlog.as_ref().unwrap().write(reqs.clone()).await {
             for req in reqs.iter() {
-                req.set_err(Err(err.clone()));
+                req.set_err(Err(err.clone())).await;
             }
+            return Err(err);
         }
 
         info!("Writing to memory table");
         let mut count = 0;
         for req in reqs.iter() {
-            if req.get_req().entries.read().is_empty() {
+            if req.get_req().entries.read().await.is_empty() {
                 continue;
             }
-            count += req.get_req().entries.read().len();
+            count += req.get_req().entries.read().await.len();
             while let Err(err) = self.ensure_room_for_write().await {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             info!("waiting for write");
-            if let Err(err) = self.write_to_lsm(req.clone()) {
-                req.set_err(Err(err));
+            if let Err(err) = self.write_to_lsm(req.clone()).await {
+                req.set_err(Err(err)).await;
             } else {
-                req.set_err(Ok(()));
+                req.set_err(Ok(())).await;
             }
-            self.update_offset(req.get_req().ptrs.lock());
+            self.update_offset(req.get_req().ptrs.read().await);
         }
         info!("{} entries written", count);
         Ok(())
@@ -499,137 +496,85 @@ impl KV {
     // for e in entries {
     //      Check(e.Error);
     // }
-    // TODO
-    // pub(crate) async fn batch_set(&self, entries: Vec<Entry>) -> Result<Vec<ArcRequest>> {
-    //     let mut bad = vec![];
-    //     let mut batch_reqs = vec![];
-    //     let mut b = Some(Request::default());
-    //     let mut count = 0;
-    //     let mut sz = 0u64;
-    //     for entry in entries {
-    //         if entry.key.len() > MAX_KEY_SIZE {
-    //             bad.push(entry);
-    //             continue;
-    //         }
-    //         if entry.value.len() as u64 > self.opt.value_log_file_size {
-    //             bad.push(entry);
-    //             continue;
-    //         }
-    //         count += 1;
-    //         sz += self.opt.estimate_size(&entry) as u64;
-    //
-    //         {
-    //             b.as_ref()
-    //                 .unwrap()
-    //                 .entries
-    //                 .write()
-    //                 .push(parking_lot::RwLock::new(EntryType::from(entry)));
-    //             b.as_ref().unwrap().ptrs.lock().push(None);
-    //         }
-    //
-    //         if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_count {
-    //             let task_req = b.replace(Request::default());
-    //             batch_reqs.push(task_req.unwrap());
-    //             count = 0;
-    //             sz = 0;
-    //         }
-    //     }
-    //     if let Some(req) = b {
-    //         if !req.entries.read().is_empty() {
-    //             batch_reqs.push(req);
-    //         }
-    //     }
-    //
-    //     let mut reqs = vec![];
-    //     for req in batch_reqs {
-    //         if req.entries.read().is_empty() {
-    //             break;
-    //         }
-    //         let arc_req = ArcRequest::from(req);
-    //         reqs.push(arc_req.clone());
-    //         assert!(!self.write_ch.is_close());
-    //         info!(
-    //             "send tasks to write, entries: {}",
-    //             arc_req.get_req().entries.read().len()
-    //         );
-    //         self.write_ch.send(arc_req).await.unwrap();
-    //     }
-    //     if !bad.is_empty() {
-    //         let req = Request::default();
-    //         *req.entries.write() = Vec::from_iter(
-    //             bad.into_iter()
-    //                 .map(|bad| parking_lot::RwLock::new(EntryType::from(bad)))
-    //                 .into_iter(),
-    //         );
-    //         let arc_req = ArcRequest::from(req);
-    //         arc_req
-    //             .set_err(Err("key too big or value to big".into()))
-    //             .await;
-    //         reqs.push(arc_req);
-    //     }
-    //     Ok(reqs)
-    // }
     pub(crate) async fn batch_set(&self, entries: Vec<Entry>) -> Vec<Result<()>> {
         let mut count = 0;
         let mut sz = 0u64;
-        let mut res = vec![];
+        let mut res = vec![Ok(()); entries.len()];
         let mut req = ArcRequest::from(Request::default());
-        for entry in entries {
+        let mut req_index = vec![];
+
+        for (i, entry) in entries.into_iter().enumerate() {
             if entry.key.len() > MAX_KEY_SIZE {
-                res.push(Err("Key too big".into()));
+                res[i] = Err("Key too big".into());
                 continue;
             }
             if entry.value.len() as u64 > self.opt.value_log_file_size {
-                res.push(Err("Value to big".into()));
+                res[i] = Err("Value to big".into());
                 continue;
             }
-            count += 1;
-            sz += self.opt.estimate_size(&entry) as u64;
-
-            req.req_ref()
-                .entries
-                .write()
-                .push(parking_lot::RwLock::new(EntryType::from(entry)));
-            req.req_ref().ptrs.lock().push(None);
+            {
+                count += 1;
+                sz += self.opt.estimate_size(&entry) as u64;
+                req.req_ref()
+                    .entries
+                    .write()
+                    .await
+                    .push(tokio::sync::RwLock::new(EntryType::from(entry)));
+                req.req_ref().ptrs.write().await.push(None);
+                req_index.push(i);
+            }
 
             if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_count {
                 assert!(!self.write_ch.is_close());
                 info!(
                     "send tasks to write, entries: {}",
-                    req.get_req().entries.read().len()
+                    req.get_req().entries.read().await.len()
                 );
                 self.write_ch.send(req.clone()).await.unwrap();
-                count = 0;
-                sz = 0;
-                let errs = req.get_req().get_errs();
-                res.extend(errs.into_iter());
-                req.req_ref().entries.write().clear();
-                req.req_ref().ptrs.lock().clear();
+                {
+                    count = 0;
+                    sz = 0;
+                    for (index, err) in req.get_req().get_errs().await.into_iter().enumerate() {
+                        let entry_index = req_index[index];
+                        res[entry_index] = err;
+                    }
+                    req.req_ref().entries.write().await.clear();
+                    req.req_ref().ptrs.write().await.clear();
+                    req_index.clear();
+                }
             }
         }
-        if !req.req_ref().entries.read().is_empty() {
+        if !req.req_ref().entries.read().await.is_empty() {
             self.write_ch.send(req.clone()).await.unwrap();
-            res.extend(req.get_req().get_errs().into_iter());
-            req.req_ref().entries.write().clear();
-            req.req_ref().ptrs.lock().clear();
+            {
+                count = 0;
+                sz = 0;
+                for (index, err) in req.get_req().get_errs().await.into_iter().enumerate() {
+                    let entry_index = req_index[index];
+                    res[entry_index] = err;
+                }
+                req.req_ref().entries.write().await.clear();
+                req.req_ref().ptrs.write().await.clear();
+                req_index.clear();
+            }
         }
         res
     }
 
-    fn write_to_lsm(&self, req: ArcRequest) -> Result<()> {
+   async fn write_to_lsm(&self, req: ArcRequest) -> Result<()> {
         let req = req.get_req(); //.entries.read();
-        let ptrs = req.ptrs.lock();
-        let entries = req.entries.read();
+        let ptrs = req.ptrs.read().await;
+        let entries = req.entries.read().await;
         assert_eq!(entries.len(), ptrs.len());
 
         for (i, pair) in entries.iter().enumerate() {
-            let mut entry_pair = pair.write();
+            let mut entry_pair = pair.write().await;
             let entry = entry_pair.entry();
             if entry.cas_counter_check != 0 {
                 let old_value = self._get(&entry.key)?;
                 // No need to decode existing value. Just need old CAS counter.
                 if old_value.cas_counter != entry.cas_counter_check {
-                    entry_pair.set_resp(Err(Error::ValueCasMisMatch));
+                    entry_pair.set_resp(Err(Error::ValueCasMisMatch)).await;
                     continue;
                 }
             }
@@ -639,7 +584,7 @@ impl KV {
                 let exits = self._exists(&entry.key)?;
                 // Value already exists. don't write.
                 if exits {
-                    entry_pair.set_resp(Err(Error::ValueKeyExists));
+                    entry_pair.set_resp(Err(Error::ValueKeyExists)).await;
                     continue;
                 }
             }
@@ -728,7 +673,7 @@ impl KV {
         entry.value.len() < self.opt.value_threshold
     }
 
-    fn update_offset(&self, ptrs: MutexGuard<RawMutex, Vec<Option<ValuePointer>>>) {
+    fn update_offset(&self, ptrs: RwLockReadGuard<Vec<Option<ValuePointer>>>) {
         let mut ptr = &ValuePointer::default();
         for tmp_ptr in ptrs.iter().rev() {
             if tmp_ptr.is_none() || tmp_ptr.as_ref().unwrap().is_zero() {
@@ -1020,7 +965,7 @@ impl ArcKV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1035,8 +980,8 @@ impl ArcKV {
 impl ArcKV {
     async fn do_writes(&self, lc: Closer, without_close_write_ch: bool) {
         info!("start do writes task!");
-        defer! {info!("exit writes task!")};
-        defer! {lc.done()};
+        defer! {info!("exit writes task!")}
+        defer! {lc.done()}
         // TODO add metrics
         let has_been_close = lc.has_been_closed();
         let write_ch = self.write_ch.clone();
@@ -1107,7 +1052,7 @@ impl ArcKV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         // no value
         if !item.has_value() {

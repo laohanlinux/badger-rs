@@ -1,11 +1,11 @@
-use async_channel::RecvError;
+use async_channel::{Receiver, RecvError, Sender};
 use awaitgroup::{WaitGroup, Worker};
 use bitflags::bitflags;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crc32fast::Hasher;
 use drop_cell::defer;
 use either::Either;
-use libc::memchr;
+use libc::{endgrent, memchr};
 use log::info;
 use log::kv::Source;
 use memmap::{Mmap, MmapMut};
@@ -106,7 +106,7 @@ impl Decode for Header {
 /// Entry provides Key, Value and if required, cas_counter_check to kv.batch_set() API.
 /// If cas_counter_check is provided, it would be compared against the current `cas_counter`
 /// assigned to this key-value. Set be done on this key only if the counters match.
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct Entry {
     pub(crate) key: Vec<u8>,
     pub(crate) meta: u8,
@@ -290,72 +290,14 @@ impl Decode for ValuePointer {
     }
 }
 
-pub(crate) struct EntryType(Either<Entry, Result<()>>);
+// pub(crate) struct EntryType(Either<Entry, Channel<Result<()>>>);
+
+pub(crate) struct EntryType {
+    entry: Entry,
+    fut_ch: Channel<Result<()>>,
+}
 
 impl EntryType {
-    pub(crate) fn entry(&self) -> &Entry {
-        match self.0 {
-            Either::Left(ref entry) => entry,
-            _ => panic!("It should be not happen"),
-        }
-    }
-
-    pub(crate) fn mut_entry(&mut self) -> &mut Entry {
-        match self.0 {
-            Either::Left(ref mut entry) => entry,
-            _ => panic!("It should be not happen"),
-        }
-    }
-
-    pub(crate) fn ret(&self) -> &Result<()> {
-        match self.0 {
-            Either::Right(ref m) => m,
-            _ => panic!("It should be not happen"),
-        }
-    }
-
-    pub(crate) fn set_resp(&mut self, ret: Result<()>) {
-        self.0 = Either::Right(ret);
-    }
-}
-
-impl Deref for EntryType {
-    type Target = Either<Entry, Result<()>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl From<Entry> for EntryType {
-    fn from(value: Entry) -> Self {
-        Self(Either::Left(value))
-    }
-}
-
-impl From<Result<()>> for EntryType {
-    fn from(value: Result<()>) -> Self {
-        Self(Either::Right(value))
-    }
-}
-
-pub(crate) struct EntryPair {
-    entry: Entry,
-    ret: RwLock<Result<()>>,
-}
-
-impl EntryPair {
-    pub(crate) fn new(entry: Entry) -> Self {
-        EntryPair {
-            entry,
-            ret: RwLock::new(Ok(())),
-        }
-    }
-
-    pub(crate) fn set_resp(&self, ret: Result<()>) {
-        *self.ret.write() = ret
-    }
-
     pub(crate) fn entry(&self) -> &Entry {
         &self.entry
     }
@@ -364,17 +306,42 @@ impl EntryPair {
         &mut self.entry
     }
 
-    pub(crate) fn resp(&self) -> Result<()> {
-        self.ret.read().clone()
+    pub(crate) fn ret(&self) -> Receiver<Result<()>> {
+        self.fut_ch.rx()
+    }
+
+    pub(crate) async fn set_resp(&mut self, ret: Result<()>) {
+        self.fut_ch.tx().send(ret).await.unwrap();
+    }
+}
+
+// impl Deref for EntryType {
+//     type Target = Either<Entry, Result<()>>;
+//
+//     fn deref(&self) -> &Self::Target {
+//         &self.0
+//     }
+// }
+
+impl From<Entry> for EntryType {
+    fn from(value: Entry) -> Self {
+        Self {
+            entry: value,
+            fut_ch: Channel::new(1),
+        }
     }
 }
 
 pub struct Request {
     // Input values, NOTE: RefCell<Entry> is called concurrency
-    pub(crate) entries: RwLock<Vec<RwLock<EntryType>>>,
+    pub(crate) entries: tokio::sync::RwLock<Vec<tokio::sync::RwLock<EntryType>>>,
     // Output Values and wait group stuff below
-    pub(crate) ptrs: Mutex<Vec<Option<ValuePointer>>>,
+    pub(crate) ptrs: tokio::sync::RwLock<Vec<Option<ValuePointer>>>,
 }
+
+// unsafe impl Send for Request {}
+//
+// unsafe impl Sync for Request {}
 
 impl Default for Request {
     fn default() -> Self {
@@ -386,26 +353,27 @@ impl Default for Request {
 }
 
 impl Request {
-    pub(crate) fn set_entries_resp(&self, ret: Result<()>) {
-        for entry in self.entries.write().iter_mut() {
+    pub(crate) async fn set_entries_resp(&self, ret: Result<()>) {
+        for entry in self.entries.write().await.iter_mut() {
             info!("set resp");
-            entry.get_mut().set_resp(ret.clone());
+            entry.get_mut().set_resp(ret.clone()).await;
         }
     }
 
     pub async fn get_first_err(&self) -> Result<()> {
-        for entry in self.entries.read().iter() {
-            if let Err(err) = entry.read().as_ref().right().unwrap() {
-                return Err(err.clone());
-            }
+        let ret = self.entries.read().await;
+        if let Some(ret) = ret.get(0) {
+            ret.read().await.ret().recv().await.unwrap()
+        }else {
+            Ok(())
         }
-        Ok(())
     }
 
-    pub fn get_errs(&self) -> Vec<Result<()>> {
+    pub async fn get_errs(&self) -> Vec<Result<()>> {
         let mut res = vec![];
-        for entry in self.entries.read().iter() {
-            res.push(entry.read().as_ref().right().unwrap().clone());
+        for entry in self.entries.read().await.iter() {
+            let ret = entry.read().await.ret().recv().await.unwrap();
+            res.push(ret);
         }
         res
     }
@@ -446,7 +414,7 @@ impl ArcRequest {
         self.get_req().get_first_err().await
     }
 
-    pub fn set_err(&self, err: Result<()>) {
+    pub async fn set_err(&self, err: Result<()>) {
         self.inner.set_entries_resp(err);
     }
 
@@ -632,7 +600,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-            .into());
+                .into());
         }
 
         self.read_value_bytes(vp, |buffer| {
@@ -651,7 +619,7 @@ impl ValueLogCore {
     pub async fn async_read(
         &self,
         vp: &ValuePointer,
-        consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         // Check for valid offset if we are reading to writable log.
         if vp.fid == self.max_fid.load(Ordering::Acquire)
@@ -662,7 +630,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-            .into());
+                .into());
         }
         self.async_read_bytes(vp, consumer).await?;
         Ok(())
@@ -675,7 +643,7 @@ impl ValueLogCore {
         mut f: impl for<'a> FnMut(
             &'a Entry,
             &'a ValuePointer,
-        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
+        ) -> Pin<Box<dyn Future<Output=Result<bool>> + 'a>>,
     ) -> Result<()> {
         let vlogs = self.pick_log_guard();
         info!("Seeking at value pointer: {:?}", vp);
@@ -779,7 +747,7 @@ impl ValueLogCore {
     async fn async_read_bytes(
         &self,
         vp: &ValuePointer,
-        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         let mut buffer = self.pick_log_by_vlog_id(&vp.fid).read().read(&vp)?.to_vec();
         let value_buffer = buffer.split_off(Header::encoded_size());
@@ -793,7 +761,7 @@ impl ValueLogCore {
     }
 
     // write is thread-unsafe by design and should not be called concurrently.
-    pub(crate) fn write(&self, reqs: Arc<Vec<ArcRequest>>) -> Result<()> {
+    pub(crate) async fn write(&self, reqs: Arc<Vec<ArcRequest>>) -> Result<()> {
         defer! {info!("finished write value log");}
         let cur_vlog_file = self.pick_log_by_vlog_id(&self.max_fid.load(Ordering::Acquire));
         let to_disk = || -> Result<()> {
@@ -834,13 +802,13 @@ impl ValueLogCore {
 
         for req in reqs.iter() {
             let req = req.get_req();
-            for (idx, entry) in req.entries.read().iter().enumerate() {
+            for (idx, entry) in req.entries.read().await.iter().enumerate() {
                 if !self.opt.sync_writes
-                    && entry.read().entry().value.len() < self.opt.value_threshold
+                    && entry.read().await.entry().value.len() < self.opt.value_threshold
                 {
                     // No need to write to value log.
                     // WARN: if mt not flush into disk but process abort, that will discard data(the data not write into vlog that WAL file)
-                    req.ptrs.lock()[idx] = None;
+                    req.ptrs.write().await[idx] = None;
                     continue;
                 }
 
@@ -850,7 +818,9 @@ impl ValueLogCore {
                 ptr.offset = self.writable_log_offset.load(Ordering::Acquire)
                     + self.buf.read().buffer().len() as u32;
                 let mut buf = self.buf.write();
-                entry.write().entry().enc(&mut *buf).unwrap();
+                let mut entry = entry.write().await;
+                let mut entry = entry.mut_entry();
+                entry.enc(&mut *buf).unwrap();
             }
         }
         to_disk()
@@ -1055,8 +1025,8 @@ impl ValueLogCore {
     pub(crate) async fn wait_on_gc(&self, lc: Closer) {
         defer! {lc.done()}
         lc.wait().await; // wait for lc to be closed.
-                         // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
-                         // the channel of size 1.
+        // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
+        // the channel of size 1.
         self.garbage_ch.send(()).await.unwrap();
     }
 
