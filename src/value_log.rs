@@ -308,11 +308,16 @@ impl Decode for ValuePointer {
     }
 }
 
-// pub(crate) struct EntryType(Either<Entry, Channel<Result<()>>>);
-
+#[derive(Clone)]
 pub(crate) struct EntryType {
     entry: Entry,
     fut_ch: Channel<Result<()>>,
+}
+
+impl Debug for EntryType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EntryType").field("entry", &self.entry).finish()
+    }
 }
 
 impl EntryType {
@@ -331,15 +336,12 @@ impl EntryType {
     pub(crate) async fn set_resp(&self, ret: Result<()>) {
         self.fut_ch.tx().send(ret).await.unwrap();
     }
+
+    pub(crate) fn get_resp_channel(&self) -> Channel<Result<()>> {
+        self.fut_ch.clone()
+    }
 }
 
-// impl Deref for EntryType {
-//     type Target = Either<Entry, Result<()>>;
-//
-//     fn deref(&self) -> &Self::Target {
-//         &self.0
-//     }
-// }
 
 impl From<Entry> for EntryType {
     fn from(value: Entry) -> Self {
@@ -352,15 +354,11 @@ impl From<Entry> for EntryType {
 
 #[derive(Clone, Debug)]
 pub struct Request {
-    // Input values, NOTE: RefCell<Entry> is called concurrency
+    // Input values
     pub(crate) entries: Vec<EntryType>,
     // Output Values and wait group stuff below
     pub(crate) ptrs: Vec<Option<ValuePointer>>,
 }
-
-// unsafe impl Send for Request {}
-//
-// unsafe impl Sync for Request {}
 
 impl Default for Request {
     fn default() -> Self {
@@ -375,13 +373,13 @@ impl Request {
     pub(crate) async fn set_entries_resp(&self, ret: Result<()>) {
         for entry in self.entries.iter() {
             info!("set resp");
-            entry.read().await.set_resp(ret.clone()).await;
+            entry.set_resp(ret.clone()).await;
         }
     }
 
     pub async fn get_first_err(&self) -> Result<()> {
         if let Some(ret) = self.entries.get(0) {
-            ret.read().await.ret().recv().await.unwrap()
+            ret.ret().recv().await.unwrap()
         } else {
             Ok(())
         }
@@ -390,63 +388,15 @@ impl Request {
     pub async fn get_errs(&self) -> Vec<Result<()>> {
         let mut res = vec![];
         for entry in self.entries.iter() {
-            let ch = entry.read().await.fut_ch.rx();
+            let ch = entry.fut_ch.rx();
             let ret = ch.recv().await.unwrap();
             res.push(ret);
         }
         res
     }
-}
 
-/// TODO add a field to indicate the request is every import, must be handle it immediately
-/// Eg: compare_and_set
-#[derive(Clone)]
-pub struct ArcRequest {
-    pub(crate) inner: Arc<Request>,
-}
-
-impl std::fmt::Debug for ArcRequest {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ArcRequest").finish()
-    }
-}
-
-unsafe impl Send for ArcRequest {}
-
-unsafe impl Sync for ArcRequest {}
-
-impl ArcRequest {
-    pub fn req_ref(&self) -> &Arc<Request> {
-        &self.inner
-    }
-
-    pub fn to_inner(self) -> Request {
-        Arc::into_inner(self.inner).unwrap()
-    }
-
-    pub async fn is_ok(&self) -> bool {
-        let resp = self.get_req().get_first_err().await;
-        resp.is_ok()
-    }
-
-    pub async fn get_resp(&self) -> Result<()> {
-        self.get_req().get_first_err().await
-    }
-
-    pub async fn set_err(&self, err: Result<()>) {
-        self.inner.set_entries_resp(err).await;
-    }
-
-    pub(crate) fn get_req(&self) -> Arc<Request> {
-        self.inner.clone()
-    }
-}
-
-impl From<Request> for ArcRequest {
-    fn from(value: Request) -> Self {
-        ArcRequest {
-            inner: Arc::new(value),
-        }
+    pub fn get_resp_channel(&self) -> Vec<Channel<Result<()>>> {
+        self.entries.iter().map(|ty| ty.fut_ch.clone()).collect::<Vec<_>>()
     }
 }
 
@@ -619,7 +569,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-            .into());
+                .into());
         }
 
         self.read_value_bytes(vp, |buffer| {
@@ -638,7 +588,7 @@ impl ValueLogCore {
     pub async fn async_read(
         &self,
         vp: &ValuePointer,
-        consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         // Check for valid offset if we are reading to writable log.
         if vp.fid == self.max_fid.load(Ordering::Acquire)
@@ -649,7 +599,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-            .into());
+                .into());
         }
         self.async_read_bytes(vp, consumer).await?;
         Ok(())
@@ -662,7 +612,7 @@ impl ValueLogCore {
         mut f: impl for<'a> FnMut(
             &'a Entry,
             &'a ValuePointer,
-        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
+        ) -> Pin<Box<dyn Future<Output=Result<bool>> + 'a>>,
     ) -> Result<()> {
         let vlogs = self.pick_log_guard();
         info!("Seeking at value pointer: {:?}", vp);
@@ -766,7 +716,7 @@ impl ValueLogCore {
     async fn async_read_bytes(
         &self,
         vp: &ValuePointer,
-        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         let mut buffer = self.pick_log_by_vlog_id(&vp.fid).read().read(&vp)?.to_vec();
         let value_buffer = buffer.split_off(Header::encoded_size());
@@ -780,19 +730,18 @@ impl ValueLogCore {
     }
 
     // write is thread-unsafe by design and should not be called concurrently.
-    pub(crate) async fn write(&self, reqs: Arc<Vec<ArcRequest>>) -> Result<()> {
+    pub(crate) async fn write(&self, reqs: Vec<Request>) -> Result<()> {
         defer! {info!("finished write value log");}
         let cur_vlog_file = self.pick_log_by_vlog_id(&self.max_fid.load(Ordering::Acquire));
-
-        for req in reqs.iter() {
-            let req = req.get_req();
-            for (idx, entry) in req.entries.iter().enumerate() {
+        let reqs_count = reqs.len();
+        for mut req in reqs.into_iter() {
+            for (idx, mut entry) in req.entries.into_iter().enumerate() {
                 if !self.opt.sync_writes
-                    && entry.read().await.entry().value.len() < self.opt.value_threshold
+                    && entry.entry().value.len() < self.opt.value_threshold
                 {
                     // No need to write to value log.
                     // WARN: if mt not flush into disk but process abort, that will discard data(the data not write into vlog that WAL file)
-                    req.ptrs.write().await[idx] = None;
+                    req.ptrs[idx] = None;
                     continue;
                 }
 
@@ -802,7 +751,6 @@ impl ValueLogCore {
                 ptr.offset = self.writable_log_offset.load(Ordering::Acquire)
                     + self.buf.read().await.buffer().len() as u32;
                 let mut buf = self.buf.write().await;
-                let mut entry = entry.write().await;
                 let mut entry = entry.mut_entry();
                 entry.enc(buf.get_mut()).unwrap();
             }
@@ -813,7 +761,7 @@ impl ValueLogCore {
             }
             info!(
                 " Flushing {} blocks of total size: {}",
-                reqs.len(),
+                reqs_count,
                 self.buf.read().await.buffer().len()
             );
 
@@ -1040,8 +988,8 @@ impl ValueLogCore {
     pub(crate) async fn wait_on_gc(&self, lc: Closer) {
         defer! {lc.done()}
         lc.wait().await; // wait for lc to be closed.
-                         // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
-                         // the channel of size 1.
+        // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
+        // the channel of size 1.
         self.garbage_ch.send(()).await.unwrap();
     }
 
