@@ -727,6 +727,7 @@ impl ValueLogCore {
         let buffer = buffer.read(&vp)?;
         let mut h = Header::default();
         h.dec(&mut Cursor::new(&buffer[..Header::encoded_size()]))?;
+        // TODO FIXME
         // if (h.meta & MetaBit::BIT_DELETE.bits) != 0 {
         //     // Tombstone key
         //     return consumer(&EMPTY_SLICE).await;

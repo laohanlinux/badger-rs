@@ -17,7 +17,6 @@ use std::thread::{sleep, spawn};
 use std::time::Duration;
 use std::{ptr, thread};
 use atomic::Atomic;
-use tracing_subscriber::fmt::writer::EitherWriter::A;
 
 pub trait Allocate: Send + Sync {
     type Block;
