@@ -4,7 +4,7 @@ mod cursor;
 mod node;
 mod skip;
 
-pub use alloc::{Allocate, BlockBytes, Chunk};
+pub use alloc::*;
 pub use arena::Arena;
 pub use cursor::Cursor;
 pub use node::Node;

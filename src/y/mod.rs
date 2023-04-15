@@ -16,7 +16,19 @@ use std::hash::Hasher;
 use std::io::{ErrorKind, Write};
 use std::sync::mpsc::sync_channel;
 use std::{cmp, io};
+use std::ptr::slice_from_raw_parts_mut;
 use thiserror::Error;
+
+pub const EMPTY_SLICE:  Vec<u8> = {
+    vec![]
+};
+
+// pub fn convert_ptr(v: &[u8]) -> Vec<u8> {
+//     let len = v.len();
+//     let ptr = v as *const u8 as *mut u8;
+//     let v = unsafe { Vec::from_raw_parts(ptr, len, len) };
+//     v
+// }
 
 /// Constants use in serialization sizes, and in ValueStruct serialization
 pub const META_SIZE: usize = 1;
@@ -250,7 +262,7 @@ pub(crate) fn parallel_load_block_key(fp: File, offsets: Vec<u64>) -> Vec<Vec<u8
             read_at(&fp, &mut buffer, offset + Header::size() as u64).unwrap();
             tx.send((i, out)).unwrap();
         })
-        .unwrap();
+            .unwrap();
     }
     pool.close();
 

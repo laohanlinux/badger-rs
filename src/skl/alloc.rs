@@ -7,7 +7,7 @@ use std::mem::{align_of, size_of, ManuallyDrop};
 
 use atom_box::AtomBox;
 use either::Either;
-use libc::off_t;
+use libc::{difftime, off_t};
 use log::info;
 use std::alloc::alloc;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
@@ -16,6 +16,8 @@ use std::sync::Arc;
 use std::thread::{sleep, spawn};
 use std::time::Duration;
 use std::{ptr, thread};
+use atomic::Atomic;
+use tracing_subscriber::fmt::writer::EitherWriter::A;
 
 pub trait Allocate: Send + Sync {
     type Block;
@@ -37,6 +39,51 @@ pub trait Chunk: Send + Sync {
 }
 
 #[derive(Debug)]
+pub struct ArcBlockBytes {
+    start: AtomicPtr<u8>,
+    n: Arc<AtomicUsize>,
+}
+
+impl ArcBlockBytes {
+    pub fn new_null() -> Self {
+        Self {
+            start: AtomicPtr::new(ptr::null_mut()),
+            n: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn set(&self, ptr: *mut u8, n: usize) {
+        self.start.store(ptr, Ordering::Relaxed);
+        self.n.store(n, Ordering::Relaxed);
+    }
+}
+
+impl Clone for ArcBlockBytes {
+    fn clone(&self) -> Self {
+        let ptr = self.start.load(Ordering::Relaxed);
+        Self { start: AtomicPtr::new(ptr), n: Arc::new(AtomicUsize::new(self.n.load(Ordering::Relaxed))) }
+    }
+}
+
+impl Chunk for ArcBlockBytes {
+    #[inline]
+    fn get_data(&self) -> &[u8] {
+        unsafe { &*slice_from_raw_parts(self.start.load(Ordering::Relaxed), self.n.load(Ordering::Relaxed)) }
+    }
+
+    #[inline]
+    fn get_data_mut(&self) -> &mut [u8] {
+        unsafe { &mut *slice_from_raw_parts_mut(self.start.load(Ordering::Relaxed), self.n.load(Ordering::Relaxed)) }
+    }
+
+    #[inline]
+    fn size(&self) -> usize {
+        self.n.load(Ordering::Relaxed)
+    }
+}
+
+
+#[derive(Debug)]
 #[repr(C)]
 pub struct BlockBytes {
     start: AtomicPtr<u8>,
@@ -49,6 +96,10 @@ impl BlockBytes {
             start: AtomicPtr::new(start),
             n,
         }
+    }
+    #[inline]
+    fn is_null(&self) -> bool {
+        self.n == 0
     }
 }
 
@@ -68,6 +119,14 @@ impl Chunk for BlockBytes {
         self.n
     }
 }
+
+impl Clone for BlockBytes {
+    fn clone(&self) -> Self {
+        let ptr = self.start.load(Ordering::Relaxed);
+        Self { start: AtomicPtr::new(ptr), n: self.n }
+    }
+}
+
 
 // The alloc is only supported on layout, and it only append
 #[derive(Debug, Clone)]

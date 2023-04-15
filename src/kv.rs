@@ -334,7 +334,6 @@ impl KV {
     pub(crate) fn _get(&self, key: &[u8]) -> Result<ValueStruct> {
         let p = crossbeam_epoch::pin();
         let tables = self.get_mem_tables(&p);
-        // info!("tabels {}", tables.len());
         // TODO add metrics
         for tb in tables {
             let vs = unsafe { tb.as_ref().unwrap().get(key) };
@@ -412,7 +411,7 @@ impl KV {
                     .entry()
                     .cas_counter
                     .store(counter_base + idx as u64, Ordering::Relaxed);
-                info!("update cas counter: {}", entry.entry().get_cas_counter());
+                // info!("update cas counter: {}", entry.entry().get_cas_counter());
             }
         }
 
@@ -1052,16 +1051,16 @@ impl ArcKV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         // no value
         if !item.has_value() {
-            return consumer(vec![]).await;
+            return consumer(&[0u8; 0]).await;
         }
 
         // TODO What is this
         if (item.meta() & MetaBit::BIT_VALUE_POINTER.bits()) == 0 {
-            return consumer(item.vptr().to_vec()).await;
+            return consumer(item.vptr()).await;
         }
 
         let mut vptr = ValuePointer::default();

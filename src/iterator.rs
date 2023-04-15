@@ -1,24 +1,22 @@
 use crate::iterator::PreFetchStatus::Prefetched;
 use crate::kv::_BADGER_PREFIX;
 use crate::types::{ArcMx, ArcRW, Channel, Closer, TArcMx, TArcRW};
-use crate::{
-    kv::KV,
-    types::XArc,
-    value_log::{MetaBit, ValuePointer},
-    Decode, Result, Xiterator,
-};
+use crate::{kv::KV, types::XArc, value_log::{MetaBit, ValuePointer}, Decode, Result, Xiterator, BlockBytes, ArcBlockBytes, Chunk};
 use crate::{MergeIterOverIterator, ValueStruct};
 use log::Metadata;
 use parking_lot::RwLock;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 use std::sync::Arc;
-use std::{io::Cursor, sync::atomic::AtomicU64};
+use std::{io::Cursor, ptr, sync::atomic::AtomicU64};
+use std::ops::DerefMut;
+use atom_box::AtomBox;
+use atomic::Atomic;
 use tokio::io::AsyncWriteExt;
 use tokio::time::Sleep;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub(crate) enum PreFetchStatus {
     Empty,
     Prefetched,
@@ -30,10 +28,10 @@ pub(crate) type KVItem = TArcRW<KVItemInner>;
 // iterator.next() is called.
 #[derive(Clone)]
 pub(crate) struct KVItemInner {
-    status: TArcRW<PreFetchStatus>,
+    status: Arc<Atomic<PreFetchStatus>>,
     kv: XArc<KV>,
     key: Vec<u8>,
-    value: TArcRW<Vec<u8>>,
+    value: ArcBlockBytes,
     vptr: Vec<u8>,
     meta: u8,
     user_meta: u8,
@@ -45,10 +43,10 @@ pub(crate) struct KVItemInner {
 impl KVItemInner {
     pub(crate) fn new(key: Vec<u8>, value: ValueStruct, kv: XArc<KV>) -> KVItemInner {
         Self {
-            status: Arc::new(tokio::sync::RwLock::new(PreFetchStatus::Empty)),
+            status: Arc::new(Atomic::new(PreFetchStatus::Empty)),
             kv,
             key,
-            value: Arc::new(Default::default()),
+            value: ArcBlockBytes::new_null(),
             vptr: value.value,
             meta: value.meta,
             user_meta: value.user_meta,
@@ -66,13 +64,13 @@ impl KVItemInner {
     pub async fn get_value(&self) -> Result<Vec<u8>> {
         let ch = Channel::new(1);
         self.value(|value| {
-            let tx = ch.tx();
+            // let tx = ch.tx();
+            // tx.send(value.to_vec()).await;
             Box::pin(async move {
-                tx.send(value).await.unwrap();
                 Ok(())
             })
         })
-        .await?;
+            .await?;
         Ok(ch.recv().await.unwrap())
     }
 
@@ -83,15 +81,20 @@ impl KVItemInner {
     // Note that the call to the consumer func happens synchronously.
     pub(crate) async fn value(
         &self,
-        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
-        if *self.status.read().await == PreFetchStatus::Prefetched {
+        if self.status.load(Ordering::Relaxed) == Prefetched {
             if self.err.is_err() {
                 return self.err.clone();
             }
-            return consumer(self.value.read().await.clone()).await;
+            let value = self.value.clone();
+            if value.size() == 0 {
+                return consumer(&[0u8; 0]).await;
+            } else {
+                return consumer(value.get_data()).await;
+            }
         }
         return self.kv.yield_item_value(self.clone(), consumer).await;
     }
@@ -111,19 +114,17 @@ impl KVItemInner {
     pub(crate) async fn pre_fetch_value(&self) -> Result<()> {
         let kv = self.kv.clone();
         kv.yield_item_value(self.clone(), |value| {
-            let ref_status = self.status.clone();
-            let ref_value = self.value.clone();
+            if value.is_empty() {
+                self.status.store(PreFetchStatus::Prefetched, Ordering::Relaxed);
+                return Box::pin(async move { Ok(()) });
+            }
+            self.status.store(PreFetchStatus::Prefetched, Ordering::Relaxed);
+            self.value.set(value.as_ptr() as *mut u8, value.len());
             Box::pin(async move {
-                if value.is_empty() {
-                    *ref_status.write().await = PreFetchStatus::Prefetched;
-                    return Ok(());
-                }
-                ref_value.write().await.extend(value);
-                *ref_status.write().await = PreFetchStatus::Prefetched;
                 Ok(())
             })
         })
-        .await
+            .await
     }
 
     // Returns approximate size of the key-value pair.
@@ -271,10 +272,10 @@ impl IteratorExt {
 impl IteratorExt {
     fn new_item(&self) -> KVItem {
         let inner_item = KVItemInner {
-            status: Arc::new(tokio::sync::RwLock::new(PreFetchStatus::Empty)),
+            status: Arc::new(Atomic::new(PreFetchStatus::Empty)),
             kv: self.kv.clone(),
             key: vec![],
-            value: Arc::new(Default::default()),
+            value: ArcBlockBytes::new_null(),
             vptr: vec![],
             meta: 0,
             user_meta: 0,
@@ -302,14 +303,14 @@ impl IteratorExt {
     async fn valid_for_prefix(&self, prefix: &[u8]) -> bool {
         self.item.read().is_some()
             && self
-                .item
-                .read()
-                .as_ref()
-                .unwrap()
-                .read()
-                .await
-                .key()
-                .starts_with(prefix)
+            .item
+            .read()
+            .as_ref()
+            .unwrap()
+            .read()
+            .await
+            .key()
+            .starts_with(prefix)
     }
 
     // Close the iterator, It is important to call this when you're done with iteration.
@@ -329,7 +330,7 @@ impl IteratorExt {
             item.cas_counter.store(vs.cas_counter, Ordering::Relaxed);
             item.key.extend(self.itr.peek().as_ref().unwrap().key());
             item.vptr.extend(&vs.value);
-            item.value.write().await.clear();
+            item.value.set(ptr::null_mut(), 0);
         }
 
         // need fetch value, use new coroutine to load value.

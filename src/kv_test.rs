@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::iterator::IteratorOptions;
 use crate::types::XArc;
 use crate::value_log::Entry;
-use crate::{kv::KV, options::Options};
+use crate::{Error, kv::KV, options::Options};
 
 fn get_test_option(dir: &str) -> Options {
     let mut opt = Options::default();
@@ -125,14 +125,36 @@ async fn t_cas() {
         let key = format!("{}", i).into_bytes();
         let value = format!("{}", i).into_bytes();
         let mut cc = items[i].read().await.counter();
-        println!("counter: {}", cc);
         if cc == 5 {
             cc = 6;
         } else {
             cc = 5;
         }
-        assert!(kv.compare_and_set(key, value, cc).await.is_err());
+        let ret = kv.compare_and_set(key,value, cc).await.unwrap_err();
+        assert_eq!(ret.to_string(), Error::ValueCasMisMatch.to_string());
     }
+
+    for i in 0..n {
+        let key = format!("{}", i).into_bytes();
+        let value = format!("zzz{}", i).into_bytes();
+        let ret = kv.compare_and_set(key,value, items[i].read().await.counter()).await;
+        assert!(ret.is_ok());
+    }
+
+    for i in 0..n {
+        let key = format!("{}", i).as_bytes().to_vec();
+        let value = format!("zzz{}", i).as_bytes().to_vec();
+        let got = kv.get(&key).await.unwrap();
+        assert_eq!(got, value);
+    }
+}
+
+#[tokio::test]
+async fn t_kv_get() {
+    let kv = build_kv().await;
+    kv.set(b"key1".to_vec(), b"value1".to_vec(), 0x08).await.unwrap();
+    let got = kv.get_with_ext(b"key1").await.unwrap();
+    assert_eq!(got.read().await.get_value().await.unwrap(), b"value1".to_vec());
 }
 
 async fn build_kv() -> XArc<KV> {

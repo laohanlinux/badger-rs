@@ -42,7 +42,7 @@ use crate::y::{
     create_synced_file, is_eof, open_existing_synced_file, read_at, sync_directory, Decode, Encode,
 };
 use crate::Error::{Unexpected, ValueNoRewrite, ValueRejected};
-use crate::{Error, Result, META_SIZE};
+use crate::{Error, Result, META_SIZE, EMPTY_SLICE};
 
 /// Values have their first byte being byteData or byteDelete. This helps us distinguish between
 /// a key that has never been seen and a key that has been explicitly deleted.
@@ -316,7 +316,9 @@ pub(crate) struct EntryType {
 
 impl Debug for EntryType {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EntryType").field("entry", &self.entry).finish()
+        f.debug_struct("EntryType")
+            .field("entry", &self.entry)
+            .finish()
     }
 }
 
@@ -341,7 +343,6 @@ impl EntryType {
         self.fut_ch.clone()
     }
 }
-
 
 impl From<Entry> for EntryType {
     fn from(value: Entry) -> Self {
@@ -396,7 +397,10 @@ impl Request {
     }
 
     pub fn get_resp_channel(&self) -> Vec<Channel<Result<()>>> {
-        self.entries.iter().map(|ty| ty.fut_ch.clone()).collect::<Vec<_>>()
+        self.entries
+            .iter()
+            .map(|ty| ty.fut_ch.clone())
+            .collect::<Vec<_>>()
     }
 }
 
@@ -569,7 +573,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-                .into());
+            .into());
         }
 
         self.read_value_bytes(vp, |buffer| {
@@ -588,7 +592,7 @@ impl ValueLogCore {
     pub async fn async_read(
         &self,
         vp: &ValuePointer,
-        consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // Check for valid offset if we are reading to writable log.
         if vp.fid == self.max_fid.load(Ordering::Acquire)
@@ -599,7 +603,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-                .into());
+            .into());
         }
         self.async_read_bytes(vp, consumer).await?;
         Ok(())
@@ -612,7 +616,7 @@ impl ValueLogCore {
         mut f: impl for<'a> FnMut(
             &'a Entry,
             &'a ValuePointer,
-        ) -> Pin<Box<dyn Future<Output=Result<bool>> + 'a>>,
+        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
     ) -> Result<()> {
         let vlogs = self.pick_log_guard();
         info!("Seeking at value pointer: {:?}", vp);
@@ -716,17 +720,20 @@ impl ValueLogCore {
     async fn async_read_bytes(
         &self,
         vp: &ValuePointer,
-        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
-        let mut buffer = self.pick_log_by_vlog_id(&vp.fid).read().read(&vp)?.to_vec();
-        let value_buffer = buffer.split_off(Header::encoded_size());
+        let mut buffer = self.pick_log_by_vlog_id(&vp.fid);
+        let mut buffer = buffer.read();
+        let buffer = buffer.read(&vp)?;
         let mut h = Header::default();
-        h.dec(&mut Cursor::new(buffer))?;
-        if (h.meta & MetaBit::BIT_DELETE.bits) != 0 {
-            // Tombstone key
-            return consumer(vec![]).await;
-        }
-        consumer(value_buffer).await
+        h.dec(&mut Cursor::new(&buffer[..Header::encoded_size()]))?;
+        // if (h.meta & MetaBit::BIT_DELETE.bits) != 0 {
+        //     // Tombstone key
+        //     return consumer(&EMPTY_SLICE).await;
+        // }else {
+        //     consumer(&EMPTY_SLICE).await
+        // }
+        Ok(())
     }
 
     // write is thread-unsafe by design and should not be called concurrently.
@@ -736,9 +743,7 @@ impl ValueLogCore {
         let reqs_count = reqs.len();
         for mut req in reqs.into_iter() {
             for (idx, mut entry) in req.entries.into_iter().enumerate() {
-                if !self.opt.sync_writes
-                    && entry.entry().value.len() < self.opt.value_threshold
-                {
+                if !self.opt.sync_writes && entry.entry().value.len() < self.opt.value_threshold {
                     // No need to write to value log.
                     // WARN: if mt not flush into disk but process abort, that will discard data(the data not write into vlog that WAL file)
                     req.ptrs[idx] = None;
@@ -988,8 +993,8 @@ impl ValueLogCore {
     pub(crate) async fn wait_on_gc(&self, lc: Closer) {
         defer! {lc.done()}
         lc.wait().await; // wait for lc to be closed.
-        // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
-        // the channel of size 1.
+                         // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
+                         // the channel of size 1.
         self.garbage_ch.send(()).await.unwrap();
     }
 
