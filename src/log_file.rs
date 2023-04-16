@@ -115,7 +115,7 @@ impl LogFile {
         f: &mut impl for<'a> FnMut(
             &'a Entry,
             &'a ValuePointer,
-        ) -> Pin<Box<dyn Future<Output=Result<bool>> + 'a>>,
+        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
     ) -> Result<()> {
         loop {
             let (v, next) = self.read_entries(offset, 1).await?;
@@ -139,7 +139,7 @@ impl LogFile {
         f: &mut impl for<'a> FnMut(
             &'a Entry,
             &'a ValuePointer,
-        ) -> Pin<Box<dyn Future<Output=Result<bool>> + 'a>>,
+        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
     ) -> Result<()> {
         let mut fd = self.fd.as_mut().unwrap();
         fd.seek(SeekFrom::Start(offset as u64))?;
@@ -233,16 +233,18 @@ impl LogFile {
 
     // Acquire lock on mmap if you are calling this.
     pub(crate) fn read(&self, p: &ValuePointer) -> Result<&[u8]> {
-        info!("ready to read bytes from mmap, {:?}", p);
+        info!(
+            "ready to read bytes from mmap, {}, {:?}",
+            self._mmap.as_ref().unwrap().is_left(),
+            p
+        );
         let offset = p.offset;
-        let sz = self._mmap.as_ref().unwrap().len();
-        let value_sz = p.len;
-        return if offset >= sz as u32 || offset + value_sz > sz as u32 {
-            Err(Error::EOF)
-        } else {
-            Ok(&self._mmap.as_ref().unwrap()[offset as usize..(offset + value_sz) as usize])
-        };
+        let mmp = self._mmap.as_ref().unwrap();
         // todo add metrics
+        match mmp.0 {
+            Either::Left(ref m) => Ok(&m.as_ref()[offset as usize..(offset + p.len) as usize]),
+            Either::Right(ref m) => Ok(&m.as_ref()[offset as usize..(offset + p.len) as usize]),
+        }
     }
 
     // Done written, reopen with read only permisson for file and mmap.
@@ -329,7 +331,11 @@ fn test_write_file() {
     let mut vlog = LogFile::new(tmp_path).unwrap();
     vlog.fd.take();
     vlog.fd = Some(create_synced_file(tmp_path, true).unwrap());
-    info!("{},{:?}", vlog.sz, String::from_utf8_lossy(vlog.mmap_slice()));
+    info!(
+        "{},{:?}",
+        vlog.sz,
+        String::from_utf8_lossy(vlog.mmap_slice())
+    );
     vlog.set_write(1024).unwrap();
     // vlog.fd.as_mut().unwrap().write_all(b"foobat").unwrap();
     // vlog.fd.as_mut().unwrap().sync_all().unwrap();
@@ -340,5 +346,9 @@ fn test_write_file() {
         let mut wt = buffer.as_mut();
         wt.write_all(b"1234").unwrap();
     }
-    info!("{},{:?}", vlog.sz, String::from_utf8_lossy(vlog.mmap_slice()));
+    info!(
+        "{},{:?}",
+        vlog.sz,
+        String::from_utf8_lossy(vlog.mmap_slice())
+    );
 }

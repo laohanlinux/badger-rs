@@ -412,11 +412,10 @@ impl KV {
                 entry
                     .entry()
                     .cas_counter
-                    .store(counter_base + idx as u64, Ordering::Relaxed);
+                    .store(counter_base + idx as u64, Ordering::Release);
             }
         }
 
-        // TODO add error set
         if let Err(err) = self.vlog.as_ref().unwrap().write(reqs.clone()).await {
             for req in reqs.iter() {
                 req.set_entries_resp(Err(err.clone())).await;
@@ -434,9 +433,9 @@ impl KV {
             while let Err(err) = self.ensure_room_for_write().await {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            info!("waiting for write lsm, count {}", count);
-            self.update_offset(&mut req.ptrs); // TODO location has change
-                                               // It should not fail
+            info!("Waiting for write lsm, count {}", count);
+            self.update_offset(&mut req.ptrs);
+            // It should not fail
             self.write_to_lsm(req).await.unwrap();
         }
         info!("{} entries written", count);
@@ -596,11 +595,10 @@ impl KV {
                         entry.get_cas_counter(),
                     ),
                 );
+                info!("Lsm ok, the value not at vlog file");
             } else {
-
                 let ptr = req.ptrs.get(i).unwrap().load(Ordering::Relaxed);
                 let ptr = ptr.unwrap();
-                info!("lsm ok!");
                 let mut wt = Cursor::new(vec![0u8; ValuePointer::value_pointer_encoded_size()]);
                 ptr.enc(&mut wt).unwrap();
                 self.must_mt().put(
@@ -612,6 +610,7 @@ impl KV {
                         entry.get_cas_counter(),
                     ),
                 );
+                info!("Lsm ok, ptr: {:?}", ptr);
             }
 
             resp_ch.send(Ok(())).await.unwrap();
@@ -682,6 +681,7 @@ impl KV {
                 continue;
             }
             ptr = tmp_ptr.unwrap();
+            info!("Update offset, value pointer: {:?}", ptr);
             break;
         }
 

@@ -104,7 +104,7 @@ async fn t_concurrent_write() {
 async fn t_cas() {
     let n = 100;
     let kv = build_kv().await;
-    console_subscriber::init();
+    // console_subscriber::init();
     let entries = (0..n)
         .into_iter()
         .map(|i| {

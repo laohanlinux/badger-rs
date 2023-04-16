@@ -3,6 +3,7 @@ use atomic::Atomic;
 use awaitgroup::{WaitGroup, Worker};
 use bitflags::bitflags;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use bytes::BufMut;
 use crc32fast::Hasher;
 use drop_cell::defer;
 use either::Either;
@@ -30,7 +31,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime};
 use std::{fmt, fs, io, ptr, thread};
-use bytes::BufMut;
 use tabled::object::Entity::Cell;
 use tokio::macros::support::thread_rng_n;
 
@@ -209,16 +209,20 @@ impl Encode for Entry {
         h.cas_counter_check = self.cas_counter_check;
         let mut buffer = vec![0u8; Header::encoded_size() + (h.k_len + h.v_len + 4) as usize];
         // write header
-        h.enc(&mut buffer)?;
+        let mut start = 0;
+        h.enc(&mut Cursor::new(&mut buffer[start..]))?;
         // write key
-        buffer.write(&self.key)?;
+        start += Header::encoded_size();
+        (&mut buffer[start..]).write(&self.key)?;
         // write value
-        buffer.write(&self.value)?;
+        start += h.k_len as usize;
+        (&mut buffer[start..]).write(&self.value)?;
+        start += h.v_len as usize;
         let mut hasher = Hasher::new();
-        hasher.update(&buffer[..Header::encoded_size() + (h.k_len + h.v_len) as usize]);
+        hasher.update(&buffer[..start]);
         let check_sum = hasher.finalize();
         // write crc32
-        (&mut buffer[(h.k_len + h.v_len) as usize..]).write_u32::<BigEndian>(check_sum)?;
+        (&mut buffer[start..]).write_u32::<BigEndian>(check_sum)?;
         wt.write_all(&buffer)?;
         Ok(buffer.len())
     }
@@ -587,7 +591,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-                .into());
+            .into());
         }
 
         self.read_value_bytes(vp, |buffer| {
@@ -601,13 +605,13 @@ impl ValueLogCore {
             let n = Header::encoded_size() + h.k_len as usize;
             consumer(&buffer[n..n + h.v_len as usize])
         })
-            .await
+        .await
     }
 
     pub async fn async_read(
         &self,
         vp: &ValuePointer,
-        consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // Check for valid offset if we are reading to writable log.
         if vp.fid == self.max_fid.load(Ordering::Acquire)
@@ -618,7 +622,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-                .into());
+            .into());
         }
         self.async_read_bytes(vp, consumer).await?;
         Ok(())
@@ -631,7 +635,7 @@ impl ValueLogCore {
         mut f: impl for<'a> FnMut(
             &'a Entry,
             &'a ValuePointer,
-        ) -> Pin<Box<dyn Future<Output=Result<bool>> + 'a>>,
+        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
     ) -> Result<()> {
         let vlogs = self.pick_log_guard().await;
         info!("Seeking at value pointer: {:?}", vp);
@@ -738,25 +742,25 @@ impl ValueLogCore {
     async fn async_read_bytes(
         &self,
         vp: &ValuePointer,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         let mut vlog = self.pick_log_by_vlog_id(&vp.fid).await;
         let mut buffer = vlog.read().await;
         let buffer = buffer.read(&vp)?;
         let mut h = Header::default();
-        h.dec(&mut Cursor::new(&buffer[..Header::encoded_size()]))?;
-        info!("value header: {:?}", h);
+        h.dec(&mut Cursor::new(&buffer[0..Header::encoded_size()]))?;
         if (h.meta & MetaBit::BIT_DELETE.bits) != 0 {
             // Tombstone key
             consumer(&EMPTY_SLICE).await
         } else {
-            consumer(&buffer[Header::encoded_size()..]).await
+            let mut n = Header::encoded_size() + h.k_len as usize;
+            consumer(&buffer[n..n + h.v_len as usize]).await
         }
     }
 
     // write is thread-unsafe by design and should not be called concurrently.
     pub(crate) async fn write(&self, reqs: Vec<Request>) -> Result<()> {
-        defer! {info!("finished write value log");}
+        defer! {info!("Finished write value log");}
         let cur_vlog_file = self
             .pick_log_by_vlog_id(&self.max_fid.load(Ordering::Acquire))
             .await;
@@ -773,8 +777,9 @@ impl ValueLogCore {
                 }
 
                 info!(
-                    "Write a # {:?} into vlog file",
-                    String::from_utf8(entry.entry().key.clone()).unwrap()
+                    "Write a # {:?} into vlog file, mmap position: {}",
+                    String::from_utf8(entry.entry().key.clone()).unwrap(),
+                    self.buf.read().await.position(),
                 );
                 let mut ptr = ValuePointer::default();
                 ptr.fid = cur_fid;
@@ -788,7 +793,7 @@ impl ValueLogCore {
                     info!("It should be not happen!!!!!!!");
                 }
                 ptr.len = buf.get_ref().len() as u32 - ptr.offset;
-                req.ptrs[idx].store(Some(ptr), Ordering::Relaxed);
+                req.ptrs[idx].store(Some(ptr), Ordering::Release);
             }
         }
         {
@@ -796,26 +801,27 @@ impl ValueLogCore {
                 info!("Nothing to write, buffer is empty!");
                 return Ok(());
             }
-            info!(
-                "Flushing {} blocks of total size: {}",
-                reqs_count,
-                self.buf.read().await.get_ref().len()
-            );
-
             let mut buffer = self.buf.write().await;
             let fp_wt = cur_vlog_wl.mut_mmap();
+            // write value ponter into vlog file. (Just only write to mmap)
             let n = fp_wt.as_mut().write(buffer.get_ref())?;
             assert_eq!(n, buffer.get_ref().len());
             // todo add metrics
+            // update log
             self.writable_log_offset
                 .fetch_add(n as u32, Ordering::Release);
-            buffer.get_mut().clear();
 
+            info!(
+                "Flushing {} requests of total size: {}",
+                reqs_count,
+                self.writable_log_offset.load(Ordering::Acquire),
+            );
+            // clear buffer
+            buffer.get_mut().clear();
             if self.writable_log_offset.load(Ordering::Acquire)
                 > self.opt.value_log_file_size as u32
             {
                 cur_vlog_wl.done_writing(self.writable_log_offset.load(Ordering::Acquire))?;
-
                 let new_id = self.max_fid.fetch_add(1, Ordering::Release);
                 assert!(new_id < 1 << 16, "newid will overflow u16: {}", new_id);
                 *cur_vlog_wl =
@@ -1027,8 +1033,8 @@ impl ValueLogCore {
     pub(crate) async fn wait_on_gc(&self, lc: Closer) {
         defer! {lc.done()}
         lc.wait().await; // wait for lc to be closed.
-        // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
-        // the channel of size 1.
+                         // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
+                         // the channel of size 1.
         self.garbage_ch.send(()).await.unwrap();
     }
 
