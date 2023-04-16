@@ -832,6 +832,4 @@ async fn revert_to_manifest(
 }
 
 #[test]
-fn it() {
-
-}
+fn it() {}

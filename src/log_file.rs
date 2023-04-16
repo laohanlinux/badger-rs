@@ -4,6 +4,7 @@ use crate::y::{is_eof, read_at, Decode};
 use crate::Error;
 use byteorder::{BigEndian, ReadBytesExt};
 use either::Either;
+use log::info;
 use memmap::{Mmap, MmapMut};
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
@@ -13,7 +14,7 @@ use std::f32::consts::E;
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
 use std::future::Future;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::atomic::AtomicU64;
@@ -34,6 +35,13 @@ impl MmapType {
     pub(crate) fn get_mut_mmap(&self) -> &MmapMut {
         match self.0 {
             Either::Right(ref m) => m,
+            _ => panic!("It should be not happen"),
+        }
+    }
+
+    pub(crate) fn get_mut_mmap_ref(&mut self) -> &mut MmapMut {
+        match self.0 {
+            Either::Right(ref mut m) => m,
             _ => panic!("It should be not happen"),
         }
     }
@@ -107,7 +115,7 @@ impl LogFile {
         f: &mut impl for<'a> FnMut(
             &'a Entry,
             &'a ValuePointer,
-        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
+        ) -> Pin<Box<dyn Future<Output=Result<bool>> + 'a>>,
     ) -> Result<()> {
         loop {
             let (v, next) = self.read_entries(offset, 1).await?;
@@ -131,7 +139,7 @@ impl LogFile {
         f: &mut impl for<'a> FnMut(
             &'a Entry,
             &'a ValuePointer,
-        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
+        ) -> Pin<Box<dyn Future<Output=Result<bool>> + 'a>>,
     ) -> Result<()> {
         let mut fd = self.fd.as_mut().unwrap();
         fd.seek(SeekFrom::Start(offset as u64))?;
@@ -225,6 +233,7 @@ impl LogFile {
 
     // Acquire lock on mmap if you are calling this.
     pub(crate) fn read(&self, p: &ValuePointer) -> Result<&[u8]> {
+        info!("ready to read bytes from mmap, {:?}", p);
         let offset = p.offset;
         let sz = self._mmap.as_ref().unwrap().len();
         let value_sz = p.len;
@@ -252,6 +261,7 @@ impl LogFile {
 
     pub(crate) fn set_write(&mut self, sz: u64) -> Result<()> {
         self.fd.as_mut().unwrap().set_len(sz as u64)?;
+        info!("reset file size:{}", sz);
         let mut _mmap = unsafe { Mmap::map(&self.fd.as_ref().unwrap())?.make_mut()? };
         self._mmap.replace(MmapType(Either::Right(_mmap)));
         self.sz = sz as u32;
@@ -272,8 +282,9 @@ impl LogFile {
         self.fd.as_ref().unwrap()
     }
 
-    fn mut_mmap(&self) -> &MmapMut {
-        self._mmap.as_ref().unwrap().get_mut_mmap()
+    pub(crate) fn mut_mmap(&mut self) -> &mut MmapMut {
+        let mp = self._mmap.as_mut().unwrap();
+        mp.get_mut_mmap_ref()
     }
 
     fn mmap_ref(&self) -> &Mmap {
@@ -308,7 +319,26 @@ fn test_mmap() {
 
 #[test]
 fn test_write_file() {
-    //let lf = create_synced_file(_path.to_str().unwrap(), true).unwrap();
-    let mut vlog = LogFile::new("src/test_data/vlog_file.text").unwrap();
-    // println!("{}", vlog.unwrap_err());
+    use crate::test_util;
+    test_util::tracing_log();
+
+    let tmp_path = temp_dir().join("mmap_test.txt");
+    let tmp_path = tmp_path.to_str().unwrap();
+    std::fs::write(tmp_path, b"hellow, word").unwrap();
+    info!("path: {}", tmp_path);
+    let mut vlog = LogFile::new(tmp_path).unwrap();
+    vlog.fd.take();
+    vlog.fd = Some(create_synced_file(tmp_path, true).unwrap());
+    info!("{},{:?}", vlog.sz, String::from_utf8_lossy(vlog.mmap_slice()));
+    vlog.set_write(1024).unwrap();
+    // vlog.fd.as_mut().unwrap().write_all(b"foobat").unwrap();
+    // vlog.fd.as_mut().unwrap().sync_all().unwrap();
+    // vlog.mut_mmap().flush_async().unwrap();
+    {
+        let mut buffer = vlog._mmap.as_mut().unwrap();
+        let mut buffer = buffer.get_mut_mmap_ref();
+        let mut wt = buffer.as_mut();
+        wt.write_all(b"1234").unwrap();
+    }
+    info!("{},{:?}", vlog.sz, String::from_utf8_lossy(vlog.mmap_slice()));
 }

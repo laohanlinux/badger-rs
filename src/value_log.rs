@@ -1,4 +1,5 @@
 use async_channel::{Receiver, RecvError, Sender};
+use atomic::Atomic;
 use awaitgroup::{WaitGroup, Worker};
 use bitflags::bitflags;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -17,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::{read_dir, remove_file, File, OpenOptions};
 use std::future::Future;
-use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::{Deref, Index};
@@ -29,6 +30,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime};
 use std::{fmt, fs, io, ptr, thread};
+use bytes::BufMut;
 use tabled::object::Entity::Cell;
 use tokio::macros::support::thread_rng_n;
 
@@ -42,7 +44,7 @@ use crate::y::{
     create_synced_file, is_eof, open_existing_synced_file, read_at, sync_directory, Decode, Encode,
 };
 use crate::Error::{Unexpected, ValueNoRewrite, ValueRejected};
-use crate::{Error, Result, META_SIZE, EMPTY_SLICE};
+use crate::{Error, Result, EMPTY_SLICE, META_SIZE};
 
 /// Values have their first byte being byteData or byteDelete. This helps us distinguish between
 /// a key that has never been seen and a key that has been explicitly deleted.
@@ -260,7 +262,7 @@ impl fmt::Display for Entry {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Copy)]
 #[repr(C)]
 pub struct ValuePointer {
     pub(crate) fid: u32,
@@ -358,7 +360,7 @@ pub struct Request {
     // Input values
     pub(crate) entries: Vec<EntryType>,
     // Output Values and wait group stuff below
-    pub(crate) ptrs: Vec<Option<ValuePointer>>,
+    pub(crate) ptrs: Vec<Arc<Atomic<Option<ValuePointer>>>>,
 }
 
 impl Default for Request {
@@ -402,6 +404,14 @@ impl Request {
             .map(|ty| ty.fut_ch.clone())
             .collect::<Vec<_>>()
     }
+
+    fn get_ptrs(&self) -> Vec<Arc<Atomic<Option<ValuePointer>>>> {
+        self.ptrs.clone()
+    }
+
+    fn get_ptr(&self, i: usize) -> Option<&Arc<Atomic<Option<ValuePointer>>>> {
+        self.ptrs.get(i)
+    }
 }
 
 pub struct ValueLogCore {
@@ -409,15 +419,15 @@ pub struct ValueLogCore {
     pub(crate) max_fid: AtomicU32,
     // TODO
     // guards our view of which files exist, which to be deleted, how many active iterators
-    pub(crate) files_log: Arc<RwLock<()>>,
-    vlogs: Arc<RwLock<HashMap<u32, Arc<RwLock<LogFile>>>>>,
+    pub(crate) files_log: TArcRW<()>,
+    vlogs: TArcRW<HashMap<u32, TArcRW<LogFile>>>,
     // TODO It is not good idea that use raw lock for Arc<RwLock<LogFile>>, it maybe lock AsyncRuntime thread.
-    dirty_vlogs: Arc<RwLock<HashSet<u32>>>,
+    dirty_vlogs: TArcRW<HashSet<u32>>,
     // TODO why?
     // A refcount of iterators -- when this hits zero, we can delete the files_to_be_deleted. Why?
     num_active_iterators: AtomicI32,
     writable_log_offset: AtomicU32,
-    buf: TArcRW<BufWriter<Vec<u8>>>,
+    buf: TArcRW<Cursor<Vec<u8>>>,
     opt: Options,
     kv: BoxKV,
     // Only allow one GC at a time.
@@ -434,7 +444,9 @@ impl Default for ValueLogCore {
             dirty_vlogs: Arc::new(Default::default()),
             num_active_iterators: Default::default(),
             writable_log_offset: Default::default(),
-            buf: Arc::new(tokio::sync::RwLock::new(BufWriter::new(vec![0u8; 0]))),
+            buf: Arc::new(tokio::sync::RwLock::new(Cursor::new(Vec::with_capacity(
+                1 << 12,
+            )))),
             opt: Default::default(),
             kv: BoxKV::new(ptr::null_mut()),
             garbage_ch: Channel::new(1),
@@ -476,11 +488,11 @@ impl ValueLogCore {
     }
 
     // TODO Use Arc<KV> to replace it
-    pub(crate) fn open(&mut self, kv: *const KV, opt: Options) -> Result<()> {
+    pub(crate) async fn open(&mut self, kv: *const KV, opt: Options) -> Result<()> {
         self.dir_path = opt.value_dir.clone();
         self.opt = opt;
         self.kv = BoxKV::new(kv);
-        self.open_create_files()?;
+        self.open_create_files().await?;
         // todo add garbage and metrics
         self.garbage_ch = Channel::new(1);
         Ok(())
@@ -490,11 +502,11 @@ impl ValueLogCore {
         unsafe { &*self.kv.kv }
     }
 
-    pub fn close(&self) -> Result<()> {
+    pub async fn close(&self) -> Result<()> {
         info!("Stopping garbage collection of values.");
-        let mut vlogs = self.vlogs.write();
+        let mut vlogs = self.vlogs.write().await;
         for vlog in vlogs.iter() {
-            let mut lf = vlog.1.write();
+            let mut lf = vlog.1.write().await;
             if *vlog.0 == self.max_fid.load(Ordering::Acquire) {
                 info!("close vlog: {}", vlog.0);
                 let _mmap = lf._mmap.take().unwrap();
@@ -509,7 +521,7 @@ impl ValueLogCore {
         Ok(())
     }
 
-    fn open_create_files(&self) -> Result<()> {
+    async fn open_create_files(&self) -> Result<()> {
         match fs::create_dir_all(self.dir_path.as_str()) {
             Ok(_) => {}
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -530,7 +542,8 @@ impl ValueLogCore {
             };
             self.vlogs
                 .write()
-                .insert(fid as u32, Arc::new(RwLock::new(log_file)));
+                .await
+                .insert(fid as u32, TArcRW::new(tokio::sync::RwLock::new(log_file)));
             if fid > max_fid {
                 max_fid = fid;
             }
@@ -539,27 +552,28 @@ impl ValueLogCore {
 
         // Open all previous log files are read only. Open the last log file
         // as read write.
-        let mut vlogs = self.vlogs.write();
+        let mut vlogs = self.vlogs.write().await;
         for (fid, fp) in vlogs.iter() {
             if *fid == max_fid as u32 {
                 let fpath = self.fpath(*fid as u32);
                 let _fp = open_existing_synced_file(&fpath, self.opt.sync_writes)?;
-                fp.write().fd.replace(_fp);
+                fp.write().await.fd.replace(_fp);
             } else {
-                fp.write().open_read_only()?;
+                fp.write().await.open_read_only()?;
             }
         }
         // If no files are found, creating a new file.
         if vlogs.is_empty() {
             let log_file = self.create_vlog_file(0)?;
             info!("Create zero vlog {}!!", log_file._path.as_ref());
-            vlogs.insert(0, Arc::new(RwLock::new(log_file)));
+            let vlog = TArcRW::new(tokio::sync::RwLock::new(log_file));
+            vlogs.insert(0, vlog);
         }
         Ok(())
     }
 
     // Read the value log at given location.
-    pub fn read(
+    pub async fn read(
         &self,
         vp: &ValuePointer,
         mut consumer: impl FnMut(&[u8]) -> Result<()>,
@@ -573,7 +587,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-            .into());
+                .into());
         }
 
         self.read_value_bytes(vp, |buffer| {
@@ -587,12 +601,13 @@ impl ValueLogCore {
             let n = Header::encoded_size() + h.k_len as usize;
             consumer(&buffer[n..n + h.v_len as usize])
         })
+            .await
     }
 
     pub async fn async_read(
         &self,
         vp: &ValuePointer,
-        consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         // Check for valid offset if we are reading to writable log.
         if vp.fid == self.max_fid.load(Ordering::Acquire)
@@ -603,7 +618,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-            .into());
+                .into());
         }
         self.async_read_bytes(vp, consumer).await?;
         Ok(())
@@ -616,9 +631,9 @@ impl ValueLogCore {
         mut f: impl for<'a> FnMut(
             &'a Entry,
             &'a ValuePointer,
-        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
+        ) -> Pin<Box<dyn Future<Output=Result<bool>> + 'a>>,
     ) -> Result<()> {
-        let vlogs = self.pick_log_guard();
+        let vlogs = self.pick_log_guard().await;
         info!("Seeking at value pointer: {:?}", vp);
         let offset = vp.offset + vp.len;
         // Find the max file to recover
@@ -631,7 +646,7 @@ impl ValueLogCore {
                 // It is very import that maybe the lasted memory table are not persistent at disk.
                 of = 0;
             }
-            let mut log_file = vlogs.vlogs.get(&id).unwrap().write();
+            let mut log_file = vlogs.vlogs.get(&id).unwrap().write().await;
             log_file.iterate(of, &mut f).await?;
         }
         // Seek to the end to start writing.
@@ -641,6 +656,7 @@ impl ValueLogCore {
             .unwrap();
         let last_offset = last_file
             .write()
+            .await
             .fd
             .as_mut()
             .unwrap()
@@ -659,7 +675,7 @@ impl ValueLogCore {
         self.num_active_iterators.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn decr_iterator_count(&self) -> Result<()> {
+    pub(crate) async fn decr_iterator_count(&self) -> Result<()> {
         // TODO add share lock.
         let old = self.num_active_iterators.fetch_sub(1, Ordering::Relaxed);
         if old != 1 {
@@ -667,37 +683,39 @@ impl ValueLogCore {
             return Ok(());
         }
         let mut lfs = vec![];
-        for dirty_vlog in self.dirty_vlogs.read().iter() {
+        for dirty_vlog in self.dirty_vlogs.read().await.iter() {
             // TODO
-            let vlog = self.vlogs.write().remove(dirty_vlog).unwrap();
+            let vlog = self.vlogs.write().await.remove(dirty_vlog).unwrap();
             lfs.push(vlog);
         }
-        self.dirty_vlogs.write().clear();
+        self.dirty_vlogs.write().await.clear();
         for lf in lfs {
-            self.delete_log_file_by_fid(lf)?;
+            self.delete_log_file_by_fid(lf).await?;
         }
         Ok(())
     }
 
     // Delete log file after no refernece of LogFile
-    fn delete_log_file_by_fid(&self, log_file: Arc<RwLock<LogFile>>) -> Result<()> {
-        if let Some(mp) = log_file.write()._mmap.take() {
+    async fn delete_log_file_by_fid(&self, log_file: TArcRW<LogFile>) -> Result<()> {
+        let mut vlog_file_wl = log_file.write().await;
+        if let Some(mp) = vlog_file_wl._mmap.take() {
             mp.get_mut_mmap().flush()?;
         }
-        if let Some(fp) = log_file.write().fd.take() {
+        if let Some(fp) = vlog_file_wl.fd.take() {
             fp.sync_all()?;
         }
-        remove_file(self.fpath(log_file.read().fid))?;
+        remove_file(self.fpath(vlog_file_wl.fid))?;
         Ok(())
     }
 
     // sync is thread-unsafe and should not be called concurrently with write.
-    pub(crate) fn sync(&self) -> Result<()> {
+    pub(crate) async fn sync(&self) -> Result<()> {
         if self.opt.sync_writes {
             return Ok(());
         }
         let cur_wt_vlog = self
             .pick_log_guard()
+            .await
             .vlogs
             .get(&self.max_fid.load(Ordering::Acquire))
             .unwrap();
@@ -706,13 +724,13 @@ impl ValueLogCore {
         Ok(())
     }
 
-    fn read_value_bytes(
+    async fn read_value_bytes(
         &self,
         vp: &ValuePointer,
         mut consumer: impl FnMut(&[u8]) -> Result<()>,
     ) -> Result<()> {
-        let log_file = self.pick_log_by_vlog_id(&vp.fid);
-        let lf = log_file.read();
+        let log_file = self.pick_log_by_vlog_id(&vp.fid).await;
+        let lf = log_file.read().await;
         let buffer = lf.read(vp)?;
         consumer(buffer)
     }
@@ -720,75 +738,87 @@ impl ValueLogCore {
     async fn async_read_bytes(
         &self,
         vp: &ValuePointer,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
-        let mut buffer = self.pick_log_by_vlog_id(&vp.fid);
-        let mut buffer = buffer.read();
+        let mut vlog = self.pick_log_by_vlog_id(&vp.fid).await;
+        let mut buffer = vlog.read().await;
         let buffer = buffer.read(&vp)?;
         let mut h = Header::default();
         h.dec(&mut Cursor::new(&buffer[..Header::encoded_size()]))?;
-        // TODO FIXME
-        // if (h.meta & MetaBit::BIT_DELETE.bits) != 0 {
-        //     // Tombstone key
-        //     return consumer(&EMPTY_SLICE).await;
-        // }else {
-        //     consumer(&EMPTY_SLICE).await
-        // }
-        Ok(())
+        info!("value header: {:?}", h);
+        if (h.meta & MetaBit::BIT_DELETE.bits) != 0 {
+            // Tombstone key
+            consumer(&EMPTY_SLICE).await
+        } else {
+            consumer(&buffer[Header::encoded_size()..]).await
+        }
     }
 
     // write is thread-unsafe by design and should not be called concurrently.
     pub(crate) async fn write(&self, reqs: Vec<Request>) -> Result<()> {
         defer! {info!("finished write value log");}
-        let cur_vlog_file = self.pick_log_by_vlog_id(&self.max_fid.load(Ordering::Acquire));
+        let cur_vlog_file = self
+            .pick_log_by_vlog_id(&self.max_fid.load(Ordering::Acquire))
+            .await;
+        let mut cur_vlog_wl = cur_vlog_file.write().await;
+        let cur_fid = cur_vlog_wl.fid;
         let reqs_count = reqs.len();
         for mut req in reqs.into_iter() {
             for (idx, mut entry) in req.entries.into_iter().enumerate() {
                 if !self.opt.sync_writes && entry.entry().value.len() < self.opt.value_threshold {
                     // No need to write to value log.
                     // WARN: if mt not flush into disk but process abort, that will discard data(the data not write into vlog that WAL file)
-                    req.ptrs[idx] = None;
+                    req.ptrs[idx] = Arc::new(Atomic::new(None));
                     continue;
                 }
 
+                info!(
+                    "Write a # {:?} into vlog file",
+                    String::from_utf8(entry.entry().key.clone()).unwrap()
+                );
                 let mut ptr = ValuePointer::default();
-                ptr.fid = cur_vlog_file.read().fid;
+                ptr.fid = cur_fid;
                 // Use the offset including buffer length so far.
                 ptr.offset = self.writable_log_offset.load(Ordering::Acquire)
-                    + self.buf.read().await.buffer().len() as u32;
+                    + self.buf.read().await.position() as u32;
                 let mut buf = self.buf.write().await;
                 let mut entry = entry.mut_entry();
-                entry.enc(buf.get_mut()).unwrap();
+                entry.enc(&mut buf.get_mut()).unwrap();
+                if buf.get_ref().is_empty() {
+                    info!("It should be not happen!!!!!!!");
+                }
+                ptr.len = buf.get_ref().len() as u32 - ptr.offset;
+                req.ptrs[idx].store(Some(ptr), Ordering::Relaxed);
             }
         }
         {
-            if self.buf.read().await.buffer().is_empty() {
+            if self.buf.read().await.get_ref().is_empty() {
+                info!("Nothing to write, buffer is empty!");
                 return Ok(());
             }
             info!(
-                " Flushing {} blocks of total size: {}",
+                "Flushing {} blocks of total size: {}",
                 reqs_count,
-                self.buf.read().await.buffer().len()
+                self.buf.read().await.get_ref().len()
             );
 
             let mut buffer = self.buf.write().await;
-            let mut buffer = buffer.get_mut();
-            let mut cur_vlog_file_wt = cur_vlog_file.write();
-            let fp = cur_vlog_file_wt.fd.as_mut().unwrap();
-            let n = fp.write(&buffer)?;
+            let fp_wt = cur_vlog_wl.mut_mmap();
+            let n = fp_wt.as_mut().write(buffer.get_ref())?;
+            assert_eq!(n, buffer.get_ref().len());
             // todo add metrics
             self.writable_log_offset
                 .fetch_add(n as u32, Ordering::Release);
-            buffer.clear();
+            buffer.get_mut().clear();
 
             if self.writable_log_offset.load(Ordering::Acquire)
                 > self.opt.value_log_file_size as u32
             {
-                cur_vlog_file_wt.done_writing(self.writable_log_offset.load(Ordering::Acquire))?;
+                cur_vlog_wl.done_writing(self.writable_log_offset.load(Ordering::Acquire))?;
 
                 let new_id = self.max_fid.fetch_add(1, Ordering::Release);
                 assert!(new_id < 1 << 16, "newid will overflow u16: {}", new_id);
-                *cur_vlog_file_wt =
+                *cur_vlog_wl =
                     self.create_mmap_vlog_file(new_id, 2 * self.opt.value_log_file_size)?;
             }
             Ok(())
@@ -796,12 +826,12 @@ impl ValueLogCore {
     }
 
     // rewrite the log_file
-    async fn rewrite(&self, lf: Arc<lock_api::RwLock<RawRwLock, LogFile>>, x: &KV) -> Result<()> {
+    async fn rewrite(&self, lf: TArcRW<LogFile>, x: &KV) -> Result<()> {
         let max_fid = self.max_fid.load(Ordering::Relaxed);
         assert!(
-            lf.read().fid < max_fid,
+            lf.read().await.fid < max_fid,
             "fid to move: {}. Current max fid: {}",
-            lf.read().fid,
+            lf.read().await.fid,
             max_fid
         );
         // TODO add metrics
@@ -811,7 +841,7 @@ impl ValueLogCore {
         let kv = self.get_kv();
         let mut write_batch = Vec::with_capacity(1000);
         loop {
-            let (mut entries, next) = lf.read().read_entries(offset, 1).await?;
+            let (mut entries, next) = lf.read().await.read_entries(offset, 1).await?;
             if entries.is_empty() {
                 info!("not anything need to rewrite");
                 break;
@@ -861,13 +891,13 @@ impl ValueLogCore {
             // the lasted vptr
             let mut vptr = ValuePointer::default();
             vptr.dec(&mut Cursor::new(&vs.value)).unwrap();
-            if vptr.fid > lf.read().fid {
+            if vptr.fid > lf.read().await.fid {
                 continue;
             }
             if vptr.offset > entry.offset {
                 continue;
             }
-            assert_eq!(vptr.fid, lf.read().fid);
+            assert_eq!(vptr.fid, lf.read().await.fid);
             assert_eq!(vptr.offset, entry.offset);
             {
                 // This new entry only contains the key, and a pointer to the value.
@@ -898,32 +928,35 @@ impl ValueLogCore {
             write_batch.len(),
             count
         );
-        info!("REWRITE: Removing fid: {}", lf.read().fid);
+        info!("REWRITE: Removing fid: {}", lf.read().await.fid);
         kv.batch_set(write_batch).await;
         info!("REWRITE: Processed {} entries in total", count);
-        info!("REWRITE: Removing fid: {}", lf.read().fid);
+        info!("REWRITE: Removing fid: {}", lf.read().await.fid);
         let mut deleted_file_now = false;
         // Entries written to LSM. Remove the older file now.
         {
             // Just a sanity-check.
-            let mut vlogs = self.vlogs.write();
-            if !vlogs.contains_key(&lf.read().fid) {
-                return Err(format!("Unable to find fid: {}", lf.read().fid).into());
+            let mut vlogs = self.vlogs.write().await;
+            if !vlogs.contains_key(&lf.read().await.fid) {
+                return Err(format!("Unable to find fid: {}", lf.read().await.fid).into());
             }
             // TODO Why?
             if self.num_active_iterators.load(Ordering::Relaxed) == 0 {
-                vlogs.remove(&lf.read().fid);
+                vlogs.remove(&lf.read().await.fid);
                 deleted_file_now = true;
             } else {
-                self.dirty_vlogs.write().insert(lf.read().fid.clone());
+                self.dirty_vlogs
+                    .write()
+                    .await
+                    .insert(lf.read().await.fid.clone());
             }
         }
         if deleted_file_now {}
         Ok(())
     }
 
-    fn pick_log(&self) -> Option<Arc<lock_api::RwLock<RawRwLock, LogFile>>> {
-        let vlogs_guard = self.pick_log_guard();
+    async fn pick_log(&self) -> Option<TArcRW<LogFile>> {
+        let vlogs_guard = self.pick_log_guard().await;
         if vlogs_guard.vlogs.len() <= 1 {
             return None;
         }
@@ -938,18 +971,18 @@ impl ValueLogCore {
         Some(vlog.clone())
     }
 
-    pub(crate) fn pick_log_by_vlog_id(&self, id: &u32) -> Arc<RwLock<LogFile>> {
-        let pick_vlogs = self.pick_log_guard();
+    pub(crate) async fn pick_log_by_vlog_id(&self, id: &u32) -> TArcRW<LogFile> {
+        let pick_vlogs = self.pick_log_guard().await;
         let vlogs = pick_vlogs.vlogs.get(id);
         let vlog = vlogs.unwrap();
         vlog.clone()
     }
 
     // Note: it not including dirty file
-    fn pick_log_guard(&self) -> PickVlogsGuardsReadLock {
-        let vlogs = self.vlogs.read();
+    async fn pick_log_guard(&self) -> PickVlogsGuardsReadLock {
+        let vlogs = self.vlogs.read().await;
         let vlogs_fids = vlogs.keys().map(|fid| *fid).collect::<HashSet<_>>();
-        let dirty_vlogs = self.dirty_vlogs.read();
+        let dirty_vlogs = self.dirty_vlogs.read().await;
         let mut fids = vlogs_fids
             .difference(&*dirty_vlogs)
             .map(|fid| *fid)
@@ -994,8 +1027,8 @@ impl ValueLogCore {
     pub(crate) async fn wait_on_gc(&self, lc: Closer) {
         defer! {lc.done()}
         lc.wait().await; // wait for lc to be closed.
-                         // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
-                         // the channel of size 1.
+        // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
+        // the channel of size 1.
         self.garbage_ch.send(()).await.unwrap();
     }
 
@@ -1027,12 +1060,13 @@ impl ValueLogCore {
         let mut skipped = 0.0;
         let mut start = SystemTime::now();
         // Random pick a vlog file for gc
-        let lf = self.pick_log().ok_or(Error::ValueNoRewrite)?;
-        let fid = lf.read().fid;
+        let lf = self.pick_log().await.ok_or(Error::ValueNoRewrite)?;
+        let fid = lf.read().await.fid;
         // Ennnnnnn
         let vlog = unsafe { &*(self as *const ValueLogCore as *mut ValueLogCore) };
         lf.clone()
             .read()
+            .await
             .iterate_by_offset(0, &mut |entry, vptr| {
                 let kv = vlog.get_kv();
                 let reason = reason.clone();
@@ -1092,16 +1126,18 @@ impl ValueLogCore {
                     } else {
                         // TODO Maybe abort gc process, it should be happen
                         info!("Reason={:?}", reason);
-                        let err = vlog.read_value_bytes(&vptr, |buf| {
-                            let mut unexpect_entry = Entry::default();
-                            unexpect_entry.dec(&mut io::Cursor::new(buf))?;
-                            unexpect_entry.offset = vptr.offset;
-                            if unexpect_entry.get_cas_counter() == entry.get_cas_counter() {
-                                info!("Latest Entry Header in LSM: {}", unexpect_entry);
-                                info!("Latest Entry in Log: {}", entry);
-                            }
-                            Ok(())
-                        });
+                        let err = vlog
+                            .read_value_bytes(&vptr, |buf| {
+                                let mut unexpect_entry = Entry::default();
+                                unexpect_entry.dec(&mut io::Cursor::new(buf))?;
+                                unexpect_entry.offset = vptr.offset;
+                                if unexpect_entry.get_cas_counter() == entry.get_cas_counter() {
+                                    info!("Latest Entry Header in LSM: {}", unexpect_entry);
+                                    info!("Latest Entry in Log: {}", entry);
+                                }
+                                Ok(())
+                            })
+                            .await;
                         if err.is_err() {
                             return Err("Stop iteration".into());
                         }
@@ -1113,24 +1149,26 @@ impl ValueLogCore {
         let reason = reason.lock();
         info!("Fid: {} Data status={:?}", fid, reason);
         if reason.total < 10.0 || reason.discard < gc_threshold * reason.total {
-            info!("Skipping GC on fid: {}", lf.read().fid);
+            info!("Skipping GC on fid: {}", lf.read().await.fid);
             return Err(Error::ValueNoRewrite);
         }
 
-        info!("REWRITING VLOG {}", lf.read().fid);
+        info!("REWRITING VLOG {}", lf.read().await.fid);
         self.rewrite(lf, self.get_kv()).await?;
         Ok(())
     }
 }
 
 struct PickVlogsGuardsReadLock<'a> {
-    vlogs: lock_api::RwLockReadGuard<
-        'a,
-        RawRwLock,
-        HashMap<u32, Arc<lock_api::RwLock<RawRwLock, LogFile>>>,
-    >,
+    vlogs: tokio::sync::RwLockReadGuard<'a, HashMap<u32, TArcRW<LogFile>>>,
     fids: Vec<u32>,
 }
 
 #[test]
-fn it() {}
+fn it() {
+    // let mut buffer = Cursor::new(Vec::with_capacity(1<<10));
+    // buffer.write(b"hello").unwrap();
+    // println!("{:?}", buffer.get_ref());
+    // buffer.get_mut().clear();
+    // println!("{:?}", buffer.get_ref());
+}

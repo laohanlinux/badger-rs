@@ -23,6 +23,7 @@ use std::mem::align_of;
 mod event;
 mod iterator;
 mod kv;
+mod level_handler;
 mod log_file;
 mod manifest;
 mod options;
@@ -33,20 +34,17 @@ mod value_log;
 #[cfg(test)]
 mod value_log_tests;
 mod y;
-mod level_handler;
 
 mod compaction;
 // #[cfg(test)]
 // mod kv_test;
+#[cfg(test)]
+mod kv_test;
 mod levels;
-mod mmap;
 mod pb;
 mod st_manager;
 #[cfg(test)]
 mod test_util;
-#[cfg(test)]
-mod kv_test;
-
 
 pub use skl::*;
 pub use st_manager::*;

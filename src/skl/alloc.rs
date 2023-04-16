@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 use std::mem::{align_of, size_of, ManuallyDrop};
 
 use atom_box::AtomBox;
+use atomic::Atomic;
 use either::Either;
 use libc::{difftime, off_t};
 use log::info;
@@ -16,7 +17,6 @@ use std::sync::Arc;
 use std::thread::{sleep, spawn};
 use std::time::Duration;
 use std::{ptr, thread};
-use atomic::Atomic;
 
 pub trait Allocate: Send + Sync {
     type Block;
@@ -60,19 +60,32 @@ impl ArcBlockBytes {
 impl Clone for ArcBlockBytes {
     fn clone(&self) -> Self {
         let ptr = self.start.load(Ordering::Relaxed);
-        Self { start: AtomicPtr::new(ptr), n: Arc::new(AtomicUsize::new(self.n.load(Ordering::Relaxed))) }
+        Self {
+            start: AtomicPtr::new(ptr),
+            n: Arc::new(AtomicUsize::new(self.n.load(Ordering::Relaxed))),
+        }
     }
 }
 
 impl Chunk for ArcBlockBytes {
     #[inline]
     fn get_data(&self) -> &[u8] {
-        unsafe { &*slice_from_raw_parts(self.start.load(Ordering::Relaxed), self.n.load(Ordering::Relaxed)) }
+        unsafe {
+            &*slice_from_raw_parts(
+                self.start.load(Ordering::Relaxed),
+                self.n.load(Ordering::Relaxed),
+            )
+        }
     }
 
     #[inline]
     fn get_data_mut(&self) -> &mut [u8] {
-        unsafe { &mut *slice_from_raw_parts_mut(self.start.load(Ordering::Relaxed), self.n.load(Ordering::Relaxed)) }
+        unsafe {
+            &mut *slice_from_raw_parts_mut(
+                self.start.load(Ordering::Relaxed),
+                self.n.load(Ordering::Relaxed),
+            )
+        }
     }
 
     #[inline]
@@ -80,7 +93,6 @@ impl Chunk for ArcBlockBytes {
         self.n.load(Ordering::Relaxed)
     }
 }
-
 
 #[derive(Debug)]
 #[repr(C)]
@@ -122,10 +134,12 @@ impl Chunk for BlockBytes {
 impl Clone for BlockBytes {
     fn clone(&self) -> Self {
         let ptr = self.start.load(Ordering::Relaxed);
-        Self { start: AtomicPtr::new(ptr), n: self.n }
+        Self {
+            start: AtomicPtr::new(ptr),
+            n: self.n,
+        }
     }
 }
-
 
 // The alloc is only supported on layout, and it only append
 #[derive(Debug, Clone)]

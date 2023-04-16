@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::iterator::IteratorOptions;
 use crate::types::XArc;
 use crate::value_log::Entry;
-use crate::{Error, kv::KV, options::Options};
+use crate::{kv::KV, options::Options, Error};
 
 fn get_test_option(dir: &str) -> Options {
     let mut opt = Options::default();
@@ -88,6 +88,11 @@ async fn t_concurrent_write() {
         .await;
     let mut i = 0;
     while let Some(item) = itr.next().await {
+        info!(
+            "KVItem : {:?}, value: {:?}",
+            item.read().await.vptr(),
+            b"word"
+        );
         let item = item.read().await;
         assert_eq!(item.key(), format!("{}", i).as_bytes());
         assert_eq!(item.get_value().await.unwrap(), b"word".to_vec());
@@ -99,6 +104,7 @@ async fn t_concurrent_write() {
 async fn t_cas() {
     let n = 100;
     let kv = build_kv().await;
+    console_subscriber::init();
     let entries = (0..n)
         .into_iter()
         .map(|i| {
@@ -130,14 +136,16 @@ async fn t_cas() {
         } else {
             cc = 5;
         }
-        let ret = kv.compare_and_set(key,value, cc).await.unwrap_err();
+        let ret = kv.compare_and_set(key, value, cc).await.unwrap_err();
         assert_eq!(ret.to_string(), Error::ValueCasMisMatch.to_string());
     }
 
     for i in 0..n {
         let key = format!("{}", i).into_bytes();
         let value = format!("zzz{}", i).into_bytes();
-        let ret = kv.compare_and_set(key,value, items[i].read().await.counter()).await;
+        let ret = kv
+            .compare_and_set(key, value, items[i].read().await.counter())
+            .await;
         assert!(ret.is_ok());
     }
 
@@ -152,9 +160,52 @@ async fn t_cas() {
 #[tokio::test]
 async fn t_kv_get() {
     let kv = build_kv().await;
-    kv.set(b"key1".to_vec(), b"value1".to_vec(), 0x08).await.unwrap();
+    kv.set(b"key1".to_vec(), b"value1".to_vec(), 0x08)
+        .await
+        .unwrap();
     let got = kv.get_with_ext(b"key1").await.unwrap();
-    assert_eq!(got.read().await.get_value().await.unwrap(), b"value1".to_vec());
+    assert_eq!(
+        got.read().await.get_value().await.unwrap(),
+        b"value1".to_vec()
+    );
+    assert_eq!(got.read().await.user_meta(), 0x08);
+    assert!(got.read().await.counter() > 0);
+
+    kv.set(b"key1".to_vec(), b"val2".to_vec(), 0x09)
+        .await
+        .unwrap();
+    let got = kv.get_with_ext(b"key1").await.unwrap();
+    assert_eq!(
+        got.read().await.get_value().await.unwrap(),
+        b"val2".to_vec()
+    );
+    assert_eq!(got.read().await.user_meta(), 0x09);
+    assert!(got.read().await.counter() > 0);
+
+    kv.delete(b"key1").await.unwrap();
+    let got = kv.get_with_ext(b"key1").await;
+    assert!(got.is_err());
+
+    kv.set(b"key1".to_vec(), b"val3".to_vec(), 0x01)
+        .await
+        .unwrap();
+    let got = kv.get_with_ext(b"key1").await.unwrap();
+    assert_eq!(
+        got.read().await.get_value().await.unwrap(),
+        b"val3".to_vec()
+    );
+    assert_eq!(got.read().await.user_meta(), 0x01);
+    assert!(got.read().await.counter() > 0);
+
+    let long = vec![1u8; 1 << 10];
+    kv.set(b"key1".to_vec(), long.clone(), 0x00).await.unwrap();
+    let got = kv.get_with_ext(b"key1").await.unwrap();
+    assert_eq!(
+        got.read().await.get_value().await.unwrap(),
+        long
+    );
+    assert_eq!(got.read().await.user_meta(), 0x00);
+    assert!(got.read().await.counter() > 0);
 }
 
 async fn build_kv() -> XArc<KV> {

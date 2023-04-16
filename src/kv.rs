@@ -181,7 +181,7 @@ impl KV {
         let mut vlog = ValueLogCore::default();
         {
             let kv = unsafe { &out as *const KV };
-            vlog.open(kv, opt.clone())?;
+            vlog.open(kv, opt.clone()).await?;
         }
         out.vlog.replace(vlog);
 
@@ -287,8 +287,10 @@ impl KV {
 
         // Mmap writeable log
         let max_fid = xout.must_vlog().max_fid.load(Ordering::Relaxed);
-        let lf = xout.must_vlog().pick_log_by_vlog_id(&max_fid);
-        lf.write().set_write(opt.clone().value_log_file_size * 2)?;
+        let lf = xout.must_vlog().pick_log_by_vlog_id(&max_fid).await;
+        lf.write()
+            .await
+            .set_write(opt.clone().value_log_file_size * 2)?;
         // TODO
 
         {
@@ -411,7 +413,6 @@ impl KV {
                     .entry()
                     .cas_counter
                     .store(counter_base + idx as u64, Ordering::Relaxed);
-                // info!("update cas counter: {}", entry.entry().get_cas_counter());
             }
         }
 
@@ -433,13 +434,10 @@ impl KV {
             while let Err(err) = self.ensure_room_for_write().await {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            info!("waiting for write");
+            info!("waiting for write lsm, count {}", count);
             self.update_offset(&mut req.ptrs); // TODO location has change
-            let resp_ch = req.get_resp_channel();
-            let ret = self.write_to_lsm(req).await;
-            for ch in resp_ch.into_iter() {
-                ch.send(ret.clone()).await.unwrap();
-            }
+                                               // It should not fail
+            self.write_to_lsm(req).await.unwrap();
         }
         info!("{} entries written", count);
         Ok(())
@@ -524,7 +522,7 @@ impl KV {
                 count += 1;
                 sz += self.opt.estimate_size(&entry) as u64;
                 req.entries.push(EntryType::from(entry));
-                req.ptrs.push(None);
+                req.ptrs.push(Arc::new(Atomic::new(None)));
                 req_index.push(i);
             }
 
@@ -563,9 +561,8 @@ impl KV {
     }
 
     async fn write_to_lsm(&self, mut req: Request) -> Result<()> {
-        defer! {info!("exit write to lsm")}
         assert_eq!(req.entries.len(), req.ptrs.len());
-
+        defer! {info!("exit write to lsm")}
         for (i, mut pair) in req.entries.into_iter().enumerate() {
             let entry = pair.entry();
             let resp_ch = pair.get_resp_channel();
@@ -600,7 +597,10 @@ impl KV {
                     ),
                 );
             } else {
-                let ptr = req.ptrs.get(i).unwrap().as_ref().unwrap();
+
+                let ptr = req.ptrs.get(i).unwrap().load(Ordering::Relaxed);
+                let ptr = ptr.unwrap();
+                info!("lsm ok!");
                 let mut wt = Cursor::new(vec![0u8; ValuePointer::value_pointer_encoded_size()]);
                 ptr.enc(&mut wt).unwrap();
                 self.must_mt().put(
@@ -613,6 +613,8 @@ impl KV {
                     ),
                 );
             }
+
+            resp_ch.send(Ok(())).await.unwrap();
         }
 
         Ok(())
@@ -653,7 +655,7 @@ impl KV {
         if let Ok(_) = self.flush_chan.try_send(flush_task) {
             info!("Flushing value log to disk if async mode.");
             // Ensure value log is synced to disk so this memtable's contents wouldn't be lost.
-            self.must_vlog().sync()?;
+            self.must_vlog().sync().await?;
             info!(
                 "Flushing memtable, mt.size={} size of flushChan: {}",
                 self.must_mt().mem_size(),
@@ -672,13 +674,14 @@ impl KV {
         entry.value.len() < self.opt.value_threshold
     }
 
-    fn update_offset(&self, ptrs: &mut Vec<Option<ValuePointer>>) {
-        let mut ptr = &ValuePointer::default();
+    fn update_offset(&self, ptrs: &mut Vec<Arc<Atomic<Option<ValuePointer>>>>) {
+        let mut ptr = ValuePointer::default();
         for tmp_ptr in ptrs.iter().rev() {
-            if tmp_ptr.is_none() || tmp_ptr.as_ref().unwrap().is_zero() {
+            let tmp_ptr = tmp_ptr.load(Ordering::Relaxed);
+            if tmp_ptr.is_none() || tmp_ptr.unwrap().is_zero() {
                 continue;
             }
-            ptr = tmp_ptr.as_ref().unwrap();
+            ptr = tmp_ptr.unwrap();
             break;
         }
 
@@ -686,7 +689,7 @@ impl KV {
             return;
         }
 
-        self.vptr.store(Owned::new(ptr.clone()), Ordering::Release);
+        self.vptr.store(Owned::new(ptr), Ordering::Release);
     }
 }
 
@@ -826,8 +829,8 @@ impl ArcKV {
     /// Delete deletes a key.
     /// Exposing this so that user does not have to specify the Entry directly.
     /// For example, BitDelete seems internal to badger.
-    pub async fn delete(&self, key: Vec<u8>) -> Result<()> {
-        let entry = Entry::default().key(key);
+    pub async fn delete(&self, key: &[u8]) -> Result<()> {
+        let entry = Entry::default().key(key.to_vec());
         let ret = self.batch_set(vec![entry]).await;
         ret[0].to_owned()
     }
@@ -877,7 +880,7 @@ impl ArcKV {
         self.to_ref().closers.writes.signal_and_wait().await;
 
         // Now close the value log.
-        self.must_vlog().close()?;
+        self.must_vlog().close().await?;
 
         // Make sure that block writer is done pushing stuff into memtable!
         // Otherwise, you will have a race condition: we are trying to flush memtables
@@ -964,7 +967,7 @@ impl ArcKV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1051,8 +1054,9 @@ impl ArcKV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
+        info!("ready to yield item value from vlog!");
         // no value
         if !item.has_value() {
             return consumer(&[0u8; 0]).await;
@@ -1062,7 +1066,6 @@ impl ArcKV {
         if (item.meta() & MetaBit::BIT_VALUE_POINTER.bits()) == 0 {
             return consumer(item.vptr()).await;
         }
-
         let mut vptr = ValuePointer::default();
         vptr.dec(&mut Cursor::new(item.vptr()))?;
         let vlog = self.must_vlog();
