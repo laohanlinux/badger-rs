@@ -271,6 +271,10 @@ impl SliceAllocate {
         self.cursor.load(Ordering::Relaxed)
     }
 
+    pub fn cap(&self) -> usize {
+        self.cap.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn new(n: usize) -> Self {
         SliceAllocate {
             cursor: Arc::from(AtomicUsize::new(1)),

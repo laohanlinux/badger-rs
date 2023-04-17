@@ -215,6 +215,11 @@ impl SkipList {
     }
 
     unsafe fn _put(&self, key: &[u8], v: ValueStruct) {
+        info!(
+            "At SkipList,  sz: {}, cap: {}",
+            self.arena.size(),
+            self.arena.cap()
+        );
         // Since we allow overwrite, we may not need to create a new node. We might not even need to
         // increase the height. Let's defer these actions.
         // let mut def_node = &mut Node::default();
@@ -1030,14 +1035,26 @@ mod tests {
 
 mod tests2 {
     use crate::{SkipList, ValueStruct};
+    use tracing::info;
 
     const ARENA_SIZE: usize = 1 << 20;
 
     #[test]
     fn atomic_swap_skip_list() {
-        let mut st = SkipList::new(ARENA_SIZE);
+        crate::test_util::tracing_log();
+        let mut st = SkipList::new(1000);
         st.put(b"hello", ValueStruct::new(vec![], 0, 0, 0));
         let got = st.get(b"hello");
         assert!(got.is_some());
+
+        for i in 0..400 {
+            let sz = st.arena_ref().size();
+            let cap = st.arena_ref().cap();
+            info!("{} {}", sz, cap);
+            st.put(
+                format!("{}", i).as_bytes(),
+                ValueStruct::new(format!("{}", i).into_bytes(), 0, 0, 0),
+            )
+        }
     }
 }

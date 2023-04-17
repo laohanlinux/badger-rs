@@ -19,14 +19,7 @@ use std::sync::mpsc::sync_channel;
 use std::{cmp, io};
 use thiserror::Error;
 
-pub const EMPTY_SLICE: Vec<u8> = { vec![] };
-
-// pub fn convert_ptr(v: &[u8]) -> Vec<u8> {
-//     let len = v.len();
-//     let ptr = v as *const u8 as *mut u8;
-//     let v = unsafe { Vec::from_raw_parts(ptr, len, len) };
-//     v
-// }
+pub const EMPTY_SLICE: Vec<u8> = vec![];
 
 /// Constants use in serialization sizes, and in ValueStruct serialization
 pub const META_SIZE: usize = 1;

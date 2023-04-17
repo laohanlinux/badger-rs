@@ -341,6 +341,7 @@ impl LevelsController {
 
     // async to add level0 table
     pub(crate) async fn add_level0_table(&self, table: Table) -> Result<()> {
+        defer! {info!("Finish add level0 table")}
         // We update the manifest _before_ the table becomes part of a levelHandler, because at that
         // point it could get used in some compaction.  This ensures the manifest file gets updated in
         // the proper order. (That means this update happens before that of some compaction which
@@ -353,6 +354,7 @@ impl LevelsController {
                 .with_op(CREATE)
                 .build()])
             .await?;
+        info!("Ready add level0 table");
         while !self.levels[0].try_add_level0_table(table.clone()).await {
             // Stall. Make sure all levels are healthy before we unstall.
             let mut start_time = SystemTime::now();

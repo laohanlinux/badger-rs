@@ -199,14 +199,14 @@ impl LevelHandler {
     // Return true if ok and no stalling that will hold a new table reference
     pub(crate) async fn try_add_level0_table(&self, t: Table) -> bool {
         assert_eq!(self.level.load(Ordering::Relaxed), 0);
-        let tw = self.tables_wl();
+        let mut tw = self.tables_wl();
         if tw.len() >= self.opt.num_level_zero_tables_stall {
             return false;
         }
         t.incr_ref();
         self.total_size
             .fetch_add(t.size() as u64, Ordering::Relaxed);
-        self.tables_wl().push(t);
+        tw.push(t);
         true
     }
 

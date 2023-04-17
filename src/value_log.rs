@@ -348,6 +348,10 @@ impl EntryType {
     pub(crate) fn get_resp_channel(&self) -> Channel<Result<()>> {
         self.fut_ch.clone()
     }
+
+    pub(crate) fn to_owned(self) -> (Entry, Channel<Result<()>>) {
+        (self.entry, self.fut_ch)
+    }
 }
 
 impl From<Entry> for EntryType {

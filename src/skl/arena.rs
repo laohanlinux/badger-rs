@@ -44,6 +44,10 @@ impl Arena {
         (self.slice.len() + self.node_alloc.len()) as u32
     }
 
+    pub(crate) fn cap(&self) -> u32 {
+        self.slice.cap() as u32
+    }
+
     // TODO: maybe use MaybeUint instead
     pub(crate) fn reset(&self) {
         self.slice.reset();

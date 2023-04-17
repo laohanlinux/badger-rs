@@ -24,7 +24,8 @@ use bytes::{Buf, BufMut};
 use crossbeam_epoch::{Owned, Shared};
 use drop_cell::defer;
 use fs2::FileExt;
-use log::{info, Log};
+use libc::regex_t;
+use log::{debug, info, Log};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{Mutex, RawMutex};
 use std::cell::RefCell;
@@ -339,6 +340,7 @@ impl KV {
         // TODO add metrics
         for tb in tables {
             let vs = unsafe { tb.as_ref().unwrap().get(key) };
+            debug!("vs: {:?}", vs);
             if vs.is_none() {
                 continue;
             }
@@ -475,12 +477,16 @@ impl KV {
             let f_name = new_file_name(fid, &self.opt.dir);
             let fp = create_synced_file(&f_name, true)?;
             // Don't block just to sync the directory entry.
-            let task1 = async_sync_directory(self.opt.dir.clone().to_string());
+            // let task1 = async_sync_directory(self.opt.dir.clone().to_string());
+            // let mut fp = tokio::fs::File::from_std(fp);
+            // let task2 = write_level0_table(&task.mt.as_ref().unwrap(), &mut fp);
+            // let (task1_res, task2_res) = tokio::join!(task1, task2);
+            // task1_res?;
+            // task2_res?;
+
+            async_sync_directory(self.opt.dir.clone().to_string()).await?;
             let mut fp = tokio::fs::File::from_std(fp);
-            let task2 = write_level0_table(&task.mt.as_ref().unwrap(), &mut fp);
-            let (task1_res, task2_res) = tokio::join!(task1, task2);
-            task1_res?;
-            task2_res?;
+            write_level0_table(&task.mt.as_ref().unwrap(), &mut fp).await?;
 
             let fp = fp.into_std().await;
             let tc = TableCore::open_table(fp, &f_name, self.opt.table_loading_mode)?;
@@ -563,8 +569,7 @@ impl KV {
         assert_eq!(req.entries.len(), req.ptrs.len());
         defer! {info!("exit write to lsm")}
         for (i, mut pair) in req.entries.into_iter().enumerate() {
-            let entry = pair.entry();
-            let resp_ch = pair.get_resp_channel();
+            let (entry, resp_ch) = pair.to_owned();
             if entry.cas_counter_check != 0 {
                 let old_value = self._get(&entry.key)?;
                 // No need to decode existing value. Just need old CAS counter.
@@ -584,35 +589,42 @@ impl KV {
                 }
             }
 
-            if self.should_write_value_to_lsm(entry) {
+            let mut key;
+            let mut value;
+            if self.should_write_value_to_lsm(&entry) {
+                let cas = entry.get_cas_counter();
+                let (_key, _value) = (entry.key, entry.value);
+                key = _key;
+                value = ValueStruct::new(_value, entry.meta, entry.user_meta, cas);
                 // Will include deletion/tombstone case.
-                self.must_mt().put(
-                    &entry.key,
-                    ValueStruct::new(
-                        entry.value.clone(), // TODO avoid value clone
-                        entry.meta,
-                        entry.user_meta,
-                        entry.get_cas_counter(),
-                    ),
-                );
                 info!("Lsm ok, the value not at vlog file");
             } else {
                 let ptr = req.ptrs.get(i).unwrap().load(Ordering::Relaxed);
                 let ptr = ptr.unwrap();
                 let mut wt = Cursor::new(vec![0u8; ValuePointer::value_pointer_encoded_size()]);
                 ptr.enc(&mut wt).unwrap();
-                self.must_mt().put(
-                    &entry.key,
-                    ValueStruct::new(
-                        wt.into_inner(),
-                        entry.meta | MetaBit::BIT_VALUE_POINTER.bits(),
-                        entry.user_meta,
-                        entry.get_cas_counter(),
-                    ),
+                let cas = entry.get_cas_counter();
+                key = entry.key;
+                value = ValueStruct::new(
+                    wt.into_inner(),
+                    entry.meta | MetaBit::BIT_VALUE_POINTER.bits(),
+                    entry.user_meta,
+                    cas,
                 );
-                info!("Lsm ok, ptr: {:?}", ptr);
             }
-
+            // let st = self.must_mt().clone();
+            // tokio::task::spawn_blocking(move || {
+            //     st.put(&key, value);
+            //     debug!("key #{:?} value into SkipList!!!", String::from_utf8_lossy(&key));
+            // })
+            // .await
+            // .unwrap();
+            self.must_mt().put(&key, value);
+            debug!(
+                "key #{:?} value into SkipList!!!",
+                String::from_utf8_lossy(&key)
+            );
+            info!("Lsm ok");
             resp_ch.send(Ok(())).await.unwrap();
         }
 
@@ -620,15 +632,17 @@ impl KV {
     }
 
     fn _exists(&self, key: &[u8]) -> Result<bool> {
-        let value = self._get(key)?;
-        if value.value.is_empty() && value.meta == 0 {
-            return Ok(false);
-        }
-        if value.meta & MetaBit::BIT_DELETE.bits() != 0 {
-            return Ok(false);
-        }
-
-        Ok(true)
+        return match self._get(key) {
+            Err(err) if err.is_not_found() => Ok(false),
+            Err(err) => Err(err),
+            Ok(value) => {
+                info!("{:?}", value);
+                if value.value.is_empty() && value.meta == 0 {
+                    return Ok(false);
+                }
+                Ok((value.meta & MetaBit::BIT_DELETE.bits()) == 0)
+            }
+        };
     }
 
     fn new_cas_counter(&self, how_many: u64) -> u64 {
@@ -644,7 +658,11 @@ impl KV {
         if self.must_mt().mem_size() < self.opt.max_table_size as u32 {
             return Ok(());
         }
-        info!("flush memory table");
+        info!(
+            "flush memory table, {}, {}",
+            self.must_mt().mem_size(),
+            self.opt.max_table_size
+        );
         // A nil mt indicates that KV is being closed.
         assert!(!self.must_mt().empty());
         let flush_task = FlushTask {
@@ -665,6 +683,7 @@ impl KV {
             // New memtable is empty. We certainly have room.
             Ok(())
         } else {
+            info!("No room for write");
             Err(Unexpected("No room for write".into()))
         }
     }
@@ -1075,11 +1094,14 @@ impl ArcKV {
 }
 
 async fn write_level0_table(st: &SkipList, f: &mut tokio::fs::File) -> Result<()> {
+    defer! {info!("Finish write level zero table")}
     let cur = st.new_cursor();
+    cur.seek_for_first().unwrap();
     let mut builder = Builder::default();
     while let Some(_) = cur.next() {
         let key = cur.key();
         let value = cur.value();
+        info!("write level zero table: {}", String::from_utf8_lossy(key));
         builder.add(key, &value)?;
     }
     f.write_all(&builder.finish()).await?;

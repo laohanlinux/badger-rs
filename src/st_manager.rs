@@ -10,8 +10,9 @@ use std::borrow::Cow::Owned;
 use std::ops::Deref;
 use std::ptr;
 use std::ptr::NonNull;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use tracing_subscriber::fmt::writer::EitherWriter::A;
 
 type SkipListItem = crossbeam_epoch::Atomic<SkipList>;
 
@@ -19,6 +20,7 @@ pub struct SkipListManager {
     share_lock: parking_lot::RwLock<()>,
     mt: Option<SkipListItem>,
     imm: Arc<parking_lot::RwLock<Vec<SkipListItem>>>,
+    sz: Arc<AtomicUsize>,
 }
 
 impl Default for SkipListManager {
@@ -27,6 +29,7 @@ impl Default for SkipListManager {
             share_lock: parking_lot::RwLock::new(()),
             mt: None,
             imm: Arc::new(parking_lot::RwLock::new(vec![])),
+            sz: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -37,6 +40,7 @@ impl SkipListManager {
             share_lock: parking_lot::RwLock::new(()),
             mt: Some(SkipListItem::new(SkipList::new(sz))),
             imm: Arc::new(parking_lot::RwLock::new(vec![])),
+            sz: Arc::new(AtomicUsize::new(sz)),
         }
     }
 
@@ -66,7 +70,7 @@ impl SkipListManager {
         let p = crossbeam_epoch::pin();
         let st = self.take(&p).into();
         self.imm.write().push(st);
-        let st = SkipList::new(1000);
+        let st = SkipList::new(opt.arena_size() as usize);
         self.mt
             .as_ref()
             .unwrap()
