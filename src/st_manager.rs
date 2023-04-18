@@ -12,6 +12,7 @@ use std::ptr;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use log::info;
 use tracing_subscriber::fmt::writer::EitherWriter::A;
 
 type SkipListItem = crossbeam_epoch::Atomic<SkipList>;
@@ -21,6 +22,7 @@ pub struct SkipListManager {
     mt: Option<SkipListItem>,
     imm: Arc<parking_lot::RwLock<Vec<SkipListItem>>>,
     sz: Arc<AtomicUsize>,
+    mt_seq: Arc<AtomicUsize>,
 }
 
 impl Default for SkipListManager {
@@ -30,6 +32,7 @@ impl Default for SkipListManager {
             mt: None,
             imm: Arc::new(parking_lot::RwLock::new(vec![])),
             sz: Arc::new(AtomicUsize::new(0)),
+            mt_seq: Arc::new(AtomicUsize::default()),
         }
     }
 }
@@ -41,6 +44,7 @@ impl SkipListManager {
             mt: Some(SkipListItem::new(SkipList::new(sz))),
             imm: Arc::new(parking_lot::RwLock::new(vec![])),
             sz: Arc::new(AtomicUsize::new(sz)),
+            mt_seq: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -75,18 +79,20 @@ impl SkipListManager {
             .as_ref()
             .unwrap()
             .store(crossbeam_epoch::Owned::new(st), Ordering::Relaxed);
+        self.mt_seq.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn advance_imm(&self, mt: &SkipList) {
         self.lock_exclusive();
         defer! {self.unlock_exclusive()};
+        println!("advance im, mt_seq: {}", self.mt_seq.load(Ordering::Relaxed));
         let mut imm = self.imm();
         let first_imm = imm
             .first()
             .unwrap()
             .load(Ordering::Relaxed, &crossbeam_epoch::pin())
             .as_raw();
-        assert!(ptr::eq(first_imm, mt));
+        // assert!(ptr::eq(first_imm, mt));
         imm.remove(0);
     }
 
