@@ -6,7 +6,9 @@ use std::sync::Arc;
 mod utils {
     use crate::options::FileLoadingMode;
     use crate::table::builder::Builder;
-    use crate::table::iterator::{BlockIterator, ConcatIterator, IteratorImpl, IteratorItem};
+    use crate::table::iterator::{
+        BlockIterator, ConcatIterator, IteratorImpl, IteratorItem, IteratorSeek,
+    };
     use crate::table::table::{Table, TableCore, FILE_SUFFIX};
     use crate::y::{open_synced_file, read_at, ValueStruct};
     use crate::{MergeIterOverBuilder, MergeIterOverIterator, Xiterator};
@@ -25,6 +27,23 @@ mod utils {
     use std::thread::spawn;
     use tokio::io::AsyncSeekExt;
     use tokio_metrics::TaskMetrics;
+
+    #[test]
+    fn it_block_iterator1() {
+        let mut builder = new_builder2(10000);
+        let data = builder.finish();
+        let it = BlockIterator::new(data);
+        // let mut i = 0;
+        // while let Some(item) = it.next() {
+        //     println!(" key: {:?}, value: {:?}", item.key(), item.value());
+        //     i += 1;
+        // }
+        // println!("{}", i);
+        let item = it
+            .seek(format!("{}", 0).as_bytes(), IteratorSeek::Origin)
+            .unwrap();
+        println!("==> {:?}", item.value());
+    }
 
     #[test]
     fn it_block_iterator() {
@@ -559,6 +578,24 @@ mod utils {
                 &ValueStruct::new(value.clone(), 'A' as u8, 0, i as u64),
             );
             assert!(got.is_ok());
+        }
+
+        builder
+    }
+
+    fn new_builder2(n: isize) -> Builder {
+        assert!(n <= 10000);
+        let mut builder = Builder::default();
+
+        for i in 0..n {
+            let key = format!("{}", i).as_bytes().to_vec();
+            let v = format!("{}", i).as_bytes().to_vec();
+            builder
+                .add(
+                    &key,
+                    &ValueStruct::new(v.clone(), 'A' as u8, 0, i as u64),
+                )
+                .unwrap();
         }
 
         builder

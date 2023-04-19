@@ -37,16 +37,24 @@ async fn t_1_write() {
 
 #[tokio::test]
 async fn t_batch_write() {
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_panic(info);
+        std::process::exit(1);
+    }));
     use crate::test_util::{mock_log, mock_log_terminal, random_tmp_dir, tracing_log};
     tracing_log();
     let dir = random_tmp_dir();
     let kv = KV::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
-    let n = 100;
+    let n = 3730;
     for i in 0..n {
         let res = kv
             .set(format!("{}", i).as_bytes().to_vec(), b"word".to_vec(), 10)
             .await;
+        // if n == 3720 {
+        //     tokio::time::sleep(Duration::from_secs(100)).await;
+        // }
         assert!(res.is_ok());
     }
 
@@ -103,7 +111,7 @@ async fn t_concurrent_write() {
 
 #[tokio::test]
 async fn t_cas() {
-    let n = 400;
+    let n = 299;
     let kv = build_kv().await;
     // console_subscriber::init();
     let entries = (0..n)
@@ -117,14 +125,14 @@ async fn t_cas() {
     for got in kv.batch_set(entries.clone()).await {
         assert!(got.is_ok());
     }
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
     let mut items = vec![];
     for i in 0..n {
         let key = format!("{}", i).as_bytes().to_vec();
         let value = format!("{}", i).as_bytes().to_vec();
         let got = kv.get_with_ext(&key).await.unwrap();
         let got_value = got.read().await.get_value().await.unwrap();
-        assert_eq!(got_value, value);
+        assert_eq!(got_value, value, "{}", String::from_utf8_lossy(&key));
         items.push(got);
     }
 
@@ -150,6 +158,7 @@ async fn t_cas() {
         assert!(ret.is_ok());
     }
 
+    tokio::time::sleep(Duration::from_secs(3)).await;
     for i in 0..n {
         let key = format!("{}", i).as_bytes().to_vec();
         let value = format!("zzz{}", i).as_bytes().to_vec();

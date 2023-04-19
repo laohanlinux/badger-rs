@@ -1,15 +1,16 @@
 use crate::options::FileLoadingMode;
 use crate::options::FileLoadingMode::MemoryMap;
 use crate::table::builder::Header;
-use crate::y::{hash, mmap, parallel_load_block_key, read_at, Result};
-use crate::Error;
+use crate::y::{create_synced_file, hash, mmap, parallel_load_block_key, read_at, Result};
+use crate::{Error, SkipList, ValueStruct};
 use byteorder::{BigEndian, ReadBytesExt};
 use filename::file_name;
 use growable_bloom_filter::GrowableBloom;
 use memmap::{Mmap, MmapMut};
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::fmt::{Display, Formatter};
+use std::env::temp_dir;
+use std::fmt::{Debug, Display, Formatter};
 use std::fs::{read_dir, remove_file, File};
 use std::io::{Cursor, Seek, SeekFrom};
 use std::path::Path;
@@ -19,6 +20,7 @@ use std::{fmt, io};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::FileExt;
 
+use crate::kv::write_level0_table;
 use crate::types::{XArc, XWeak};
 use crate::y::iterator::Xiterator;
 use crate::Error::Unexpected;
@@ -41,14 +43,19 @@ pub(crate) struct KeyOffset {
 
 impl Display for KeyOffset {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let key = String::from_utf8(self.key.clone())
-            .map_err(|_| "...")
-            .unwrap();
-        write!(
-            f,
-            "key: {}  | offset:{:10}| len:{}",
-            key, self.offset, self.len
-        )
+        // let key = String::from_utf8(self.key.clone())
+        //     .map_err(|_| "...")
+        //     .unwrap();
+        // write!(
+        //     f,
+        //     "key: {}  | offset:{:10}| len:{}",
+        //     key, self.offset, self.len
+        // )
+        f.debug_struct("KeyOffset")
+            .field("key", &String::from_utf8_lossy(&self.key))
+            .field("offset", &self.offset)
+            .field("len", &self.len)
+            .finish()
     }
 }
 
@@ -274,7 +281,7 @@ impl TableCore {
         let data = self.read(ko.offset, ko.len)?;
         Ok(Block {
             offset: ko.offset,
-            data: data,
+            data,
         })
     }
 
@@ -352,26 +359,43 @@ impl Display for TableCore {
             .collect::<Vec<_>>();
         let smallest = String::from_utf8_lossy(self.smallest());
         let biggest = String::from_utf8_lossy(self.biggest());
-        writeln!(
-            f,
-            "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}, smallest: {}, biggest: {}",
-            self._ref.load(Ordering::Relaxed),
-            self.file_name,
-            self.block_index.len(),
-            self.id,
-            self.table_size,
-            smallest, biggest,
-        ).unwrap();
-        for index in index_str {
-            writeln!(f, "{}", index).unwrap();
-        }
-        Ok(())
+        f.debug_struct("Table")
+            .field("block_index", &index_str)
+            .field("_ref", &self._ref.load(Ordering::Relaxed))
+            .field("fname", &self.file_name)
+            .field("size", &self.table_size)
+            .field("smallest", &smallest)
+            .field("biggest", &biggest)
+            .finish()
+        // writeln!(
+        //     f,
+        //     "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}, smallest: {}, biggest: {}",
+        //     self._ref.load(Ordering::Relaxed),
+        //     self.file_name,
+        //     self.block_index.len(),
+        //     self.id,
+        //     self.table_size,
+        //     smallest, biggest,
+        // ).unwrap();
+        // for index in index_str {
+        //     writeln!(f, "{}", index).unwrap();
+        // }
+        // Ok(())
     }
 }
 
 pub(crate) struct Block {
     offset: usize,
     pub(crate) data: Vec<u8>,
+}
+
+impl Debug for Block {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Block")
+            .field("offset", &self.offset)
+            .field("len", &self.data.len())
+            .finish()
+    }
 }
 
 type ByKey = Vec<KeyOffset>;
@@ -422,25 +446,30 @@ pub fn new_file_name(id: u64, dir: &str) -> String {
         .to_string()
 }
 
-#[tokio::test]
-async fn t_metrics() {
-    // // construct a TaskMonitor
-    // let monitor = tokio_metrics::TaskMonitor::new();
-    //
-    // // print task metrics every 500ms
-    // {
-    //     let frequency = std::time::Duration::from_millis(500);
-    //     let monitor = monitor.clone();
-    //     tokio::spawn(async move {
-    //         for metrics in monitor.intervals() {
-    //             println!("{:?}", metrics);
-    //             tokio::time::sleep(frequency).await;
-    //         }
-    //     });
-    // }
-    //
-    // // instrument some tasks and spawn them
-    // loop {
-    //     monitor.instrument(async { tokio::time::sleep(Duration::from_millis(20)).await;
-    // }
-}
+// #[tokio::test]
+// async fn t_seek() {
+//     crate::test_util::tracing_log();
+//     let n = 299;
+//     let st = SkipList::new(1 << 15);
+//     for i in 0..n {
+//         st.put(
+//             &format!("{}", i).into_bytes(),
+//             ValueStruct::new(format!("{}", i).into_bytes(), 0, 0, i),
+//         );
+//     }
+//     let got = st.get(format!("{}", 0).as_bytes()).unwrap();
+//     println!("{:?}", got);
+//     let path = temp_dir().join("1.sst");
+//     let path = path.to_str().unwrap();
+//
+//     let fp = create_synced_file(path, true).unwrap();
+//     let mut fp = tokio::fs::File::from_std(fp);
+//     write_level0_table(&st, &mut fp).await.unwrap();
+//     let fp = fp.into_std().await;
+//     let tc = TableCore::open_table(fp, path, FileLoadingMode::MemoryMap).unwrap();
+//     let tb = Table::from(tc);
+//     let itr = crate::table::iterator::IteratorImpl::new(tb, false);
+//     // itr.seek_to_first().unwrap();
+//     let value = itr.seek(format!("{}", 0).as_bytes()).unwrap();
+//     info!("{:?}", &value.value().value);
+// }

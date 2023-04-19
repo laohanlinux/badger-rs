@@ -13,6 +13,7 @@ use std::fmt::Formatter;
 use std::hash::Hasher;
 use std::io::{self, Cursor, Read, Write};
 use std::str::pattern::Searcher;
+use log::info;
 
 #[derive(Clone, Default)]
 pub(crate) struct Header {
@@ -165,7 +166,7 @@ impl Builder {
         self.buf
             .write_all(<&ValueStruct as Into<Vec<u8>>>::into(v).as_slice())
             .unwrap();
-        // println!("insert a key-value: {:?}", key.to_vec());
+        // info!("insert a key-value: {:?}", String::from_utf8_lossy(key));
         // Increment number of keys added for this current block.
         self.counter += 1;
     }
@@ -181,7 +182,7 @@ impl Builder {
     pub fn add(&mut self, key: &[u8], value: &ValueStruct) -> crate::y::Result<()> {
         if self.counter >= Self::RESTART_INTERVAL {
             self.finish_block();
-            println!(
+            info!(
                 "create new block, base:{:<10}, pre: {:5}, base-key: {:?}",
                 self.base_offset,
                 self.prev_offset,

@@ -5,6 +5,7 @@ use parking_lot::{RawRwLock, RwLock};
 use std::fmt::{Display, Formatter};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use log::info;
 
 #[derive(Debug)]
 pub(crate) struct CompactStatus {
@@ -177,7 +178,6 @@ impl KeyRange {
                 biggest = tables[i].biggest();
             }
         }
-
         KeyRange {
             left: smallest.to_vec(),
             right: biggest.to_vec(),

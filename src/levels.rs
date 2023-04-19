@@ -593,7 +593,10 @@ impl LevelsController {
         }
         cd.this_range = INFO_RANGE;
         let kr = KeyRange::get_range(cd.top.as_ref());
+        info!("<<<<<< ");
         let (left, right) = cd.next_level.overlapping_tables(&kr);
+        info!("<<<<<< ");
+
         let bot = cd.next_level.to_ref().tables.read();
         let tables = bot.to_vec();
         cd.bot.extend(tables[left..right].to_vec());
@@ -603,6 +606,7 @@ impl LevelsController {
             cd.next_range = KeyRange::get_range(cd.bot.as_ref());
         }
         if !self.c_status.compare_and_add(cd) {
+            cd.unlock_shared_levels();
             return false;
         }
         cd.unlock_shared_levels();

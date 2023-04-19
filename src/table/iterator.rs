@@ -12,6 +12,7 @@ use std::ops::Deref;
 use std::process::id;
 use std::ptr::{slice_from_raw_parts, NonNull};
 use std::{cmp, fmt, io};
+use tracing::info;
 
 pub enum IteratorSeek {
     Origin,
@@ -103,6 +104,7 @@ impl BlockIterator {
             IteratorSeek::Current => {}
         }
         while let Some(item) = self.next() {
+            // info!("seek {:?}, {:?}", key, item.key());
             if item.key() >= key {
                 return Some(item);
             }
@@ -402,7 +404,7 @@ impl IteratorImpl {
 
         // not found
         let idx = idx.err().unwrap();
-
+        // info!("block_index {:?}, {:?}", idx, self.table.block_index);
         if idx == 0 {
             return self.seek_helper(idx, key);
         }
@@ -554,6 +556,8 @@ impl IteratorImpl {
     fn get_bi_by_bpos(&self, bpos: usize) -> RefMut<'_, Option<BlockIterator>> {
         let mut bi = self.bi.borrow_mut();
         let mut block = self.table.block(bpos).unwrap();
+        // info!("===>{:?}, {:?}", bpos, block);
+
         let it = BlockIterator::new(block.data);
         *bi = Some(it);
         bi

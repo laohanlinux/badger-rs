@@ -18,7 +18,7 @@ impl<'a> Cursor<'a> {
     pub fn new(list: &'a SkipList) -> Cursor<'a> {
         Cursor {
             list,
-            item: RefCell::new(None),
+            item: RefCell::new(Some(list.get_head())),
         }
     }
 

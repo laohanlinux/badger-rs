@@ -25,7 +25,7 @@ use crossbeam_epoch::{Owned, Shared};
 use drop_cell::defer;
 use fs2::FileExt;
 use libc::regex_t;
-use log::{debug, info, Log};
+use log::{debug, info, warn, Log, error};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{Mutex, RawMutex};
 use std::cell::RefCell;
@@ -200,9 +200,12 @@ impl KV {
         {
             let _out = xout.clone();
             tokio::spawn(async move {
-                _out.flush_mem_table(_out.closers.mem_table.spawn())
-                    .await
-                    .expect("TODO: panic message");
+                if let Err(err) = _out.flush_mem_table(_out.closers.mem_table.spawn())
+                    .await {
+                    error!("abort exit flush mem table {:?}", err);
+                } else {
+                    info!("abort exit flush mem table");
+                }
             });
         }
 
@@ -436,7 +439,7 @@ impl KV {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             info!("Waiting for write lsm, count {}", count);
-            self.update_offset(&mut req.ptrs);
+            self.update_offset(&mut req.ptrs).await;
             // It should not fail
             self.write_to_lsm(req).await.unwrap();
         }
@@ -447,9 +450,11 @@ impl KV {
     // async to flush memory table into zero level
     async fn flush_mem_table(&self, lc: Closer) -> Result<()> {
         defer! {lc.done()}
+        defer! {info!("exit flush mem table")}
         while let Ok(task) = self.flush_chan.recv().await {
             // after kv send empty mt, it will close flush_chan, so we should return the job.
             if task.mt.is_none() {
+                warn!("receive a exit task!");
                 break;
             }
             // TODO if is zero?
@@ -493,6 +498,7 @@ impl KV {
             let tb = Table::from(tc);
             // We own a ref on tbl.
             self.must_lc().add_level0_table(tb.clone()).await?;
+            let _ = self.share_lock.write().await;
             // This will incr_ref (if we don't error, sure)
             tb.decr_ref(); // releases our ref.
             self.mem_st_manger.advance_imm(task.must_mt()); // Update s.imm, need a lock.
@@ -669,30 +675,31 @@ impl KV {
             mt: Some(self.must_mt().clone()),
             vptr: self.must_vptr(),
         };
-        if let Ok(_) = self.flush_chan.try_send(flush_task) {
-            info!("Flushing value log to disk if async mode.");
-            // Ensure value log is synced to disk so this memtable's contents wouldn't be lost.
-            self.must_vlog().sync().await?;
-            info!(
-                "Flushing memtable, mt.size={} size of flushChan: {}",
-                self.must_mt().mem_size(),
-                self.flush_chan.tx().len()
-            );
-            // We manage to push this task. Let's modify imm.
-            self.mem_st_manger.swap_st(self.opt.clone());
-            // New memtable is empty. We certainly have room.
-            Ok(())
-        } else {
-            info!("No room for write");
-            Err(Unexpected("No room for write".into()))
+        let ret = self.flush_chan.try_send(flush_task);
+        if ret.is_err() {
+            info!("No room for write, {:?}", ret.unwrap_err());
+            return Err(Unexpected("No room for write".into()));
         }
+
+        info!("Flushing value log to disk if async mode.");
+        // Ensure value log is synced to disk so this memtable's contents wouldn't be lost.
+        self.must_vlog().sync().await?;
+        info!(
+            "Flushing memtable, mt.size={} size of flushChan: {}",
+            self.must_mt().mem_size(),
+            self.flush_chan.tx().len()
+        );
+        // We manage to push this task. Let's modify imm.
+        self.mem_st_manger.swap_st(self.opt.clone());
+        // New memtable is empty. We certainly have room.
+        Ok(())
     }
 
     fn should_write_value_to_lsm(&self, entry: &Entry) -> bool {
         entry.value.len() < self.opt.value_threshold
     }
 
-    fn update_offset(&self, ptrs: &mut Vec<Arc<Atomic<Option<ValuePointer>>>>) {
+    async fn update_offset(&self, ptrs: &mut Vec<Arc<Atomic<Option<ValuePointer>>>>) {
         let mut ptr = ValuePointer::default();
         for tmp_ptr in ptrs.iter().rev() {
             let tmp_ptr = tmp_ptr.load(Ordering::Relaxed);
@@ -708,6 +715,7 @@ impl KV {
             return;
         }
 
+        let _ = self.share_lock.write().await;
         self.vptr.store(Owned::new(ptr), Ordering::Release);
     }
 }
@@ -908,6 +916,7 @@ impl ArcKV {
         // offset problem: as we push into memtable, we update value offsets there.
         if !self.must_mt().empty() {
             info!("Flushing memtable!");
+            let _ = self.share_lock.write().await;
             let vptr = unsafe {
                 self.vptr
                     .load(Ordering::Relaxed, &crossbeam_epoch::pin())
@@ -916,6 +925,7 @@ impl ArcKV {
                     .unwrap()
                     .clone()
             };
+            assert!(!self.mem_st_manger.mt_ref(&crossbeam_epoch::pin()).is_null());
             self.flush_chan
                 .send(FlushTask {
                     mt: Some(self.mem_st_manger.mt_clone()),
@@ -923,6 +933,8 @@ impl ArcKV {
                 })
                 .await
                 .unwrap();
+            self.mem_st_manger.swap_st(self.opt.clone());
+            info!("Pushed to flush chan");
         }
 
         // Tell flusher to quit.
@@ -1093,15 +1105,18 @@ impl ArcKV {
     }
 }
 
-async fn write_level0_table(st: &SkipList, f: &mut tokio::fs::File) -> Result<()> {
+pub(crate) async fn write_level0_table(st: &SkipList, f: &mut tokio::fs::File) -> Result<()> {
     defer! {info!("Finish write level zero table")}
     let cur = st.new_cursor();
-    cur.seek_for_first().unwrap();
     let mut builder = Builder::default();
     while let Some(_) = cur.next() {
         let key = cur.key();
         let value = cur.value();
-        info!("write level zero table: {}", String::from_utf8_lossy(key));
+        info!(
+            "write level zero table: {}, {}",
+            String::from_utf8_lossy(key),
+            String::from_utf8_lossy(&value.value)
+        );
         builder.add(key, &value)?;
     }
     f.write_all(&builder.finish()).await?;

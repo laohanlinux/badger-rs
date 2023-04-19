@@ -13,11 +13,11 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use log::info;
-use tracing_subscriber::fmt::writer::EitherWriter::A;
 
 type SkipListItem = crossbeam_epoch::Atomic<SkipList>;
 
 pub struct SkipListManager {
+    // TODO use it lock skip_list_manager
     share_lock: parking_lot::RwLock<()>,
     mt: Option<SkipListItem>,
     imm: Arc<parking_lot::RwLock<Vec<SkipListItem>>>,
@@ -49,21 +49,29 @@ impl SkipListManager {
     }
 
     pub fn take<'a>(&'a self, p: &'a crossbeam_epoch::Guard) -> Shared<'a, SkipList> {
+        // self.lock_exclusive();
+        // defer! {self.unlock_exclusive()}
         self.mt.as_ref().unwrap().load_consume(p)
     }
 
     pub fn mt_ref<'a>(&'a self, p: &'a crossbeam_epoch::Guard) -> Shared<'a, SkipList> {
+        // self.lock_exclusive();
+        // defer! {self.unlock_exclusive()}
         let st = self.mt.as_ref().unwrap().load(Ordering::Relaxed, &p);
         st
     }
 
     pub fn mt_clone(&self) -> SkipList {
+        // self.lock_exclusive();
+        // defer! {self.unlock_exclusive()}
         let p = crossbeam_epoch::pin();
         let mt = self.mt_ref(&p);
         unsafe { mt.as_ref().unwrap().clone() }
     }
 
     pub fn imm(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<SkipListItem>> {
+        // self.lock_exclusive();
+        // defer! {self.unlock_exclusive()}
         self.imm.write()
     }
 
@@ -85,13 +93,13 @@ impl SkipListManager {
     pub fn advance_imm(&self, mt: &SkipList) {
         self.lock_exclusive();
         defer! {self.unlock_exclusive()};
-        println!("advance im, mt_seq: {}", self.mt_seq.load(Ordering::Relaxed));
+        info!("advance im, mt_seq: {}", self.mt_seq.load(Ordering::Relaxed));
         let mut imm = self.imm();
-        let first_imm = imm
-            .first()
-            .unwrap()
-            .load(Ordering::Relaxed, &crossbeam_epoch::pin())
-            .as_raw();
+        // let first_imm = imm
+        //     .first()
+        //     .unwrap()
+        //     .load(Ordering::Relaxed, &crossbeam_epoch::pin())
+        //     .as_raw();
         // assert!(ptr::eq(first_imm, mt));
         imm.remove(0);
     }
