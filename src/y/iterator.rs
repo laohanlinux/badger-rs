@@ -96,7 +96,6 @@ pub trait Xiterator {
         todo!()
     }
     fn close(&self) {
-        todo!()
     }
 }
 

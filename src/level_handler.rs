@@ -142,7 +142,13 @@ impl LevelHandler {
         let right = self
             .tables_rd()
             .binary_search_by(|tb| key_range.right.as_slice().cmp(tb.smallest()));
-        (left.unwrap(), right.unwrap())
+        info!(
+            "overlapping tables, range: {}, {:?}, {:?}",
+            key_range, left, right
+        );
+        let left = left.unwrap_or_else(|n| n);
+        let right = right.unwrap_or_else(|n| n);
+        (left, right)
     }
 
     pub(crate) fn get_total_siz(&self) -> u64 {

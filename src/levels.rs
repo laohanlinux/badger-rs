@@ -593,10 +593,7 @@ impl LevelsController {
         }
         cd.this_range = INFO_RANGE;
         let kr = KeyRange::get_range(cd.top.as_ref());
-        info!("<<<<<< ");
         let (left, right) = cd.next_level.overlapping_tables(&kr);
-        info!("<<<<<< ");
-
         let bot = cd.next_level.to_ref().tables.read();
         let tables = bot.to_vec();
         cd.bot.extend(tables[left..right].to_vec());
