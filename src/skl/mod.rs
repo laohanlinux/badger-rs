@@ -3,6 +3,7 @@ mod arena;
 mod cursor;
 mod node;
 mod skip;
+mod skiplist2;
 
 pub use alloc::{Allocate, BlockBytes, Chunk};
 pub use arena::Arena;

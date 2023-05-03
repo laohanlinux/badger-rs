@@ -3,11 +3,14 @@ use crate::skl::HEIGHT_INCREASE;
 use crate::skl::MAX_HEIGHT;
 use crate::y::ValueStruct;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug)]
 #[repr(C)]
 pub struct Node {
+    pub(crate) key: Arc<AtomicPtr<Vec<u8>>>,
+    pub(crate) _value: Arc<AtomicPtr<Vec<u8>>>,
     // A byte slice is 24 bytes. We are trying to save space here.
     // immutable. No need to lock to access key.
     pub(crate) key_offset: u32,
@@ -36,12 +39,40 @@ impl Default for Node {
     fn default() -> Self {
         const TOWER: AtomicU32 = AtomicU32::new(0);
         Node {
+            key: Arc::new(AtomicPtr::new(Box::into_raw(Box::new(vec![])))),
+            _value: Arc::new(AtomicPtr::new(Box::into_raw(Box::new(vec![])))),
             key_offset: 0,
             key_size: 0,
             height: 0,
             value: AtomicU64::new(0),
             tower: [TOWER; MAX_HEIGHT],
         }
+    }
+}
+
+impl Node {
+    pub(crate) fn new2(key: Vec<u8>, value: Vec<u8>, height: isize) -> Node {
+        let mut node = Node::default();
+        node.key
+            .store(Box::into_raw(Box::new(key)), Ordering::Release);
+        node._value
+            .store(Box::into_raw(Box::new(value)), Ordering::Release);
+        node.height = height as u16;
+        node
+    }
+
+    fn set_value2(&self, value: &ValueStruct) {
+        let value = value.into();
+        self._value
+            .store(Box::into_raw(Box::new(value)), Ordering::Release);
+    }
+
+    fn get_key2(&self) -> *mut Vec<u8> {
+        self.key.load(Ordering::Acquire)
+    }
+
+    fn get_value(&self) -> *mut Vec<u8> {
+        self._value.load(Ordering::Acquire)
     }
 }
 
