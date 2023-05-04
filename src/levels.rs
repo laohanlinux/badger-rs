@@ -18,7 +18,7 @@ use crate::{Result, ValueStruct};
 use atomic::Ordering;
 use awaitgroup::WaitGroup;
 use drop_cell::defer;
-use log::{error, info};
+use log::{debug, error, info};
 use parking_lot::lock_api::RawRwLock;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use serde_json::ser::CharEscape::Tab;
@@ -205,6 +205,7 @@ impl LevelsController {
             tokio::select! {
                 _ = interval.tick() => {
                     let pick: Vec<CompactionPriority> = self.pick_compact_levels();
+                     info!("Try to compact levels, {:?}", pick);
                     for p in pick {
                         match self.do_compact(p).await {
                             Ok(true) => {
@@ -354,7 +355,7 @@ impl LevelsController {
                 .with_op(CREATE)
                 .build()])
             .await?;
-        info!("Ready add level0 table");
+        info!("Ready add level0 table, id:{}", table.id());
         while !self.levels[0].try_add_level0_table(table.clone()).await {
             // Stall. Make sure all levels are healthy before we unstall.
             let mut start_time = SystemTime::now();
@@ -368,6 +369,7 @@ impl LevelsController {
                         .unwrap()
                         .as_millis()
                 );
+                info!("{:?}, {}", self.opt, self.levels[0].num_tables());
                 let c_status = self.c_status.levels.write();
                 for i in 0..self.opt.max_levels {
                     info!(
@@ -391,7 +393,8 @@ impl LevelsController {
                     break;
                 }
                 // sleep millis, try it again
-                sleep(Duration::from_millis(10)).await;
+                sleep(Duration::from_millis(10000)).await;
+                info!("Try again to check level0 compactable");
             }
 
             info!(
@@ -696,7 +699,7 @@ impl LevelsController {
                     / (self.opt.num_level_zero_tables as f64),
             })
         }
-
+        info!("=====> {:?}", self.c_status.levels.read()[0]);
         // stats level 1..n
         for (i, level) in self.levels[1..].iter().enumerate() {
             // Don't consider those tables that are already being compacted right now.
@@ -736,8 +739,10 @@ struct CompactionPriority {
 pub(crate) struct CompactDef {
     pub(crate) this_level: LevelHandler,
     pub(crate) next_level: LevelHandler,
-    pub(crate) top: Vec<Table>, // if the level is not level0, it should be only one table
-    pub(crate) bot: Vec<Table>, // may be empty tables set
+    pub(crate) top: Vec<Table>,
+    // if the level is not level0, it should be only one table
+    pub(crate) bot: Vec<Table>,
+    // may be empty tables set
     pub(crate) this_range: KeyRange,
     pub(crate) next_range: KeyRange,
     pub(crate) this_size: AtomicU64, // the compacted table's size(NOTE: this level compacted table is only one, not zero level)

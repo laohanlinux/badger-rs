@@ -93,7 +93,8 @@ impl CompactStatus {
 // Every level compacted status(ranges).
 #[derive(Clone, Debug)]
 pub(crate) struct LevelCompactStatus {
-    ranges: Arc<RwLock<Vec<KeyRange>>>, // not any overlaps
+    ranges: Arc<RwLock<Vec<KeyRange>>>,
+    // not any overlaps
     del_size: Arc<AtomicU64>,           // all KeyRange size
 }
 
@@ -108,7 +109,9 @@ impl Default for LevelCompactStatus {
 
 impl Display for LevelCompactStatus {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        let ranges = self.ranges.read().iter().map(|kr| kr.to_string()).collect::<Vec<_>>();
+        let del_size = self.del_size.load(Ordering::Relaxed);
+        f.debug_struct("LevelCompactStatus").field("ranges", &format!("{:?}", ranges)).field("del_size", &del_size).finish()
     }
 }
 
@@ -142,7 +145,8 @@ impl LevelCompactStatus {
 // [left, right], Special inf is range all if it be set `true`
 #[derive(Clone, Default, Debug)]
 pub(crate) struct KeyRange {
-    pub(crate) left: Vec<u8>, // TODO zero Copy
+    pub(crate) left: Vec<u8>,
+    // TODO zero Copy
     pub(crate) right: Vec<u8>,
     pub(crate) inf: bool,
 }

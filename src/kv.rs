@@ -25,7 +25,7 @@ use crossbeam_epoch::{Owned, Shared};
 use drop_cell::defer;
 use fs2::FileExt;
 use libc::regex_t;
-use log::{debug, info, warn, Log, error};
+use log::{debug, error, info, warn, Log};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{Mutex, RawMutex};
 use std::cell::RefCell;
@@ -58,6 +58,7 @@ pub struct Closers {
     pub value_gc: Closer,
 }
 
+#[derive(Debug)]
 struct FlushTask {
     mt: Option<SkipList>,
     vptr: ValuePointer,
@@ -200,8 +201,7 @@ impl KV {
         {
             let _out = xout.clone();
             tokio::spawn(async move {
-                if let Err(err) = _out.flush_mem_table(_out.closers.mem_table.spawn())
-                    .await {
+                if let Err(err) = _out.flush_mem_table(_out.closers.mem_table.spawn()).await {
                     error!("abort exit flush mem table {:?}", err);
                 } else {
                     info!("abort exit flush mem table");
@@ -452,6 +452,7 @@ impl KV {
         defer! {lc.done()}
         defer! {info!("exit flush mem table")}
         while let Ok(task) = self.flush_chan.recv().await {
+            info!("Receive a flush task, {:?} !!!", task);
             // after kv send empty mt, it will close flush_chan, so we should return the job.
             if task.mt.is_none() {
                 warn!("receive a exit task!");
@@ -493,11 +494,13 @@ impl KV {
             let mut fp = tokio::fs::File::from_std(fp);
             write_level0_table(&task.mt.as_ref().unwrap(), &mut fp).await?;
 
+            debug!("Ready to advance im");
             let fp = fp.into_std().await;
             let tc = TableCore::open_table(fp, &f_name, self.opt.table_loading_mode)?;
             let tb = Table::from(tc);
             // We own a ref on tbl.
             self.must_lc().add_level0_table(tb.clone()).await?;
+            debug!("Ready to advance im");
             let _ = self.share_lock.write().await;
             // This will incr_ref (if we don't error, sure)
             tb.decr_ref(); // releases our ref.

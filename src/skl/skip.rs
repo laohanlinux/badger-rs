@@ -7,7 +7,7 @@ use rand::random;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fmt::{write, Display, Formatter};
+use std::fmt::{write, Debug, Display, Formatter};
 use std::ops::Deref;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -25,6 +25,14 @@ pub struct SkipList {
     head: AtomicPtr<Node>,
     _ref: Arc<AtomicI32>,
     pub(crate) arena: Arc<Arena>,
+}
+
+impl Debug for SkipList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        f.debug_struct("SkipList")
+            .field("_ref", &self._ref.load(Ordering::Relaxed))
+            .finish()
+    }
 }
 
 impl Clone for SkipList {

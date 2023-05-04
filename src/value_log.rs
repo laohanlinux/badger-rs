@@ -765,12 +765,14 @@ impl ValueLogCore {
     // write is thread-unsafe by design and should not be called concurrently.
     pub(crate) async fn write(&self, reqs: Vec<Request>) -> Result<()> {
         defer! {info!("Finished write value log");}
+        info!("Start write value log, requests: {:?}", reqs);
         let cur_vlog_file = self
             .pick_log_by_vlog_id(&self.max_fid.load(Ordering::Acquire))
             .await;
         let mut cur_vlog_wl = cur_vlog_file.write().await;
         let cur_fid = cur_vlog_wl.fid;
         let reqs_count = reqs.len();
+        let mut wt_count = 0;
         for mut req in reqs.into_iter() {
             for (idx, mut entry) in req.entries.into_iter().enumerate() {
                 if !self.opt.sync_writes && entry.entry().value.len() < self.opt.value_threshold {
@@ -792,22 +794,25 @@ impl ValueLogCore {
                     + self.buf.read().await.position() as u32;
                 let mut buf = self.buf.write().await;
                 let mut entry = entry.mut_entry();
-                entry.enc(&mut buf.get_mut()).unwrap();
-                if buf.get_ref().is_empty() {
-                    info!("It should be not happen!!!!!!!");
-                }
+                let sz = entry.enc(&mut buf.get_mut()).unwrap();
+                wt_count += sz;
                 ptr.len = buf.get_ref().len() as u32 - ptr.offset;
                 req.ptrs[idx].store(Some(ptr), Ordering::Release);
             }
         }
         {
-            if self.buf.read().await.get_ref().is_empty() {
-                info!("Nothing to write, buffer is empty!");
+            assert!(wt_count <= 0 || !self.buf.read().await.is_empty());
+            let mut buffer = self.buf.write().await;
+            if buffer.is_empty() {
+                info!(
+                    "Nothing to flush, {} requests of total size: {}",
+                    reqs_count,
+                    self.writable_log_offset.load(Ordering::Acquire)
+                );
                 return Ok(());
             }
-            let mut buffer = self.buf.write().await;
             let fp_wt = cur_vlog_wl.mut_mmap();
-            // write value ponter into vlog file. (Just only write to mmap)
+            // write value pointer into vlog file. (Just only write to mmap)
             let n = fp_wt.as_mut().write(buffer.get_ref())?;
             assert_eq!(n, buffer.get_ref().len());
             // todo add metrics
@@ -818,7 +823,7 @@ impl ValueLogCore {
             info!(
                 "Flushing {} requests of total size: {}",
                 reqs_count,
-                self.writable_log_offset.load(Ordering::Acquire),
+                self.writable_log_offset.load(Ordering::Acquire)
             );
             // clear buffer
             buffer.get_mut().clear();
@@ -827,7 +832,7 @@ impl ValueLogCore {
             {
                 cur_vlog_wl.done_writing(self.writable_log_offset.load(Ordering::Acquire))?;
                 let new_id = self.max_fid.fetch_add(1, Ordering::Release);
-                assert!(new_id < 1 << 16, "newid will overflow u16: {}", new_id);
+                assert!(new_id < 1 << 16, "new_id will overflow u16: {}", new_id);
                 *cur_vlog_wl =
                     self.create_mmap_vlog_file(new_id, 2 * self.opt.value_log_file_size)?;
             }

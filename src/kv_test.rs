@@ -41,6 +41,7 @@ async fn t_batch_write() {
     std::panic::set_hook(Box::new(move |info| {
         default_panic(info);
         info!("panic info: {}", info);
+        std::fs::write("out.put", info.to_string()).expect("TODO: panic message");
         std::process::exit(1);
     }));
     use crate::test_util::{mock_log, mock_log_terminal, random_tmp_dir, tracing_log};
