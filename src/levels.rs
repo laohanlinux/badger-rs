@@ -690,7 +690,7 @@ impl LevelsController {
         // add_level0_table use.
 
         let mut prios = vec![];
-        // cstatus is checked to see if level 0's tables are already being compacted.
+        // c_status is checked to see if level 0's tables are already being compacted.
         // *NOTICE* level 0 only has one compact job
         if !self.c_status.overlaps_with(0, &INFO_RANGE) && self.is_level0_compactable() {
             prios.push(CompactionPriority {
@@ -699,7 +699,7 @@ impl LevelsController {
                     / (self.opt.num_level_zero_tables as f64),
             })
         }
-        info!("=====> {:?}", self.c_status.levels.read()[0]);
+        info!("=====> {:?}, prios: {:?}", self.c_status.levels.read()[0], prios);
         // stats level 1..n
         for (i, level) in self.levels[1..].iter().enumerate() {
             // Don't consider those tables that are already being compacted right now.

@@ -6,6 +6,7 @@ use std::fmt::{Display, Formatter};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use log::info;
+use tracing::debug;
 
 #[derive(Debug)]
 pub(crate) struct CompactStatus {
@@ -51,8 +52,8 @@ impl CompactStatus {
         {
             return false;
         }
-        this_level.ranges.write().push(cd.this_range.clone());
-        next_level.ranges.write().push(cd.next_range.clone());
+        this_level.add(cd.this_range.clone());
+        this_level.add(cd.next_range.clone());
         this_level.incr_del_size(cd.this_size.load(Ordering::Relaxed));
         true
     }
@@ -109,7 +110,7 @@ impl Default for LevelCompactStatus {
 
 impl Display for LevelCompactStatus {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let ranges = self.ranges.read().iter().map(|kr| kr.to_string()).collect::<Vec<_>>();
+        let ranges = self.rl().iter().map(|kr| kr.to_string()).collect::<Vec<_>>();
         let del_size = self.del_size.load(Ordering::Relaxed);
         f.debug_struct("LevelCompactStatus").field("ranges", &format!("{:?}", ranges)).field("del_size", &del_size).finish()
     }
@@ -118,15 +119,21 @@ impl Display for LevelCompactStatus {
 impl LevelCompactStatus {
     // returns true if self.ranges and dst has overlap, otherwise returns false
     fn overlaps_with(&self, dst: &KeyRange) -> bool {
-        self.ranges.write().iter().any(|r| r.overlaps_with(dst))
+        self.rl().iter().any(|kr| kr.overlaps_with(dst))
     }
 
     // remove dst from self.ranges
     fn remove(&mut self, dst: &KeyRange) -> bool {
-        let mut rlock = self.ranges.write();
+        let mut rlock = self.wl();
         let len = rlock.len();
         rlock.retain(|r| r.equals(dst));
         len > rlock.len()
+    }
+
+    // add dst range
+    fn add(&self, dst: KeyRange) {
+        debug!("add a KeyRange {:?}", dst);
+        self.wl().push(dst);
     }
 
     pub(crate) fn get_del_size(&self) -> u64 {
@@ -139,6 +146,14 @@ impl LevelCompactStatus {
 
     fn decr_del_size(&self, n: u64) {
         self.del_size.fetch_sub(n, Ordering::Relaxed);
+    }
+
+    fn wl(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<KeyRange>> {
+        self.ranges.write()
+    }
+
+    fn rl(&self) -> RwLockReadGuard<'_, RawRwLock, Vec<KeyRange>> {
+        self.ranges.read()
     }
 }
 
