@@ -1,21 +1,13 @@
 use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
 use crate::table::iterator::IteratorItem;
+use crate::y::ValueStruct;
 use crate::Xiterator;
-use atom_box::AtomBox;
 use log::{debug, info};
 use rand::random;
-use serde_json::Value;
-use std::borrow::Cow;
-use std::collections::HashMap;
 use std::fmt::{write, Debug, Display, Formatter};
-use std::ops::Deref;
-use std::ptr::null_mut;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
-use std::{cmp, ptr, ptr::NonNull, sync::atomic::AtomicI32};
-use tracing::field::debug;
-
-use crate::y::ValueStruct;
+use std::{cmp, ptr, sync::atomic::AtomicI32};
 
 use super::{arena::Arena, node::Node};
 
@@ -88,7 +80,7 @@ impl SkipList {
     }
 
     fn get_head_mut(&self) -> &mut Node {
-        let node = unsafe { self.head.load(Ordering::Relaxed) as *mut Node };
+        let node = self.head.load(Ordering::Relaxed) as *mut Node;
         unsafe { &mut *node }
     }
 
@@ -117,7 +109,7 @@ impl SkipList {
         let mut level = self.get_height() - 1;
         loop {
             // Assume x.key < key
-            let mut next = self.get_next(x, level);
+            let next = self.get_next(x, level);
             if next.is_none() {
                 // x.key < key < END OF LIST
                 if level > 0 {
@@ -223,11 +215,11 @@ impl SkipList {
     }
 
     unsafe fn _put(&self, key: &[u8], v: ValueStruct) {
-        info!(
-            "At SkipList,  sz: {}, cap: {}",
-            self.arena.size(),
-            self.arena.cap()
-        );
+        // info!(
+        //     "At SkipList,  sz: {}, cap: {}",
+        //     self.arena.size(),
+        //     self.arena.cap()
+        // );
         // Since we allow overwrite, we may not need to create a new node. We might not even need to
         // increase the height. Let's defer these actions.
         // let mut def_node = &mut Node::default();
@@ -242,7 +234,7 @@ impl SkipList {
             let (_pre, _next) = self.find_splice_for_level(key, cur, i as isize);
             prev[i] = _pre;
             if _next.is_some() && ptr::eq(_pre, _next.unwrap()) {
-                let mut arena = self.arena_ref().copy().as_mut();
+                let arena = self.arena_ref().copy().as_mut();
                 prev[i].as_ref().unwrap().set_value(&arena, &v);
                 return;
             }
@@ -639,7 +631,7 @@ mod tests {
 
     #[test]
     fn t_empty_list() {
-        let mut st = SkipList::new(ARENA_SIZE);
+        let st = SkipList::new(ARENA_SIZE);
         let key = b"aaa";
         let got = st.get(key);
         assert!(got.is_none());
@@ -671,7 +663,7 @@ mod tests {
         let n1 = &node;
         let n2 = Some(&node);
         assert!(ptr::eq(n1, n2.unwrap()));
-        let mut st = SkipList::new(ARENA_SIZE);
+        let st = SkipList::new(ARENA_SIZE);
         let val1 = b"42";
         let val2 = b"52";
         let val3 = b"62";
@@ -706,8 +698,6 @@ mod tests {
 
     #[test]
     fn t_concurrent_basic() {
-        use rand::{thread_rng, Rng};
-
         let st = Arc::new(SkipList::new(ARENA_SIZE));
         let mut kv = vec![];
         for i in 0..10000 {
@@ -925,7 +915,7 @@ mod tests {
     // Tests a basic iteration over all nodes from the beginning.
     #[test]
     fn t_iterator_next() {
-        const n: usize = 100;
+        let n = 100;
         let st = SkipList::new(ARENA_SIZE);
 
         {
@@ -1050,7 +1040,7 @@ mod tests2 {
     #[test]
     fn atomic_swap_skip_list() {
         crate::test_util::tracing_log();
-        let mut st = SkipList::new(1000);
+        let st = SkipList::new(1 << 20);
         st.put(b"hello", ValueStruct::new(vec![], 0, 0, 0));
         let got = st.get(b"hello");
         assert!(got.is_some());

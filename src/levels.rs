@@ -205,7 +205,7 @@ impl LevelsController {
             tokio::select! {
                 _ = interval.tick() => {
                     let pick: Vec<CompactionPriority> = self.pick_compact_levels();
-                     info!("Try to compact levels, {:?}", pick);
+                    info!("Try to compact levels, {:?}", pick);
                     for p in pick {
                         match self.do_compact(p).await {
                             Ok(true) => {
@@ -541,19 +541,6 @@ impl LevelsController {
         Ok(new_tables)
     }
 
-    // TODO
-    fn append_iterators_reversed(
-        out: &mut Vec<&dyn Xiterator<Output = IteratorItem>>,
-        th: &Vec<Table>,
-        reversed: bool,
-    ) {
-        // for itr_th in th.iter().rev() {
-        //     // This will increment the reference of the table handler.
-        //     let itr = IteratorImpl::new(itr_th, reversed);
-        //     out.push(Box::new(itr));
-        // }
-    }
-
     fn build_change_set(cd: &CompactDef, new_tables: &Vec<Table>) -> Vec<ManifestChange> {
         let mut changes = vec![];
         for table in new_tables {
@@ -699,7 +686,11 @@ impl LevelsController {
                     / (self.opt.num_level_zero_tables as f64),
             })
         }
-        info!("=====> {:?}, prios: {:?}", self.c_status.levels.read()[0], prios);
+        info!(
+            "=====> {:?}, prios: {:?}",
+            self.c_status.levels.read()[0],
+            prios
+        );
         // stats level 1..n
         for (i, level) in self.levels[1..].iter().enumerate() {
             // Don't consider those tables that are already being compacted right now.
@@ -712,6 +703,7 @@ impl LevelsController {
                 });
             }
         }
+        info!("prios =====>>>>>>>, {:?}", prios);
         // sort from big to small.
         prios.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
         prios

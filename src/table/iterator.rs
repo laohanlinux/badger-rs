@@ -171,7 +171,7 @@ impl BlockIterator {
         }
         // drop pos advoid to borrow twice
         drop(pos);
-        let (key, mut value) = self.parse_kv(&h);
+        let (key, value) = self.parse_kv(&h);
         Some(BlockIteratorItem { key, value })
     }
 
@@ -547,17 +547,16 @@ impl IteratorImpl {
         if bi.is_some() {
             return bi;
         }
-        let mut block = self.table.block(bpos).unwrap();
+        let block = self.table.block(bpos).unwrap();
         let it = BlockIterator::new(block.data);
         *bi = Some(it);
         bi
     }
 
     fn get_bi_by_bpos(&self, bpos: usize) -> RefMut<'_, Option<BlockIterator>> {
-        let mut bi = self.bi.borrow_mut();
-        let mut block = self.table.block(bpos).unwrap();
+        let block = self.table.block(bpos).unwrap();
         // info!("===>{:?}, {:?}", bpos, block);
-
+        let mut bi = self.bi.borrow_mut();
         let it = BlockIterator::new(block.data);
         *bi = Some(it);
         bi
@@ -724,7 +723,7 @@ impl fmt::Display for ConcatIterator {
             *self.index.borrow(),
             self.iters.len(),
             table_str,
-            *self.reversed.borrow(),
+            self.reversed,
             cur
         ))
     }

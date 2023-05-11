@@ -314,7 +314,7 @@ pub(crate) fn async_create_synced_file(file_name: &str, synced: bool) -> Result<
 }
 
 pub(crate) fn sync_directory(d: &str) -> Result<()> {
-    let mut fp = File::open(d)?;
+    let fp = File::open(d)?;
     fp.sync_all().map_err(|err| err.into())
 }
 

@@ -436,6 +436,7 @@ impl KV {
             }
             count += req.entries.len();
             while let Err(err) = self.ensure_room_for_write().await {
+                debug!("failed to ensure room for write!, err:{}", err);
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             info!("Waiting for write lsm, count {}", count);
@@ -557,17 +558,15 @@ impl KV {
                 }
             }
         }
+
         if !req.entries.is_empty() {
             let resp_ch = req.get_resp_channel();
             self.write_ch.send(req).await.unwrap();
             {
-                count = 0;
-                sz = 0;
                 for (index, ch) in resp_ch.into_iter().enumerate() {
                     let entry_index = req_index[index];
                     res[entry_index] = ch.recv().await.unwrap();
                 }
-                req = Request::default();
                 req_index.clear();
             }
         }
@@ -577,13 +576,13 @@ impl KV {
     async fn write_to_lsm(&self, mut req: Request) -> Result<()> {
         assert_eq!(req.entries.len(), req.ptrs.len());
         defer! {info!("exit write to lsm")}
-        for (i, mut pair) in req.entries.into_iter().enumerate() {
+        for (i, pair) in req.entries.into_iter().enumerate() {
             let (entry, resp_ch) = pair.to_owned();
             if entry.cas_counter_check != 0 {
                 let old_value = self._get(&entry.key)?;
                 // No need to decode existing value. Just need old CAS counter.
                 if old_value.cas_counter != entry.cas_counter_check {
-                    resp_ch.send(Err(Error::ValueCasMisMatch)).await;
+                    resp_ch.send(Err(Error::ValueCasMisMatch)).await.unwrap();
                     continue;
                 }
             }
@@ -593,7 +592,7 @@ impl KV {
                 let exits = self._exists(&entry.key)?;
                 // Value already exists. don't write.
                 if exits {
-                    resp_ch.send(Err(Error::ValueKeyExists)).await;
+                    resp_ch.send(Err(Error::ValueKeyExists)).await.unwrap();
                     continue;
                 }
             }
@@ -621,13 +620,6 @@ impl KV {
                     cas,
                 );
             }
-            // let st = self.must_mt().clone();
-            // tokio::task::spawn_blocking(move || {
-            //     st.put(&key, value);
-            //     debug!("key #{:?} value into SkipList!!!", String::from_utf8_lossy(&key));
-            // })
-            // .await
-            // .unwrap();
             self.must_mt().put(&key, value);
             debug!(
                 "key #{:?} value into SkipList!!!",
