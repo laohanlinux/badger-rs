@@ -182,7 +182,7 @@ impl KV {
         out.lc.replace(lc);
         let mut vlog = ValueLogCore::default();
         {
-            let kv = unsafe { &out as *const KV };
+            let kv = &out as *const KV;
             vlog.open(kv, opt.clone()).await?;
         }
         out.vlog.replace(vlog);
@@ -278,7 +278,7 @@ impl KV {
                         cas_counter: entry.get_cas_counter(),
                         value: nv,
                     };
-                    while let Err(err) = xout.ensure_room_for_write().await {
+                    while let Err(_err) = xout.ensure_room_for_write().await {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                     xout.must_mt().put(&entry.key, v);
@@ -371,26 +371,6 @@ impl KV {
             .await;
         assert_eq!(res.len(), 1);
         res[0].to_owned()
-    }
-
-    // Returns the current `mem_tables` and get references.
-    fn get_mem_tables<'a>(&'a self, p: &'a crossbeam_epoch::Guard) -> Vec<Shared<'a, SkipList>> {
-        self.mem_st_manger.lock_exclusive();
-        defer! {self.mem_st_manger.unlock_exclusive()}
-
-        let mt = self.mem_st_manger.mt_ref(p);
-        let mut tables = Vec::with_capacity(self.mem_st_manger.imm().len() + 1);
-        // Get mutable `mem_tables`.
-        tables.push(mt);
-        // TODO
-        unsafe { tables[0].as_ref().unwrap().incr_ref() };
-        // Get immutable `mem_tables`.
-        for tb in self.mem_st_manger.imm().iter().rev() {
-            let tb = tb.load(Ordering::Relaxed, &p);
-            unsafe { tb.as_ref().unwrap().incr_ref() };
-            tables.push(tb);
-        }
-        tables
     }
 
     // Called serially by only on goroutine
@@ -597,8 +577,8 @@ impl KV {
                 }
             }
 
-            let mut key;
-            let mut value;
+            let key;
+            let value;
             if self.should_write_value_to_lsm(&entry) {
                 let cas = entry.get_cas_counter();
                 let (_key, _value) = (entry.key, entry.value);
@@ -630,26 +610,6 @@ impl KV {
         }
 
         Ok(())
-    }
-
-    fn _exists(&self, key: &[u8]) -> Result<bool> {
-        return match self._get(key) {
-            Err(err) if err.is_not_found() => Ok(false),
-            Err(err) => Err(err),
-            Ok(value) => {
-                info!("{:?}", value);
-                if value.value.is_empty() && value.meta == 0 {
-                    return Ok(false);
-                }
-                Ok((value.meta & MetaBit::BIT_DELETE.bits()) == 0)
-            }
-        };
-    }
-
-    fn new_cas_counter(&self, how_many: u64) -> u64 {
-        self.last_used_cas_counter
-            .fetch_add(how_many, Ordering::Relaxed)
-            + 1
     }
 
     async fn ensure_room_for_write(&self) -> Result<()> {
@@ -690,10 +650,6 @@ impl KV {
         Ok(())
     }
 
-    fn should_write_value_to_lsm(&self, entry: &Entry) -> bool {
-        entry.value.len() < self.opt.value_threshold
-    }
-
     async fn update_offset(&self, ptrs: &mut Vec<Arc<Atomic<Option<ValuePointer>>>>) {
         let mut ptr = ValuePointer::default();
         for tmp_ptr in ptrs.iter().rev() {
@@ -712,6 +668,50 @@ impl KV {
 
         let _ = self.share_lock.write().await;
         self.vptr.store(Owned::new(ptr), Ordering::Release);
+    }
+
+    // Returns the current `mem_tables` and get references.
+    fn get_mem_tables<'a>(&'a self, p: &'a crossbeam_epoch::Guard) -> Vec<Shared<'a, SkipList>> {
+        self.mem_st_manger.lock_exclusive();
+        defer! {self.mem_st_manger.unlock_exclusive()}
+
+        let mt = self.mem_st_manger.mt_ref(p);
+        let mut tables = Vec::with_capacity(self.mem_st_manger.imm().len() + 1);
+        // Get mutable `mem_tables`.
+        tables.push(mt);
+        // TODO
+        unsafe { tables[0].as_ref().unwrap().incr_ref() };
+        // Get immutable `mem_tables`.
+        for tb in self.mem_st_manger.imm().iter().rev() {
+            let tb = tb.load(Ordering::Relaxed, &p);
+            unsafe { tb.as_ref().unwrap().incr_ref() };
+            tables.push(tb);
+        }
+        tables
+    }
+
+    fn _exists(&self, key: &[u8]) -> Result<bool> {
+        return match self._get(key) {
+            Err(err) if err.is_not_found() => Ok(false),
+            Err(err) => Err(err),
+            Ok(value) => {
+                info!("{:?}", value);
+                if value.value.is_empty() && value.meta == 0 {
+                    return Ok(false);
+                }
+                Ok((value.meta & MetaBit::BIT_DELETE.bits()) == 0)
+            }
+        };
+    }
+
+    fn new_cas_counter(&self, how_many: u64) -> u64 {
+        self.last_used_cas_counter
+            .fetch_add(how_many, Ordering::Relaxed)
+            + 1
+    }
+
+    fn should_write_value_to_lsm(&self, entry: &Entry) -> bool {
+        entry.value.len() < self.opt.value_threshold
     }
 }
 
@@ -1100,6 +1100,7 @@ impl ArcKV {
     }
 }
 
+// Write level zero table
 pub(crate) async fn write_level0_table(st: &SkipList, f: &mut tokio::fs::File) -> Result<()> {
     // defer! {info!("Finish write level zero table")}
     let cur = st.new_cursor();
@@ -1116,8 +1117,4 @@ pub(crate) async fn write_level0_table(st: &SkipList, f: &mut tokio::fs::File) -
     }
     f.write_all(&builder.finish()).await?;
     Ok(())
-}
-
-fn arena_size(opt: &Options) -> usize {
-    (opt.max_table_size + opt.max_batch_size + opt.max_batch_count * Node::size() as u64) as usize
 }

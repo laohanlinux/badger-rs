@@ -1,12 +1,6 @@
-// use crate::skl::{Node, OwnedNode, MAX_HEIGHT, MAX_NODE_SIZE};
-use crate::skl::alloc::Chunk;
 use crate::skl::alloc::{OnlyLayoutAllocate, SliceAllocate};
 use crate::skl::node::Node;
-use crate::skl::Allocate;
 use crate::y::ValueStruct;
-use std::default;
-use std::fmt::format;
-use std::marker::PhantomData;
 use std::mem::{size_of, ManuallyDrop};
 use std::ptr::{addr_of, slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
 use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
@@ -128,7 +122,7 @@ impl Arena {
 
 #[test]
 fn t_arena_key() {
-    let mut arena = Arena::new(1 << 20);
+    let arena = Arena::new(1 << 20);
     let keys = vec![vec![1, 2, 3], vec![4, 5, 6, 7, 90]];
     let mut got = vec![];
     for key in keys.iter() {
@@ -142,7 +136,7 @@ fn t_arena_key() {
 
 #[test]
 fn t_arena_value() {
-    let mut arena = Arena::new(1 << 20);
+    let arena = Arena::new(1 << 20);
     let v = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let value = ValueStruct {
         meta: 1,
@@ -161,7 +155,7 @@ fn t_arena_store_node() {
     let mut starts = vec![];
     for i in 0..5 {
         let start = arena.put_node(i);
-        let mut node = arena.get_mut_node(start as usize).unwrap();
+        let node = arena.get_mut_node(start as usize).unwrap();
         node.height = i as u16;
         node.value.fetch_add(i as u64, Ordering::Relaxed);
         starts.push((i, start));

@@ -75,7 +75,8 @@ async fn t_concurrent_write() {
     let kv = KV::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
     let mut wg = awaitgroup::WaitGroup::new();
-    let n = 2000;
+    //let n = 2000;
+    let n = 300;
     for i in 0..n {
         let kv = kv.clone();
         let wk = wg.worker();

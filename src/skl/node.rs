@@ -1,5 +1,4 @@
 use crate::skl::arena::Arena;
-use crate::skl::HEIGHT_INCREASE;
 use crate::skl::MAX_HEIGHT;
 use crate::y::ValueStruct;
 use std::mem::size_of;
@@ -56,7 +55,7 @@ impl Node {
         let (value_offset, value_size) = arena.put_val(v);
         // The base level is already allocated in the node struct.
         let offset = arena.put_node(height);
-        let mut node = arena.get_mut_node(offset as usize).unwrap();
+        let node = arena.get_mut_node(offset as usize).unwrap();
         // 1: storage key
         node.key_offset = key_offset;
         node.key_size = key.len() as u16;

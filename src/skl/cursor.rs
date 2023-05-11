@@ -20,10 +20,9 @@ impl<'a> Cursor<'a> {
 
     /// Returns true if the iterator is positioned at a valid node.
     pub fn valid(&self) -> bool {
-        self.item.borrow().map_or(false, |node| {
-            let header = self.list.get_head();
-            !std::ptr::eq(node, header)
-        })
+        self.item
+            .borrow()
+            .map_or(false, |node| !std::ptr::eq(node, self.list.get_head()))
     }
 
     /// Returns the key at the current position.
@@ -92,7 +91,7 @@ impl<'a> Cursor<'a> {
         self.list.decr_ref();
     }
 
-    fn _seek(&self) -> Option<&'a Node> {
+    fn _peek(&self) -> Option<&'a Node> {
         let node = self.item.borrow();
         if node.is_none() {
             return None;
@@ -101,6 +100,7 @@ impl<'a> Cursor<'a> {
         if std::ptr::eq(node, self.list.get_head()) {
             return None;
         }
+        Some(node)
     }
 }
 
@@ -112,7 +112,7 @@ pub struct CursorReverse<'a> {
 impl<'a> Xiterator for CursorReverse<'a> {
     type Output = &'a Node;
     fn next(&self) -> Option<Self::Output> {
-        if !*self.reversed.borrow() {
+        if !*(self.reversed.borrow()) {
             self.iter.next()
         } else {
             self.iter.prev()
@@ -120,7 +120,7 @@ impl<'a> Xiterator for CursorReverse<'a> {
     }
 
     fn rewind(&self) -> Option<Self::Output> {
-        if !*self.reversed.borrow() {
+        if !*(self.reversed.borrow()) {
             self.iter.seek_for_first()
         } else {
             self.iter.seek_for_last()
@@ -128,14 +128,16 @@ impl<'a> Xiterator for CursorReverse<'a> {
     }
 
     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-        if !*self.reversed.borrow() {
+        if !*(self.reversed.borrow()) {
             self.iter.seek(key)
         } else {
             self.iter.seek_for_prev(key)
         }
     }
 
-    fn peek(&self) -> Option<Self::Output> {}
+    fn peek(&self) -> Option<Self::Output> {
+        self.iter._peek()
+    }
 }
 
 impl KeyValue<ValueStruct> for CursorReverse<'_> {

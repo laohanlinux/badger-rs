@@ -46,8 +46,8 @@ use crate::y::{
 use crate::Error::{Unexpected, ValueNoRewrite, ValueRejected};
 use crate::{Error, Result, EMPTY_SLICE, META_SIZE};
 
-/// Values have their first byte being byteData or byteDelete. This helps us distinguish between
-/// a key that has never been seen and a key that has been explicitly deleted.
+// Values have their first byte being byteData or byteDelete. This helps us distinguish between
+// a key that has never been seen and a key that has been explicitly deleted.
 bitflags! {
     pub struct MetaBit: u8{
         /// Set if the key has been deleted.
@@ -727,7 +727,7 @@ impl ValueLogCore {
             .vlogs
             .get(&self.max_fid.load(Ordering::Acquire))
             .unwrap();
-        // todo add sync directory meta
+        // TODO add sync directory meta
         // sync_dir_async()
         Ok(())
     }
@@ -748,8 +748,8 @@ impl ValueLogCore {
         vp: &ValuePointer,
         mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
-        let mut vlog = self.pick_log_by_vlog_id(&vp.fid).await;
-        let mut buffer = vlog.read().await;
+        let vlog = self.pick_log_by_vlog_id(&vp.fid).await;
+        let buffer = vlog.read().await;
         let buffer = buffer.read(&vp)?;
         let mut h = Header::default();
         h.dec(&mut Cursor::new(&buffer[0..Header::encoded_size()]))?;
@@ -757,7 +757,7 @@ impl ValueLogCore {
             // Tombstone key
             consumer(&EMPTY_SLICE).await
         } else {
-            let mut n = Header::encoded_size() + h.k_len as usize;
+            let n = Header::encoded_size() + h.k_len as usize;
             consumer(&buffer[n..n + h.v_len as usize]).await
         }
     }
@@ -793,7 +793,7 @@ impl ValueLogCore {
                 ptr.offset = self.writable_log_offset.load(Ordering::Acquire)
                     + self.buf.read().await.position() as u32;
                 let mut buf = self.buf.write().await;
-                let mut entry = entry.mut_entry();
+                let entry = entry.mut_entry();
                 let sz = entry.enc(&mut buf.get_mut()).unwrap();
                 wt_count += sz;
                 ptr.len = buf.get_ref().len() as u32 - ptr.offset;
@@ -888,7 +888,7 @@ impl ValueLogCore {
                 );
                 continue;
             }
-            if vs.meta & MetaBit::BIT_VALUE_POINTER.bits() < 0 {
+            if (vs.meta & MetaBit::BIT_VALUE_POINTER.bits()) < 0 {
                 info!(
                     "REWRITE=> {} has been skipped, meta: {}",
                     String::from_utf8_lossy(&entry.key),
@@ -1055,7 +1055,7 @@ impl ValueLogCore {
                 self.garbage_ch.recv().await.unwrap();
                 ok
             }
-            Err(err) => Err(Error::ValueRejected),
+            Err(_err) => Err(Error::ValueRejected),
         };
     }
 
@@ -1066,14 +1066,13 @@ impl ValueLogCore {
             keep: f64,
             discard: f64,
         }
-        let mut reason = ArcMx::new(parking_lot::Mutex::new(Reason::default()));
-        let mut window = 100.0; //  limit 100M for gc every time
+        let reason = ArcMx::new(parking_lot::Mutex::new(Reason::default()));
+        let window = 100.0; //  limit 100M for gc every time
         let mut count = 0;
         // Pick a random start point for the log.
-        let mut skip_first_m =
-            thread_rng_n((self.opt.value_log_file_size / M) as u32) as f64 - window;
+        let skip_first_m = thread_rng_n((self.opt.value_log_file_size / M) as u32) as f64 - window;
         let mut skipped = 0.0;
-        let mut start = SystemTime::now();
+        let start = SystemTime::now();
         // Random pick a vlog file for gc
         let lf = self.pick_log().await.ok_or(Error::ValueNoRewrite)?;
         let fid = lf.read().await.fid;

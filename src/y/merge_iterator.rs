@@ -36,7 +36,7 @@ impl Xiterator for MergeIterOverIterator {
             self.store_key(None);
             return None;
         }
-        println!("elements size: {}", self.elements.borrow().len());
+        //println!("elements size: {}", self.elements.borrow().len());
         self.move_cursor()
     }
 
@@ -83,7 +83,7 @@ impl MergeIterOverIterator {
             }
             a_itr.peek().unwrap().key().cmp(b_itr.peek().unwrap().key())
         });
-        println!("sets: {:?}", self.elements.borrow());
+        //println!("sets: {:?}", self.elements.borrow());
     }
 
     fn move_cursor(&self) -> Option<IteratorItem> {
