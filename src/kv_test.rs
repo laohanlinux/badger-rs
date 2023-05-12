@@ -5,6 +5,7 @@ use std::io::Write;
 use std::process::id;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tracing_subscriber::fmt::format;
 
 use crate::iterator::IteratorOptions;
 use crate::types::XArc;
@@ -77,14 +78,21 @@ async fn t_concurrent_write() {
     let mut wg = awaitgroup::WaitGroup::new();
     //let n = 2000;
     let n = 300;
+    let m = 10;
     for i in 0..n {
         let kv = kv.clone();
         let wk = wg.worker();
         tokio::spawn(async move {
-            let res = kv
-                .set(format!("{}", i).as_bytes().to_vec(), b"word".to_vec(), 10)
-                .await;
-            assert!(res.is_ok());
+            for j in 0..m {
+                let res = kv
+                    .set(
+                        format!("k{:05}_{:08}", i, j).into_bytes().to_vec(),
+                        format!("v{:05}_{:08}", i, j).into_bytes().to_vec(),
+                        10,
+                    )
+                    .await;
+                assert!(res.is_ok());
+            }
             wk.done();
         });
     }

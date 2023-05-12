@@ -177,8 +177,8 @@ impl Builder {
         self.add_helper(b"", &ValueStruct::default());
     }
 
-    // Add adds a key-value pair to the block.
-    // If doNotRestart is true, we will not restart even if b.counter >= restartInterval.
+    /// Add adds a key-value pair to the block.
+    /// If doNotRestart is true, we will not restart even if b.counter >= restartInterval.
     pub fn add(&mut self, key: &[u8], value: &ValueStruct) -> crate::y::Result<()> {
         if self.counter >= Self::RESTART_INTERVAL {
             self.finish_block();

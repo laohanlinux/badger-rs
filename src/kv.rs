@@ -1102,17 +1102,17 @@ impl ArcKV {
 
 // Write level zero table
 pub(crate) async fn write_level0_table(st: &SkipList, f: &mut tokio::fs::File) -> Result<()> {
-    // defer! {info!("Finish write level zero table")}
+    defer! {info!("Finish write level zero table")}
     let cur = st.new_cursor();
     let mut builder = Builder::default();
     while let Some(_) = cur.next() {
         let key = cur.key();
         let value = cur.value();
-        // // info!(
-        // //     "write level zero table: {}, {}",
-        // //     String::from_utf8_lossy(key),
-        // //     String::from_utf8_lossy(&value.value)
-        // );
+        debug!(
+            "write level zero table: {}, {}",
+            String::from_utf8_lossy(key),
+            String::from_utf8_lossy(&value.value)
+        );
         builder.add(key, &value)?;
     }
     f.write_all(&builder.finish()).await?;
