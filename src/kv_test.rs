@@ -5,16 +5,17 @@ use std::io::Write;
 use std::process::id;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tokio::io::AsyncWriteExt;
 use tracing_subscriber::fmt::format;
 
 use crate::iterator::IteratorOptions;
-use crate::types::XArc;
+use crate::types::{TArcMx, XArc};
 use crate::value_log::Entry;
 use crate::{kv::KV, options::Options, Error};
 
 fn get_test_option(dir: &str) -> Options {
     let mut opt = Options::default();
-    opt.max_table_size = 1 << 15; //Force more compaction.
+    opt.max_table_size = 1 << 15; // Force more compaction.
     opt.level_one_size = 4 << 15; // Force more compaction.
     opt.dir = Box::new(dir.clone().to_string());
     opt.value_dir = Box::new(dir.to_string());
@@ -79,17 +80,17 @@ async fn t_concurrent_write() {
     //let n = 2000;
     let n = 300;
     let m = 10;
+    let keys = TArcMx::new(tokio::sync::Mutex::new(vec![]));
     for i in 0..n {
         let kv = kv.clone();
         let wk = wg.worker();
+        let keys = keys.clone();
         tokio::spawn(async move {
             for j in 0..m {
+                let key = format!("k{:05}_{:08}", i, j).into_bytes().to_vec();
+                keys.lock().await.push(key.clone());
                 let res = kv
-                    .set(
-                        format!("k{:05}_{:08}", i, j).into_bytes().to_vec(),
-                        format!("v{:05}_{:08}", i, j).into_bytes().to_vec(),
-                        10,
-                    )
+                    .set(key, format!("v{:05}_{:08}", i, j).into_bytes().to_vec(), 10)
                     .await;
                 assert!(res.is_ok());
             }
@@ -107,15 +108,19 @@ async fn t_concurrent_write() {
         })
         .await;
     let mut i = 0;
+    keys.lock().await.sort();
+    let keys = keys.lock().await;
+    let got = kv.get_with_ext(b"k00003_00000008").await.unwrap();
+    let value = got.read().await;
+    println!("{:?}", String::from_utf8_lossy(value.get_value().await.as_ref().unwrap()));
     while let Some(item) = itr.next().await {
-        info!(
-            "KVItem : {:?}, value: {:?}",
-            item.read().await.vptr(),
-            b"word"
-        );
-        let item = item.read().await;
-        assert_eq!(item.key(), format!("{}", i).as_bytes());
-        assert_eq!(item.get_value().await.unwrap(), b"word".to_vec());
+        let kv_item = item.read().await;
+        println!("load key: {}", String::from_utf8_lossy(kv_item.key()));
+        let expect = String::from_utf8_lossy(keys.get(i).unwrap());
+        let got = String::from_utf8_lossy(kv_item.key());
+        assert_eq!(expect, got);
+        // assert_eq!(kv_item.key(), format!("{}", i).as_bytes());
+        // assert_eq!(kv_item.get_value().await.unwrap(), b"word".to_vec());
         i += 1;
     }
 }

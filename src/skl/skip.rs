@@ -8,6 +8,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
 use std::{cmp, ptr, sync::atomic::AtomicI32};
+use uuid::Uuid;
 
 use super::{arena::Arena, node::Node};
 
@@ -429,6 +430,7 @@ impl Display for SkipList {
 pub struct UniIterator {
     iter: SkipIterator,
     reversed: bool,
+    id: Box<String>,
 }
 
 impl UniIterator {
@@ -437,6 +439,7 @@ impl UniIterator {
         UniIterator {
             iter: itr,
             reversed,
+            id: Box::new(Uuid::new_v4().to_string()),
         }
     }
 }
@@ -445,6 +448,7 @@ impl Xiterator for UniIterator {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
+        println!("{}, execute at UniIterator!", self.id);
         if !self.reversed {
             self.iter.prev()
         } else {
@@ -456,7 +460,7 @@ impl Xiterator for UniIterator {
         if !self.reversed {
             self.iter.seek_to_first()
         } else {
-            self.iter.seek_to_first()
+            self.iter.seek_to_last()
         }
     }
 

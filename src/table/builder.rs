@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use bytes::{Buf, BufMut, BytesMut};
 use growable_bloom_filter::GrowableBloom;
+use log::info;
 use serde_json;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
@@ -13,7 +14,6 @@ use std::fmt::Formatter;
 use std::hash::Hasher;
 use std::io::{self, Cursor, Read, Write};
 use std::str::pattern::Searcher;
-use log::info;
 
 #[derive(Clone, Default)]
 pub(crate) struct Header {
@@ -228,7 +228,7 @@ impl Builder {
         wt.write_u32::<BigEndian>(self.restarts.len() as u32)
             .unwrap();
         let out = wt.into_inner();
-        println!("write restart: {:?}", self.restarts);
+        info!("write restart: {:?}", self.restarts);
         assert_eq!(out.len(), sz);
         out
     }

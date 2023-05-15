@@ -95,8 +95,7 @@ pub trait Xiterator {
     fn peek(&self) -> Option<Self::Output> {
         todo!()
     }
-    fn close(&self) {
-    }
+    fn close(&self) {}
 }
 
 pub trait KeyValue<V> {

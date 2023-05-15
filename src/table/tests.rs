@@ -591,10 +591,7 @@ mod utils {
             let key = format!("{}", i).as_bytes().to_vec();
             let v = format!("{}", i).as_bytes().to_vec();
             builder
-                .add(
-                    &key,
-                    &ValueStruct::new(v.clone(), 'A' as u8, 0, i as u64),
-                )
+                .add(&key, &ValueStruct::new(v.clone(), 'A' as u8, 0, i as u64))
                 .unwrap();
         }
 

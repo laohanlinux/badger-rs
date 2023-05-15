@@ -1,11 +1,11 @@
 use crate::levels::CompactDef;
 use crate::table::table::Table;
+use log::info;
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::fmt::{Display, Formatter};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use log::info;
 use tracing::debug;
 
 #[derive(Debug)]
@@ -96,7 +96,7 @@ impl CompactStatus {
 pub(crate) struct LevelCompactStatus {
     ranges: Arc<RwLock<Vec<KeyRange>>>,
     // not any overlaps
-    del_size: Arc<AtomicU64>,           // all KeyRange size
+    del_size: Arc<AtomicU64>, // all KeyRange size
 }
 
 impl Default for LevelCompactStatus {
@@ -110,9 +110,16 @@ impl Default for LevelCompactStatus {
 
 impl Display for LevelCompactStatus {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let ranges = self.rl().iter().map(|kr| kr.to_string()).collect::<Vec<_>>();
+        let ranges = self
+            .rl()
+            .iter()
+            .map(|kr| kr.to_string())
+            .collect::<Vec<_>>();
         let del_size = self.del_size.load(Ordering::Relaxed);
-        f.debug_struct("LevelCompactStatus").field("ranges", &format!("{:?}", ranges)).field("del_size", &del_size).finish()
+        f.debug_struct("LevelCompactStatus")
+            .field("ranges", &format!("{:?}", ranges))
+            .field("del_size", &del_size)
+            .finish()
     }
 }
 
