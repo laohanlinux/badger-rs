@@ -56,7 +56,9 @@ impl Xiterator for MergeIterOverIterator {
         self.peek()
     }
 
+    // TODO look like Skip some item
     fn peek(&self) -> Option<Self::Output> {
+        println!("element size: {}", self.elements.borrow().len());
         self.cursor.borrow().cur_item.clone()
     }
 
@@ -70,6 +72,29 @@ impl MergeIterOverIterator {
         self.elements.borrow_mut().clear();
         for (index, itr) in self.all.iter().enumerate() {
             if itr.peek().is_none() {
+                if index == 0 {
+                    if itr.seek(b"k00003_00000008").is_some() {
+                        println!("find it, {} {:?}", index, self.peek());
+                        itr.rewind();
+                        let mut find = false;
+                        let mut last = vec![];
+                        while let Some(item) = itr.next() {
+                            if item.key() == b"k00003_00000008" {
+                                find = true;
+                            }
+                            last = item.key.clone();
+                            println!(">>>>>>>>>>>>>>>>>>>");
+                        }
+                        println!(
+                            ">>>>> find it, {} {:?}, {} , {:?}",
+                            index,
+                            self.peek(),
+                            find,
+                            last
+                        );
+                    }
+                }
+                println!("delete skip, {}", index);
                 continue;
             }
             self.elements.borrow_mut().push(index);
@@ -83,7 +108,7 @@ impl MergeIterOverIterator {
             }
             a_itr.peek().unwrap().key().cmp(b_itr.peek().unwrap().key())
         });
-        //println!("sets: {:?}", self.elements.borrow());
+        println!("sets: {:?}", self.elements.borrow());
     }
 
     fn move_cursor(&self) -> Option<IteratorItem> {
@@ -93,9 +118,11 @@ impl MergeIterOverIterator {
             let cur_iter = self.get_iter(*itr);
             let itr_item = cur_iter.peek();
             if itr_item.is_none() {
+                println!("iter is empty");
                 break;
             }
             if item.is_none() {
+                println!(">> iter is empty");
                 item = itr_item.clone();
                 cur_iter.next();
                 continue;
@@ -105,6 +132,7 @@ impl MergeIterOverIterator {
             }
             cur_iter.next();
         }
+        println!("{:?}", item);
         self.store_key(item.clone());
         self.reset();
         item

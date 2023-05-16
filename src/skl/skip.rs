@@ -5,7 +5,7 @@ use crate::Xiterator;
 use log::info;
 use rand::random;
 use std::fmt::{Debug, Display, Formatter};
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::{cmp, ptr, sync::atomic::AtomicI32};
 use uuid::Uuid;
@@ -18,12 +18,14 @@ pub struct SkipList {
     head: AtomicPtr<Node>,
     _ref: Arc<AtomicI32>,
     pub(crate) arena: Arc<Arena>,
+    id: Arc<AtomicU32>,
 }
 
 impl Debug for SkipList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
         f.debug_struct("SkipList")
             .field("_ref", &self._ref.load(Ordering::Relaxed))
+            .field("id", &self.id.load(Ordering::Relaxed))
             .finish()
     }
 }
@@ -36,6 +38,7 @@ impl Clone for SkipList {
             head: AtomicPtr::new(node),
             _ref: self._ref.clone(),
             arena: self.arena.clone(),
+            id: self.id.clone(),
         }
     }
 }
@@ -45,11 +48,13 @@ impl SkipList {
         let mut arena = Arena::new(arena_size);
         let v = ValueStruct::default();
         let node = Node::new(&mut arena, "".as_bytes(), &v, MAX_HEIGHT as isize);
+        let id = random::<u32>();
         Self {
             height: Arc::new(AtomicI32::new(1)),
             head: AtomicPtr::new(node),
             _ref: Arc::new(AtomicI32::new(1)),
             arena: Arc::new(arena),
+            id: Arc::new(AtomicU32::new(id)),
         }
     }
 
@@ -448,7 +453,7 @@ impl Xiterator for UniIterator {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
-        println!("{}, execute at UniIterator!", self.id);
+        println!("{:?}, {}, execute at UniIterator!", self.iter, self.id);
         if !self.reversed {
             self.iter.prev()
         } else {
@@ -487,6 +492,14 @@ impl Xiterator for UniIterator {
 pub struct SkipIterator {
     st: SkipList,
     node: AtomicPtr<Node>,
+}
+
+impl Debug for SkipIterator {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SkipIterator")
+            .field("st_id", &self.st.id.load(Ordering::Relaxed))
+            .finish()
+    }
 }
 
 impl SkipIterator {

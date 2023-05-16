@@ -52,7 +52,10 @@ pub(crate) struct KVItemInner {
 impl Display for KVItemInner {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("kv")
-            .field("key", &format!("{}", String::from_utf8_lossy(&self.key)).as_bytes())
+            .field(
+                "key",
+                &format!("{}", String::from_utf8_lossy(&self.key)).as_bytes(),
+            )
             .finish()
     }
 }
@@ -283,6 +286,7 @@ impl IteratorExt {
         if item.is_none() {
             return None;
         }
+        println!("peek key: {:?}", item);
         let mut xitem = self.new_item();
         self.fill(xitem.clone()).await;
         self.data.write().push_back(xitem.clone());
