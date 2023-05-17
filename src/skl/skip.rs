@@ -26,6 +26,7 @@ impl Debug for SkipList {
         f.debug_struct("SkipList")
             .field("_ref", &self._ref.load(Ordering::Relaxed))
             .field("id", &self.id.load(Ordering::Relaxed))
+            .field("size", &self.arena.size())
             .finish()
     }
 }
@@ -463,6 +464,7 @@ impl Xiterator for UniIterator {
 
     fn rewind(&self) -> Option<Self::Output> {
         if !self.reversed {
+            println!("{} 设置Rewind", self.id);
             self.iter.seek_to_first()
         } else {
             self.iter.seek_to_last()
@@ -593,9 +595,27 @@ impl SkipIterator {
     // Seeks position at the first entry in list.
     // Final state of iterator is valid() iff list is not empty.
     pub fn seek_to_first(&self) -> Option<IteratorItem> {
+        let first_key = unsafe {
+            String::from_utf8_lossy(self.st.find_last().unwrap().key(self.st.arena_ref()))
+        };
+        let last_key = String::from_utf8_lossy(
+            self.st
+                .get_next(self.st.get_head(), 0)
+                .unwrap()
+                .key(self.st.arena_ref()),
+        );
+        println!(
+            "{} >>>>>>>>>>>>>>>>>>, {}, {}, {}",
+            self.st.id.load(Ordering::Relaxed),
+            self.st.arena.size(),
+            last_key,
+            first_key
+        );
+
         let node = self.st.get_next(self.st.get_head(), 0);
         if node.is_none() {
             self.set_node(self.st.get_head());
+            // self.node.store(ptr::null_mut(), Ordering::Relaxed);
             return None;
         }
 

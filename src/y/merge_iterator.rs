@@ -72,26 +72,20 @@ impl MergeIterOverIterator {
         self.elements.borrow_mut().clear();
         for (index, itr) in self.all.iter().enumerate() {
             if itr.peek().is_none() {
-                if index == 0 {
-                    if itr.seek(b"k00003_00000008").is_some() {
-                        println!("find it, {} {:?}", index, self.peek());
-                        itr.rewind();
-                        let mut find = false;
-                        let mut last = vec![];
-                        while let Some(item) = itr.next() {
-                            if item.key() == b"k00003_00000008" {
-                                find = true;
-                            }
-                            last = item.key.clone();
-                            println!(">>>>>>>>>>>>>>>>>>>");
+                let key = itr.seek(b"k00003_00000008");
+                let key = key.as_ref().unwrap().key();
+                if key == b"k00003_00000008" {
+                    let cur = self.peek();
+                    println!("find it, {}, cur key {} ", index, String::from_utf8_lossy(cur.as_ref().unwrap().key()));
+                    itr.rewind();
+                    let mut find = false;
+                    let mut last = vec![];
+                    while let Some(item) = itr.next() {
+                        if item.key() == b"k00003_00000008" {
+                            find = true;
                         }
-                        println!(
-                            ">>>>> find it, {} {:?}, {} , {:?}",
-                            index,
-                            self.peek(),
-                            find,
-                            last
-                        );
+                        last = item.key.clone();
+                        println!(">>>>>>>>>>>>>>>>>>>");
                     }
                 }
                 println!("delete skip, {}", index);
