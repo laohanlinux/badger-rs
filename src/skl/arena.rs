@@ -177,7 +177,7 @@ fn t_arena_store_node() {
 fn t_arena_currency() {
     let arena = Arc::new(Arena::new(1 << 20));
     let mut waits = vec![];
-    for i in 0..100 {
+    for _i in 0..100 {
         let arena = Arc::clone(&arena);
         waits.push(spawn(move || arena.put_key(b"abc")));
     }

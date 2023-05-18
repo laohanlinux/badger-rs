@@ -1,14 +1,10 @@
 use crate::table::iterator::IteratorItem;
-use crate::y::iterator::{KeyValue, Xiterator};
-use crate::y::ValueStruct;
+use crate::y::iterator::Xiterator;
+use crate::y::{KeyValue, ValueStruct};
 use log::info;
-use std::cell::{Ref, RefCell};
+use std::cell::RefCell;
 use std::fmt;
 use std::fmt::Formatter;
-
-pub struct MergeIterElement {
-    index: usize,
-}
 
 /// Cursor of the merge's iterator.
 pub struct MergeIterCursor {
@@ -76,7 +72,11 @@ impl MergeIterOverIterator {
                 let key = key.as_ref().unwrap().key();
                 if key == b"k00003_00000008" {
                     let cur = self.peek();
-                    println!("find it, {}, cur key {} ", index, String::from_utf8_lossy(cur.as_ref().unwrap().key()));
+                    println!(
+                        "find it, {}, cur key {} ",
+                        index,
+                        String::from_utf8_lossy(cur.as_ref().unwrap().key())
+                    );
                     itr.rewind();
                     let mut find = false;
                     let mut last = vec![];

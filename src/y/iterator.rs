@@ -3,6 +3,7 @@ use crate::table::iterator::IteratorItem;
 use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE, VALUE_SIZE};
 use byteorder::BigEndian;
 use byteorder::{ReadBytesExt, WriteBytesExt};
+use log::info;
 use std::borrow::{Borrow, Cow};
 use std::cell::{Cell, RefCell, RefMut};
 use std::cmp::Ordering;
@@ -60,13 +61,6 @@ impl ValueStruct {
     }
 }
 
-impl ValueStruct {
-    #[inline]
-    pub(crate) fn get_data_mut_ptr(&self) -> *mut u8 {
-        self as *const Self as *const u8 as *mut u8
-    }
-}
-
 impl<T> From<T> for ValueStruct
 where
     T: AsRef<[u8]>,
@@ -86,16 +80,29 @@ impl Into<Vec<u8>> for &ValueStruct {
     }
 }
 
+/// A iterator trait
 pub trait Xiterator {
+    /// The iterator element
     type Output;
+    /// Same to std iterator next
     fn next(&self) -> Option<Self::Output>;
     /// Seeks to first element (or last element for reverse iterator).
     fn rewind(&self) -> Option<Self::Output>;
+    /// Seek with key, return a element that it's key >= key or <= key.
     fn seek(&self, key: &[u8]) -> Option<Self::Output>;
+    /// Peek current element
     fn peek(&self) -> Option<Self::Output> {
         todo!()
     }
-    fn close(&self) {}
+    /// The iterator indetify
+    fn id(&self) -> String {
+        return "unknown_id".to_owned();
+    }
+
+    /// Close the iterator
+    fn close(&self) {
+        info!("close the iterator: {}", self.id());
+    }
 }
 
 pub trait KeyValue<V> {
