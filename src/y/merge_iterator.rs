@@ -1,12 +1,15 @@
 use crate::table::iterator::IteratorItem;
+use crate::types::TArcMx;
 use crate::y::iterator::Xiterator;
 use crate::y::{KeyValue, ValueStruct};
+use crate::{SkipIterator, SkipList, UniIterator};
 use log::info;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Formatter;
 
-/// Cursor of the merge's iterator.
+/// Cursor of the iterator of merge.
 pub struct MergeIterCursor {
     pub is_dummy: bool,
     pub cur_item: Option<IteratorItem>,
@@ -26,6 +29,7 @@ impl Xiterator for MergeIterOverIterator {
     fn next(&self) -> Option<Self::Output> {
         if self.cursor.borrow().is_dummy {
             self.store_key(None);
+            // self.cursor.borrow_mut().is_dummy = false;
             return self.rewind();
         }
         if self.elements.borrow().is_empty() {
@@ -67,6 +71,7 @@ impl MergeIterOverIterator {
     fn reset(&self) {
         self.elements.borrow_mut().clear();
         for (index, itr) in self.all.iter().enumerate() {
+            // THIS is a test code
             if itr.peek().is_none() {
                 let key = itr.seek(b"k00003_00000008");
                 let key = key.as_ref().unwrap().key();
@@ -94,7 +99,7 @@ impl MergeIterOverIterator {
             self.elements.borrow_mut().push(index);
         }
 
-        self.elements.borrow_mut().sort_unstable_by(|a, b| {
+        self.elements.borrow_mut().sort_by(|a, b| {
             let a_itr = self.all.get(*a).unwrap();
             let b_itr = self.all.get(*b).unwrap();
             if a_itr.peek().unwrap().key() == b_itr.peek().unwrap().key() {
@@ -137,6 +142,7 @@ impl MergeIterOverIterator {
     }
 
     fn store_key(&self, item: Option<IteratorItem>) {
+        // TODO notice is_dummy check, If the iter execute to last, is_dummy?
         self.cursor.borrow_mut().is_dummy = item.is_none();
         self.cursor.borrow_mut().cur_item = item;
     }
@@ -235,4 +241,62 @@ fn merge_iter_element() {
     let miter = builder.build();
     miter.next();
     assert_eq!(miter.peek().unwrap().key(), b"abc");
+}
+
+#[tokio::test]
+async fn merge_iter_skip() {
+    let st1 = SkipList::new(1 << 20);
+    let st2 = SkipList::new(1 << 20);
+    let st3 = SkipList::new(1 << 20);
+    let mut wg = awaitgroup::WaitGroup::new();
+    let keys = TArcMx::new(tokio::sync::Mutex::new(vec![]));
+    let n = 300;
+    let m = 10;
+    for i in 0..n {
+        let wk = wg.worker();
+        let keys = keys.clone();
+        let st1 = st1.clone();
+        let st2 = st2.clone();
+        let st3 = st3.clone();
+        tokio::spawn(async move {
+            for j in 0..m {
+                let key = format!("k{:05}_{:08}", i, j).into_bytes().to_vec();
+                keys.lock().await.push(key.clone());
+                if j % 3 == 0 {
+                    st1.put(&key, ValueStruct::new(key.clone(), 0, 0, 0));
+                } else if j % 3 == 1 {
+                    st2.put(&key, ValueStruct::new(key.clone(), 0, 0, 0));
+                } else {
+                    st3.put(&key, ValueStruct::new(key.clone(), 0, 0, 0));
+                }
+            }
+            wk.done();
+        });
+    }
+
+    wg.wait().await;
+    println!("{}", st1.node_count());
+    println!("{}", st2.node_count());
+    println!("{}", st3.node_count());
+    assert_eq!(
+        st1.node_count() + st2.node_count() + st3.node_count(),
+        m * n
+    );
+    let builder = MergeIterOverBuilder::default()
+        // .add(Box::new(UniIterator::new(st1, false)))
+        // .add(Box::new(UniIterator::new(st2, false)))
+        .add(Box::new(UniIterator::new(st3, false)));
+
+    let miter = builder.build();
+    let mut count = 0;
+    let mut got = HashSet::new();
+    while let Some(value) = miter.next() {
+        count += 1;
+        got.insert(value.key);
+        if count == m * n {
+            break;
+        }
+    }
+    assert_eq!(count, m *n);
+    assert_eq!(count, got.len() as u32);
 }

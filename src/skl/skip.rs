@@ -378,6 +378,16 @@ impl SkipList {
         self.arena_ref().size()
     }
 
+    /// Returns the keys, Notice it just travel all keys for statssing
+    pub fn node_count(&self) -> u32 {
+        let cur = self.new_cursor();
+        let mut count = 0;
+        while let Some(_) = cur.next() {
+            count += 1;
+        }
+        return count;
+    }
+
     pub fn key_values(&self) -> Vec<(&[u8], ValueStruct)> {
         let mut cur = self.get_head().get_next_offset(0);
         let mut v = vec![];
