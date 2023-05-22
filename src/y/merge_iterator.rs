@@ -15,10 +15,80 @@ pub struct MergeIterCursor {
     pub cur_item: Option<IteratorItem>,
 }
 
+
+pub struct MergeCursor {
+    pub index: isize,
+    pub cur_item: Option<IteratorItem>,
+}
+
+pub struct MergeIterator {
+    pub reverse: bool,
+    pub itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    pub cursor: RefCell<MergeCursor>,
+}
+
+impl Xiterator for MergeIterator {
+    type Output = IteratorItem;
+
+    fn next(&self) -> Option<Self::Output> {
+        if self.itrs.is_empty() {
+            return None;
+        }
+        if self.cursor.borrow().index == -1 {
+            for itr in &self.itrs {
+                itr.rewind();
+            }
+            self.cursor.borrow_mut().index = 0;
+        }
+        if !self.reverse {
+            let mut min = None;
+            let mut index = 0;
+            for (_index, itr) in self.itrs.iter().enumerate() {
+                // TODO avoid to clone value
+                if let Some(item) = itr.peek() {
+                    if min.is_none() {
+                        min.replace(item);
+                        index = _index;
+                    } else {
+                        if min.as_ref().unwrap().key() > item.key() {
+                            min.replace(item);
+                            index = _index;
+                        }
+                    }
+                }
+            }
+            if min.is_some() {
+                self.itrs.get(index).as_ref().unwrap().next();
+            }
+            self.cursor.borrow_mut().cur_item = min;
+        } else {}
+        self.cursor.borrow().cur_item.clone()
+    }
+
+    fn rewind(&self) -> Option<Self::Output> {
+        for itr in &self.itrs {
+            itr.rewind();
+        }
+        self.peek()
+    }
+
+    fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+        todo!()
+    }
+
+    fn peek(&self) -> Option<Self::Output> {
+        self.cursor.borrow().cur_item.clone()
+    }
+}
+
+impl MergeIterator {
+
+}
+
 /// Merge iterator,
 pub struct MergeIterOverIterator {
     pub reverse: bool,
-    pub all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    pub all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     pub elements: RefCell<Vec<usize>>,
     pub cursor: RefCell<MergeIterCursor>,
 }
@@ -137,7 +207,7 @@ impl MergeIterOverIterator {
         item
     }
 
-    fn get_iter(&self, index: usize) -> &Box<dyn Xiterator<Output = IteratorItem>> {
+    fn get_iter(&self, index: usize) -> &Box<dyn Xiterator<Output=IteratorItem>> {
         self.all.get(index).unwrap()
     }
 
@@ -150,19 +220,19 @@ impl MergeIterOverIterator {
 
 #[derive(Default)]
 pub struct MergeIterOverBuilder {
-    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     reverse: bool,
 }
 
 impl MergeIterOverBuilder {
-    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output=IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+        iters: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     ) -> MergeIterOverBuilder {
         self.all.extend(iters);
         self
@@ -177,6 +247,14 @@ impl MergeIterOverBuilder {
                 cur_item: None,
             }),
             elements: RefCell::new(vec![]),
+        }
+    }
+    
+    pub  fn build2(mut self) -> MergeIterator {
+        MergeIterator {
+            reverse: self.reverse,
+            itrs: self.all,
+            cursor: RefCell::new(MergeCursor { index: -1, cur_item: None }),
         }
     }
 }
@@ -287,7 +365,13 @@ async fn merge_iter_skip() {
         // .add(Box::new(UniIterator::new(st2, false)))
         .add(Box::new(UniIterator::new(st3, false)));
 
-    let miter = builder.build();
+    {
+        let itr = builder.all.first().unwrap();
+        while let Some(value) = itr.next() {
+            println!("{:?}", value.key());
+        }
+    }
+    let miter = builder.build2();
     let mut count = 0;
     let mut got = HashSet::new();
     while let Some(value) = miter.next() {
@@ -297,6 +381,6 @@ async fn merge_iter_skip() {
             break;
         }
     }
-    assert_eq!(count, m *n);
+    assert_eq!(count, m * n);
     assert_eq!(count, got.len() as u32);
 }

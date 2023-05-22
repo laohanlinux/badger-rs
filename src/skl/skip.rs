@@ -1085,6 +1085,11 @@ mod tests2 {
     const ARENA_SIZE: usize = 1 << 20;
 
     #[test]
+    fn uniterator() {
+        crate::test_util::tracing_log();
+    }
+
+    #[test]
     fn atomic_swap_skip_list() {
         crate::test_util::tracing_log();
         let st = SkipList::new(1 << 20);
@@ -1102,4 +1107,6 @@ mod tests2 {
             )
         }
     }
+
 }
+
