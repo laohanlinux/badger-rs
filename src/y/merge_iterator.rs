@@ -15,7 +15,6 @@ pub struct MergeIterCursor {
     pub cur_item: Option<IteratorItem>,
 }
 
-
 pub struct MergeCursor {
     pub index: isize,
     pub cur_item: Option<IteratorItem>,
@@ -23,7 +22,7 @@ pub struct MergeCursor {
 
 pub struct MergeIterator {
     pub reverse: bool,
-    pub itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
 }
 
@@ -61,7 +60,8 @@ impl Xiterator for MergeIterator {
                 self.itrs.get(index).as_ref().unwrap().next();
             }
             self.cursor.borrow_mut().cur_item = min;
-        } else {}
+        } else {
+        }
         self.cursor.borrow().cur_item.clone()
     }
 
@@ -81,14 +81,12 @@ impl Xiterator for MergeIterator {
     }
 }
 
-impl MergeIterator {
-
-}
+impl MergeIterator {}
 
 /// Merge iterator,
 pub struct MergeIterOverIterator {
     pub reverse: bool,
-    pub all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    pub all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     pub elements: RefCell<Vec<usize>>,
     pub cursor: RefCell<MergeIterCursor>,
 }
@@ -207,7 +205,7 @@ impl MergeIterOverIterator {
         item
     }
 
-    fn get_iter(&self, index: usize) -> &Box<dyn Xiterator<Output=IteratorItem>> {
+    fn get_iter(&self, index: usize) -> &Box<dyn Xiterator<Output = IteratorItem>> {
         self.all.get(index).unwrap()
     }
 
@@ -220,19 +218,19 @@ impl MergeIterOverIterator {
 
 #[derive(Default)]
 pub struct MergeIterOverBuilder {
-    all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     reverse: bool,
 }
 
 impl MergeIterOverBuilder {
-    pub fn add(mut self, x: Box<dyn Xiterator<Output=IteratorItem>>) -> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     ) -> MergeIterOverBuilder {
         self.all.extend(iters);
         self
@@ -249,12 +247,15 @@ impl MergeIterOverBuilder {
             elements: RefCell::new(vec![]),
         }
     }
-    
-    pub  fn build2(mut self) -> MergeIterator {
+
+    pub fn build2(mut self) -> MergeIterator {
         MergeIterator {
             reverse: self.reverse,
             itrs: self.all,
-            cursor: RefCell::new(MergeCursor { index: -1, cur_item: None }),
+            cursor: RefCell::new(MergeCursor {
+                index: -1,
+                cur_item: None,
+            }),
         }
     }
 }
@@ -361,8 +362,8 @@ async fn merge_iter_skip() {
         m * n
     );
     let builder = MergeIterOverBuilder::default()
-        // .add(Box::new(UniIterator::new(st1, false)))
-        // .add(Box::new(UniIterator::new(st2, false)))
+        .add(Box::new(UniIterator::new(st1, false)))
+        .add(Box::new(UniIterator::new(st2, false)))
         .add(Box::new(UniIterator::new(st3, false)));
 
     {
@@ -377,9 +378,6 @@ async fn merge_iter_skip() {
     while let Some(value) = miter.next() {
         count += 1;
         got.insert(value.key);
-        if count == m * n {
-            break;
-        }
     }
     assert_eq!(count, m * n);
     assert_eq!(count, got.len() as u32);

@@ -466,9 +466,9 @@ impl Xiterator for UniIterator {
     fn next(&self) -> Option<Self::Output> {
         println!("{:?}, {}, execute at UniIterator!", self.iter, self.id);
         if !self.reversed {
-            self.iter.prev()
-        } else {
             self.iter.next()
+        } else {
+            self.iter.prev()
         }
     }
 
@@ -503,6 +503,7 @@ impl Xiterator for UniIterator {
 // Try GAT lifetime
 pub struct SkipIterator {
     st: SkipList,
+    // store current node
     node: AtomicPtr<Node>,
 }
 
@@ -515,13 +516,19 @@ impl Debug for SkipIterator {
 }
 
 impl SkipIterator {
+    // Return a SkipIterator, Notice, the SkipIterator.st == st.header node
     pub fn new(st: SkipList) -> SkipIterator {
-        SkipIterator {
+        let itr = SkipIterator {
             st,
             node: AtomicPtr::new(ptr::null_mut()),
-        }
+        };
+
+        let header = itr.st.get_head() as *const Node as *mut Node;
+        itr.node.store(header, Ordering::Relaxed);
+        itr
     }
 
+    // Get the node's value, return None if the node is skip list header node
     pub fn get_item_by_node(&self, node: &Node) -> Option<IteratorItem> {
         if ptr::eq(node, self.st.get_head()) {
             return None;
@@ -557,10 +564,16 @@ impl SkipIterator {
     // Advance to the next position
     pub fn next(&self) -> Option<IteratorItem> {
         let node = self.node.load(Ordering::Relaxed);
+        // If node is null, indicate cursor move the end.
         if node.is_null() {
             return None;
         }
         let next = self.st.get_next(unsafe { node.as_ref().unwrap() }, 0);
+        if next.is_none() {
+            self.node.store(ptr::null_mut(), Ordering::Relaxed);
+            info!("store null");
+            return None;
+        }
         let next = next.unwrap() as *const Node as *mut Node;
         self.node.store(next, Ordering::Relaxed);
         self.get_item_by_node(unsafe { next.as_ref().unwrap() })
@@ -568,7 +581,10 @@ impl SkipIterator {
 
     // Advances to the previous position.
     pub fn prev(&self) -> Option<IteratorItem> {
-        assert!(self.peek().is_some());
+        //assert!(self.peek().is_some());
+        if self.node.load(Ordering::Relaxed).is_null() {
+            return None;
+        }
         let (node, _) = self.st.find_near(self.peek().unwrap().key(), true, false);
         if node.is_none() {
             self.set_node(self.st.get_head());
@@ -990,6 +1006,15 @@ mod tests {
             assert!(!cur.valid());
             cur.close();
         }
+        // Iterator all
+        {
+            let cur = st.new_cursor();
+            let mut count = 0;
+            while let Some(_) = cur.next() {
+                count += 1;
+            }
+            assert_eq!(count, n);
+        }
     }
 
     #[test]
@@ -1079,7 +1104,7 @@ mod tests {
 }
 
 mod tests2 {
-    use crate::{SkipList, ValueStruct};
+    use crate::{SkipIterator, SkipList, UniIterator, ValueStruct, Xiterator};
     use tracing::info;
 
     const ARENA_SIZE: usize = 1 << 20;
@@ -1087,6 +1112,21 @@ mod tests2 {
     #[test]
     fn uniterator() {
         crate::test_util::tracing_log();
+        const n: usize = 100;
+        let st = SkipList::new(ARENA_SIZE);
+        for i in 0..100 {
+            let key = format!("{:05}", i);
+            st.put(
+                key.as_bytes(),
+                ValueStruct::new(key.as_bytes().to_vec(), 0, 0, i as u64),
+            );
+        }
+        let itr = SkipIterator::new(st);
+        let mut count = 1;
+        while let Some(_) = itr.next() {
+            println!("count {}", count);
+            count += 1;
+        }
     }
 
     #[test]
@@ -1107,6 +1147,4 @@ mod tests2 {
             )
         }
     }
-
 }
-
