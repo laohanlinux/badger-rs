@@ -8,6 +8,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::{cmp, ptr, sync::atomic::AtomicI32};
+use libc::NOEXPR;
 use uuid::Uuid;
 
 use super::{arena::Arena, node::Node};
@@ -452,6 +453,10 @@ pub struct UniIterator {
 impl UniIterator {
     pub fn new(st: SkipList, reversed: bool) -> UniIterator {
         let itr = SkipIterator::new(st);
+        // Notice, If reversed is true, next should be last node when first call it.
+        if reversed {
+            itr.node.store(ptr::null_mut(), Ordering::Relaxed);
+        }
         UniIterator {
             iter: itr,
             reversed,
@@ -474,7 +479,6 @@ impl Xiterator for UniIterator {
 
     fn rewind(&self) -> Option<Self::Output> {
         if !self.reversed {
-            println!("{} 设置Rewind", self.id);
             self.iter.seek_to_first()
         } else {
             self.iter.seek_to_last()
@@ -542,6 +546,7 @@ impl SkipIterator {
         })
     }
 
+    #[inline]
     pub fn peek(&self) -> Option<IteratorItem> {
         unsafe {
             self.node
@@ -581,8 +586,11 @@ impl SkipIterator {
 
     // Advances to the previous position.
     pub fn prev(&self) -> Option<IteratorItem> {
-        //assert!(self.peek().is_some());
-        if self.node.load(Ordering::Relaxed).is_null() {
+        let cur = self.node.load(Ordering::Relaxed);
+        if cur.is_null() {
+            return self.seek_to_last();
+        }
+        if ptr::eq(cur, self.st.get_head()) {
             return None;
         }
         let (node, _) = self.st.find_near(self.peek().unwrap().key(), true, false);
@@ -593,6 +601,25 @@ impl SkipIterator {
         self.set_node(node.unwrap());
         self.get_item_by_node(node.unwrap())
     }
+    // pub fn prev(&self) -> Option<IteratorItem> {
+    //     let cur = self.node.load(Ordering::Relaxed);
+    //     // The node is end
+    //     if cur.is_null() {
+    //         return self.seek_to_last();
+    //     }
+    //     // The node is start
+    //     if ptr::eq(cur, self.st.get_head()) {
+    //         return None;
+    //     }
+    //     // TODO Opz
+    //     let (node, _) = self.st.find_near(self.peek().as_ref().unwrap().key(), true, false);
+    //     if node.is_none() {
+    //         self.set_node(self.st.get_head());
+    //         return None;
+    //     }
+    //     self.set_node(node.unwrap());
+    //     self.get_item_by_node(node.unwrap())
+    // }
 
     // Advances to the first entry with a key >= target.
     pub fn seek(&self, key: &[u8]) -> Option<IteratorItem> {
@@ -630,18 +657,9 @@ impl SkipIterator {
                 .unwrap()
                 .key(self.st.arena_ref()),
         );
-        println!(
-            "{} >>>>>>>>>>>>>>>>>>, {}, {}, {}",
-            self.st.id.load(Ordering::Relaxed),
-            self.st.arena.size(),
-            last_key,
-            first_key
-        );
-
         let node = self.st.get_next(self.st.get_head(), 0);
         if node.is_none() {
             self.set_node(self.st.get_head());
-            // self.node.store(ptr::null_mut(), Ordering::Relaxed);
             return None;
         }
 
@@ -1110,11 +1128,11 @@ mod tests2 {
     const ARENA_SIZE: usize = 1 << 20;
 
     #[test]
-    fn uniterator() {
+    fn skipiterator() {
         crate::test_util::tracing_log();
-        const n: usize = 100;
+        const n: usize = 1000;
         let st = SkipList::new(ARENA_SIZE);
-        for i in 0..100 {
+        for i in 0..n {
             let key = format!("{:05}", i);
             st.put(
                 key.as_bytes(),
@@ -1122,11 +1140,44 @@ mod tests2 {
             );
         }
         let itr = SkipIterator::new(st);
-        let mut count = 1;
+        let mut count = 0;
         while let Some(_) = itr.next() {
-            println!("count {}", count);
             count += 1;
         }
+        assert_eq!(count, n);
+        itr.seek_to_last();
+        count -= 1;
+        while let Some(_) = itr.prev() {
+            count -= 1;
+        }
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn uniterator() {
+        crate::test_util::tracing_log();
+        const n: usize = 1000;
+        let st = SkipList::new(ARENA_SIZE);
+        for i in 0..n {
+            let key = format!("{:05}", i);
+            st.put(
+                key.as_bytes(),
+                ValueStruct::new(key.as_bytes().to_vec(), 0, 0, i as u64),
+            );
+        }
+        let itr = UniIterator::new(st.clone(), false);
+        let mut count = 0;
+        while let Some(_) = itr.next() {
+            count += 1;
+        }
+        assert_eq!(count, n);
+
+        let itr = UniIterator::new(st, true);
+        assert!(itr.peek().is_none());
+        while let Some(_) = itr.next() {
+            count -= 1;
+        }
+        assert_eq!(count, 0);
     }
 
     #[test]

@@ -223,6 +223,11 @@ pub struct MergeIterOverBuilder {
 }
 
 impl MergeIterOverBuilder {
+    pub fn reverse(mut self, reverse: bool) -> MergeIterOverBuilder {
+        self.reverse = reverse;
+        self
+    }
+
     pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
@@ -324,6 +329,7 @@ fn merge_iter_element() {
 
 #[tokio::test]
 async fn merge_iter_skip() {
+    crate::test_util::tracing_log();
     let st1 = SkipList::new(1 << 20);
     let st2 = SkipList::new(1 << 20);
     let st3 = SkipList::new(1 << 20);
@@ -354,31 +360,66 @@ async fn merge_iter_skip() {
     }
 
     wg.wait().await;
-    println!("{}", st1.node_count());
-    println!("{}", st2.node_count());
-    println!("{}", st3.node_count());
     assert_eq!(
         st1.node_count() + st2.node_count() + st3.node_count(),
         m * n
     );
-    let builder = MergeIterOverBuilder::default()
-        .add(Box::new(UniIterator::new(st1, false)))
-        .add(Box::new(UniIterator::new(st2, false)))
-        .add(Box::new(UniIterator::new(st3, false)));
-
+    // reverse = false
     {
-        let itr = builder.all.first().unwrap();
-        while let Some(value) = itr.next() {
-            println!("{:?}", value.key());
+        let builder = MergeIterOverBuilder::default()
+            .add(Box::new(UniIterator::new(st1.clone(), false)))
+            .add(Box::new(UniIterator::new(st2.clone(), false)))
+            .add(Box::new(UniIterator::new(st3.clone(), false)));
+        let miter = builder.build2();
+        assert!(miter.peek().is_none());
+        let mut count = 0;
+        let mut got = vec![];
+        while let Some(value) = miter.next() {
+            count += 1;
+            got.push(value.key);
+        }
+        assert_eq!(count, m * n);
+        assert_eq!(count, got.len() as u32);
+        for item in keys.lock().await.iter() {
+            let exits = got.contains(item);
+            assert!(exits);
+        }
+        let mut copy = got.clone();
+        copy.sort();
+        for (index , item) in got.iter().enumerate() {
+            assert_eq!(item, copy.get(index).unwrap());
         }
     }
-    let miter = builder.build2();
-    let mut count = 0;
-    let mut got = HashSet::new();
-    while let Some(value) = miter.next() {
-        count += 1;
-        got.insert(value.key);
-    }
-    assert_eq!(count, m * n);
-    assert_eq!(count, got.len() as u32);
+
+    // reverse = true
+     {
+         let builder = MergeIterOverBuilder::default()
+             .reverse(true)
+             .add(Box::new(UniIterator::new(st1, true)))
+             .add(Box::new(UniIterator::new(st2, true)))
+             .add(Box::new(UniIterator::new(st3, true)));
+         let miter = builder.build2();
+         assert!(miter.peek().is_none());
+         let mut count = 0;
+         let mut got = vec![];
+         while let Some(value) = miter.next() {
+             count += 1;
+             got.push(value.key);
+         }
+         assert_eq!(count, m * n);
+         assert_eq!(count, got.len() as u32);
+         for item in keys.lock().await.iter() {
+             let exits = got.contains(item);
+             assert!(exits);
+         }
+         let mut copy = got.clone();
+         copy.sort();
+         let mut buffer = vec![];
+         for (index , item) in got.iter().rev().enumerate() {
+             // assert_eq!(item, copy.get(index).unwrap());
+            // info!("{} {}", index, String::from_utf8_lossy(item));
+             buffer.push(format!("{}, {}", index, String::from_utf8_lossy(item)));
+         }
+         tokio::fs::write("log.txt", buffer.join("\n")).await;
+     }
 }
