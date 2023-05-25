@@ -1,12 +1,7 @@
 use crate::iterator::PreFetchStatus::Prefetched;
 use crate::kv::_BADGER_PREFIX;
 use crate::types::{ArcMx, ArcRW, Channel, Closer, TArcMx, TArcRW};
-use crate::{
-    kv::KV,
-    types::XArc,
-    value_log::{MetaBit, ValuePointer},
-    ArcBlockBytes, BlockBytes, Chunk, Decode, Result, Xiterator, EMPTY_SLICE,
-};
+use crate::{kv::KV, types::XArc, value_log::{MetaBit, ValuePointer}, ArcBlockBytes, BlockBytes, Chunk, Decode, Result, Xiterator, EMPTY_SLICE, MergeIterator};
 use crate::{MergeIterOverIterator, ValueStruct};
 use atom_box::AtomBox;
 use atomic::Atomic;
@@ -207,7 +202,7 @@ pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
 // Helps iterating over the KV pairs in a lexicographically sorted order.
 pub(crate) struct IteratorExt {
     kv: XArc<KV>,
-    itr: MergeIterOverIterator,
+    itr: MergeIterator,
     opt: IteratorOptions,
     item: ArcRW<Option<KVItem>>,
     data: ArcRW<std::collections::LinkedList<KVItem>>,
@@ -216,7 +211,7 @@ pub(crate) struct IteratorExt {
 impl IteratorExt {
     pub(crate) fn new(
         kv: XArc<KV>,
-        itr: MergeIterOverIterator,
+        itr: MergeIterator,
         opt: IteratorOptions,
     ) -> IteratorExt {
         IteratorExt {

@@ -1000,7 +1000,7 @@ impl ArcKV {
             itrs.push(iter);
         }
         itrs.extend(self.must_lc().as_iterator(opt.reverse));
-        let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
+        let mitr = MergeIterOverBuilder::default().add_batch(itrs).build2();
         IteratorExt::new(self.clone(), mitr, opt)
     }
 }

@@ -3,7 +3,7 @@ use crate::types::TArcMx;
 use crate::y::iterator::Xiterator;
 use crate::y::{KeyValue, ValueStruct};
 use crate::{SkipIterator, SkipList, UniIterator};
-use log::info;
+use log::{debug, info};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt;
@@ -16,7 +16,7 @@ pub struct MergeIterCursor {
 }
 
 pub struct MergeCursor {
-    pub index: isize,
+    pub index: usize,
     pub cur_item: Option<IteratorItem>,
 }
 
@@ -33,36 +33,60 @@ impl Xiterator for MergeIterator {
         if self.itrs.is_empty() {
             return None;
         }
-        if self.cursor.borrow().index == -1 {
+        if self.cursor.borrow().index == usize::MAX {
             for itr in &self.itrs {
                 itr.rewind();
             }
             self.cursor.borrow_mut().index = 0;
         }
-        if !self.reverse {
-            let mut min = None;
-            let mut index = 0;
-            for (_index, itr) in self.itrs.iter().enumerate() {
-                // TODO avoid to clone value
-                if let Some(item) = itr.peek() {
-                    if min.is_none() {
-                        min.replace(item);
-                        index = _index;
-                    } else {
-                        if min.as_ref().unwrap().key() > item.key() {
-                            min.replace(item);
-                            index = _index;
+        let mut latest: Option<IteratorItem> = None;
+        let mut index = usize::MAX;
+        let need_cmp = |a: &[u8], b: &[u8]| -> std::cmp::Ordering {
+            if !self.reverse {
+                return a.cmp(b);
+            }
+            b.cmp(a)
+        };
+
+        for (itr_index, itr) in self.itrs.iter().enumerate() {
+            // debug!("itr {}", itr_index);
+           if let Some(item) = itr.peek() {
+                if let Some(have_latest) = &mut latest {
+                    match need_cmp(have_latest.key(), item.key()) {
+                        std::cmp::Ordering::Less => {
+                            // debug!("less");
+                        }
+                        std::cmp::Ordering::Equal => {
+                            // move it
+                            itr.next();
+                            // debug!("equal");
+                        }
+                        std::cmp::Ordering::Greater => {
+                            index = itr_index;
+                            *have_latest = item;
+                            // debug!("greater");
                         }
                     }
+                } else {
+                    latest.replace(item);
+                    index = itr_index;
+                    // debug!("None");
                 }
             }
-            if min.is_some() {
-                self.itrs.get(index).as_ref().unwrap().next();
-            }
-            self.cursor.borrow_mut().cur_item = min;
-        } else {
         }
-        self.cursor.borrow().cur_item.clone()
+
+        // info!("Do one {}", index);
+        if index != usize::MAX {
+            assert!(latest.is_some());
+            self.cursor.borrow_mut().cur_item.replace(latest.unwrap());
+            self.cursor.borrow_mut().index = index;
+            self.itrs.get(index).as_ref().unwrap().next();
+            // debug!("move it");
+        } else {
+            self.cursor.borrow_mut().index = 0;
+            self.cursor.borrow_mut().cur_item.take();
+        }
+        self.peek()
     }
 
     fn rewind(&self) -> Option<Self::Output> {
@@ -76,6 +100,7 @@ impl Xiterator for MergeIterator {
         todo!()
     }
 
+    // MayBe we avoid copy!
     fn peek(&self) -> Option<Self::Output> {
         self.cursor.borrow().cur_item.clone()
     }
@@ -258,7 +283,7 @@ impl MergeIterOverBuilder {
             reverse: self.reverse,
             itrs: self.all,
             cursor: RefCell::new(MergeCursor {
-                index: -1,
+                index: usize::MAX,
                 cur_item: None,
             }),
         }
@@ -364,6 +389,7 @@ async fn merge_iter_skip() {
         st1.node_count() + st2.node_count() + st3.node_count(),
         m * n
     );
+    keys.lock().await.sort();
     // reverse = false
     {
         let builder = MergeIterOverBuilder::default()
@@ -373,53 +399,34 @@ async fn merge_iter_skip() {
         let miter = builder.build2();
         assert!(miter.peek().is_none());
         let mut count = 0;
-        let mut got = vec![];
         while let Some(value) = miter.next() {
+            info!("{}", String::from_utf8_lossy(value.key()));
+            let expect = keys.lock().await;
+            let expect = expect.get(count).unwrap();
+            assert_eq!(value.key(), expect);
             count += 1;
-            got.push(value.key);
         }
-        assert_eq!(count, m * n);
-        assert_eq!(count, got.len() as u32);
-        for item in keys.lock().await.iter() {
-            let exits = got.contains(item);
-            assert!(exits);
-        }
-        let mut copy = got.clone();
-        copy.sort();
-        for (index , item) in got.iter().enumerate() {
-            assert_eq!(item, copy.get(index).unwrap());
-        }
+        assert_eq!(count as u32, m * n);
     }
 
     // reverse = true
-     {
-         let builder = MergeIterOverBuilder::default()
-             .reverse(true)
-             .add(Box::new(UniIterator::new(st1, true)))
-             .add(Box::new(UniIterator::new(st2, true)))
-             .add(Box::new(UniIterator::new(st3, true)));
-         let miter = builder.build2();
-         assert!(miter.peek().is_none());
-         let mut count = 0;
-         let mut got = vec![];
-         while let Some(value) = miter.next() {
-             count += 1;
-             got.push(value.key);
-         }
-         assert_eq!(count, m * n);
-         assert_eq!(count, got.len() as u32);
-         for item in keys.lock().await.iter() {
-             let exits = got.contains(item);
-             assert!(exits);
-         }
-         let mut copy = got.clone();
-         copy.sort();
-         let mut buffer = vec![];
-         for (index , item) in got.iter().rev().enumerate() {
-             // assert_eq!(item, copy.get(index).unwrap());
-            // info!("{} {}", index, String::from_utf8_lossy(item));
-             buffer.push(format!("{}, {}", index, String::from_utf8_lossy(item)));
-         }
-         tokio::fs::write("log.txt", buffer.join("\n")).await;
-     }
+    {
+        let builder = MergeIterOverBuilder::default()
+            .reverse(true)
+            .add(Box::new(UniIterator::new(st1, true)))
+            .add(Box::new(UniIterator::new(st2, true)))
+            .add(Box::new(UniIterator::new(st3, true)));
+        let miter = builder.build2();
+        assert!(miter.peek().is_none());
+        let mut count = 0;
+        keys.lock().await.sort_by(|a, b | b.cmp(a));
+        while let Some(value) = miter.next() {
+            info!("{}", String::from_utf8_lossy(value.key()));
+            let expect = keys.lock().await;
+            let expect = expect.get(count).unwrap();
+            assert_eq!(value.key(), expect);
+            count += 1;
+        }
+        assert_eq!(count as u32, m * n);
+    }
 }
