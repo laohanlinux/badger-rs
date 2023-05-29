@@ -22,40 +22,30 @@ mod utils {
     use std::fmt::format;
     use std::fs::File;
     use std::io::{Cursor, Seek, SeekFrom, Write};
+    use std::path;
     use std::process::Output;
     use std::sync::Arc;
     use std::thread::spawn;
+    use log::debug;
     use tokio::io::AsyncSeekExt;
     use tokio_metrics::TaskMetrics;
 
     #[test]
     fn it_block_iterator1() {
-        let mut builder = new_builder2(10000);
-        let data = builder.finish();
+        let data = new_builder2(10000).finish();
         let it = BlockIterator::new(data);
-        // let mut i = 0;
-        // while let Some(item) = it.next() {
-        //     println!(" key: {:?}, value: {:?}", item.key(), item.value());
-        //     i += 1;
-        // }
-        // println!("{}", i);
-        let item = it
-            .seek(format!("{}", 0).as_bytes(), IteratorSeek::Origin)
-            .unwrap();
-        println!("==> {:?}", item.value());
+        let got = it.seek(format!("{}", 0).as_bytes(), IteratorSeek::Origin);
+        assert!(got.is_some());
     }
 
     #[test]
     fn it_block_iterator() {
-        let mut builder = new_builder("anc", 10000);
-        let data = builder.finish();
-        let it = BlockIterator::new(data);
+        let itr = BlockIterator::new(new_builder("anc", 10000).finish());
         let mut i = 0;
-        while let Some(item) = it.next() {
-            println!(" key: {:?}, value: {:?}", item.key(), item.value());
+        while let Some(item) = itr.next() {
             i += 1;
         }
-        println!("{}", i);
+        assert_eq!(i, 10000);
     }
 
     #[test]
@@ -504,28 +494,6 @@ mod utils {
     }
 
     #[test]
-    fn currency() {
-        use std::fs;
-        let (mut fp, path) = build_test_table("key", 101);
-        fp.set_len(0);
-        fp.write_all(&vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).unwrap();
-        fp.seek(SeekFrom::Start(0)).unwrap();
-        let mut joins = vec![];
-        for i in 0..10 {
-            let mut fp = fp.try_clone().unwrap();
-            joins.push(spawn(move || {
-                let mut buffer = vec![0u8; 1];
-                read_at(&fp, &mut buffer, i).unwrap();
-                println!("{:?}", buffer);
-            }));
-        }
-
-        for join in joins {
-            join.join().unwrap();
-        }
-    }
-
-    #[test]
     fn t_table() {
         let f1 = TableBuilder::new()
             .mode(FileLoadingMode::MemoryMap)
@@ -535,17 +503,18 @@ mod utils {
             ])
             .build();
         let itr = ConcatIterator::new(vec![f1], false);
+        let mut count = 0;
+        while let Some(_) = itr.next() {
+            count += 1;
+        }
+        assert_eq!(count, 2);
     }
 
     fn build_table(mut key_value: Vec<(Vec<u8>, Vec<u8>)>) -> (File, String) {
         let mut builder = Builder::default();
-        let file_name = format!(
-            "{}/{}{}",
-            temp_dir().to_str().unwrap(),
-            random::<u64>(),
-            FILE_SUFFIX
-        );
-        let mut fp = open_synced_file(&file_name, true).unwrap();
+        let dir = temp_dir().join(random::<u64>().to_string() + FILE_SUFFIX);
+        let file_name = dir.to_str().unwrap();
+        let mut fp = open_synced_file(file_name, true).unwrap();
         key_value.sort_by(|a, b| a.0.cmp(&b.0));
 
         for (i, (key, value)) in key_value.iter().enumerate() {
@@ -559,9 +528,9 @@ mod utils {
         fp.write_all(&builder.finish()).unwrap();
         fp.flush().unwrap();
         drop(fp);
-        println!("{}", file_name);
-        let fp = open_synced_file(&file_name, true).unwrap();
-        (fp, file_name)
+        debug!("table file: {}", file_name);
+        let fp = open_synced_file(file_name, true).unwrap();
+        (fp, file_name.to_string())
     }
 
     fn new_builder(prefix: &str, n: isize) -> Builder {
@@ -646,11 +615,6 @@ mod utils {
             self
         }
 
-        // fn prefix(mut self, prefix: &str) -> Self {
-        //     self.key_prefix = prefix.to_string();
-        //     self
-        // }
-
         fn build(&mut self) -> Table {
             let table = build_table(self.key_value.clone());
             self.path = table.1.clone();
@@ -667,27 +631,4 @@ mod utils {
             Table::new(t1)
         }
     }
-}
-
-#[test]
-fn await_() {
-    use async_trait;
-    use tokio; // 1.24.1 // 0.1.61
-
-    pub trait XIterator {}
-
-    tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(async move {
-            tokio::spawn(async move {
-                {
-                    let v: Vec<Box<dyn XIterator>> = vec![];
-                }
-
-                let v: Vec<Box<dyn XIterator + Send + Sync + 'static>> = vec![];
-                let c = tokio::sync::mpsc::channel::<i32>(100);
-                c.0.send(100).await;
-                100
-            });
-        });
 }

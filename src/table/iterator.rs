@@ -274,7 +274,8 @@ impl IteratorItem {
 /// An iterator for a table.
 pub struct IteratorImpl {
     table: Table,
-    bpos: RefCell<usize>, // block chunk index
+    bpos: RefCell<usize>,
+    // block chunk index
     // start 0 to block.len() - 1
     bi: RefCell<Option<BlockIterator>>,
     // Internally, Iterator is bidirectional. However, we only expose the
@@ -622,13 +623,13 @@ impl Xiterator for ConcatIterator {
 
     /// advances our concat iterator.
     fn next(&self) -> Option<Self::Output> {
-        let cur_iter = self.get_cur();
-        if cur_iter.is_none() {
-            return None;
-        }
-        let item = cur_iter.as_ref().unwrap().next();
-        if item.is_some() {
-            return item;
+        if *self.index.borrow() < 0 {
+            if !self.reversed {
+                *self.index.borrow_mut() = 0;
+            } else {
+                *self.index.borrow_mut() = (self.iters.len() - 1) as isize;
+            }
+            return self.peek();
         }
         loop {
             //  In case there are empty tables.
