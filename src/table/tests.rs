@@ -11,7 +11,7 @@ mod utils {
     };
     use crate::table::table::{Table, TableCore, FILE_SUFFIX};
     use crate::y::{open_synced_file, read_at, ValueStruct};
-    use crate::{MergeIterOverBuilder, MergeIterOverIterator, Xiterator};
+    use crate::{MergeIterOverBuilder, Xiterator};
     use memmap::MmapOptions;
     use rand::random;
     use serde_json::ser::CharEscape::Tab;

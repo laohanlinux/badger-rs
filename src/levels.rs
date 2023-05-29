@@ -12,8 +12,8 @@ use crate::types::{Closer, XArc, XWeak};
 use crate::y::{
     async_sync_directory, create_synced_file, open_existing_synced_file, sync_directory,
 };
+use crate::MergeIterOverBuilder;
 use crate::Xiterator;
-use crate::{MergeIterOverBuilder, MergeIterOverIterator};
 use crate::{Result, ValueStruct};
 use atomic::Ordering;
 use awaitgroup::WaitGroup;

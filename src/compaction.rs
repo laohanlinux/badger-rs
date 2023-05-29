@@ -133,7 +133,7 @@ impl LevelCompactStatus {
     fn remove(&mut self, dst: &KeyRange) -> bool {
         let mut rlock = self.wl();
         let len = rlock.len();
-        rlock.retain(|r| r.equals(dst));
+        rlock.retain(|r| r == dst);
         len > rlock.len()
     }
 
@@ -171,6 +171,12 @@ pub(crate) struct KeyRange {
     // TODO zero Copy
     pub(crate) right: Vec<u8>,
     pub(crate) inf: bool,
+}
+
+impl PartialEq for KeyRange {
+    fn eq(&self, other: &Self) -> bool {
+        self.equals(other)
+    }
 }
 
 impl Display for KeyRange {

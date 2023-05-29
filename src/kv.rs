@@ -14,7 +14,7 @@ use crate::y::{
 };
 use crate::Error::{NotFound, Unexpected};
 use crate::{
-    Decode, Error, MergeIterOverBuilder, MergeIterOverIterator, Node, SkipList, SkipListManager,
+    Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager,
     UniIterator, Xiterator,
 };
 use anyhow::__private::kind::TraitKind;
@@ -1000,7 +1000,7 @@ impl ArcKV {
             itrs.push(iter);
         }
         itrs.extend(self.must_lc().as_iterator(opt.reverse));
-        let mitr = MergeIterOverBuilder::default().add_batch(itrs).build2();
+        let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
         IteratorExt::new(self.clone(), mitr, opt)
     }
 }

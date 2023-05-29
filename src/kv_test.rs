@@ -77,7 +77,6 @@ async fn t_concurrent_write() {
     let kv = KV::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
     let mut wg = awaitgroup::WaitGroup::new();
-    //let n = 2000;
     let n = 300;
     let m = 10;
     let keys = TArcMx::new(tokio::sync::Mutex::new(vec![]));
