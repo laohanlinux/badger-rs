@@ -452,7 +452,7 @@ impl IteratorImpl {
     // will reset iterator and seek to <= key.
     pub(crate) fn seek_for_prev(&self, key: &[u8]) -> Option<IteratorItem> {
         // TODO: Optimize this. We shouldn't have to take a Prev step.
-        return if let Some(item) = self.seek_from(key, IteratorSeek::Origin) {
+        if let Some(item) = self.seek_from(key, IteratorSeek::Origin) {
             // >= key
             if item.key == key {
                 // == key
@@ -461,7 +461,7 @@ impl IteratorImpl {
             self.prev() // > key
         } else {
             self.prev() // Just move it front one
-        };
+        }
     }
 
     pub(crate) fn prev(&self) -> Option<IteratorItem> {

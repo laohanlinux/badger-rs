@@ -378,6 +378,7 @@ mod utils {
         let item = miter.next().unwrap();
         assert_eq!(item.key(), b"k2");
         let item = miter.next();
+        println!("{:?}", item);
         assert!(item.is_none());
         let item = miter.rewind().unwrap();
         assert_eq!(item.key(), b"k1");

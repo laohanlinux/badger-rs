@@ -55,6 +55,7 @@ tracing-log = "0.1.3"
 chrono = "0.4.22"
 env_logger = "0.9.1"
 console_log = { version = "0.2.0", features = ["color"] }
+itertools = "0.10.5"
 
 [build]
 rustflags = ["--cfg", "tokio_unstable"]

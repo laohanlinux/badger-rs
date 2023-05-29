@@ -2,13 +2,13 @@ use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
 use crate::table::iterator::IteratorItem;
 use crate::y::ValueStruct;
 use crate::Xiterator;
+use libc::NOEXPR;
 use log::info;
 use rand::random;
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::{cmp, ptr, sync::atomic::AtomicI32};
-use libc::NOEXPR;
 use uuid::Uuid;
 
 use super::{arena::Arena, node::Node};
@@ -469,7 +469,7 @@ impl Xiterator for UniIterator {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
-        println!("{:?}, {}, execute at UniIterator!", self.iter, self.id);
+        // println!("{:?}, {}, execute at UniIterator!", self.iter, self.id);
         if !self.reversed {
             self.iter.next()
         } else {

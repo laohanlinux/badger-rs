@@ -22,7 +22,7 @@ pub struct MergeCursor {
 
 pub struct MergeIterator {
     pub reverse: bool,
-    pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    pub itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
 }
 
@@ -50,7 +50,7 @@ impl Xiterator for MergeIterator {
 
         for (itr_index, itr) in self.itrs.iter().enumerate() {
             // debug!("itr {}", itr_index);
-           if let Some(item) = itr.peek() {
+            if let Some(item) = itr.peek() {
                 if let Some(have_latest) = &mut latest {
                     match need_cmp(have_latest.key(), item.key()) {
                         std::cmp::Ordering::Less => {
@@ -93,7 +93,10 @@ impl Xiterator for MergeIterator {
         for itr in &self.itrs {
             itr.rewind();
         }
-        self.peek()
+        if let Some((index, _)) = self.find_smallest_or_biggest() {
+            return self.itrs[index].peek();
+        }
+        None
     }
 
     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
@@ -106,9 +109,49 @@ impl Xiterator for MergeIterator {
     }
 }
 
+impl MergeIterator {
+    fn find_smallest_or_biggest(&self) -> Option<(usize, Vec<usize>)> {
+        if self.itrs.is_empty() {
+            return None;
+        }
+        let mut latest: Option<IteratorItem> = None;
+        let mut index = usize::MAX;
+        let need_cmp = |a: &[u8], b: &[u8]| -> std::cmp::Ordering {
+            if !self.reverse {
+                return a.cmp(b);
+            }
+            b.cmp(a)
+        };
+        let mut eq_itr = Vec::with_capacity(self.itrs.len());
+        for (itr_index, itr) in self.itrs.iter().enumerate() {
+            if let Some(item) = itr.peek() {
+                if let Some(have_latest) = &mut latest {
+                    match need_cmp(have_latest.key(), item.key()) {
+                        std::cmp::Ordering::Less => {}
+                        std::cmp::Ordering::Equal => {
+                            eq_itr.push(itr_index);
+                        }
+                        std::cmp::Ordering::Greater => {
+                            index = itr_index;
+                            *have_latest = item;
+                        }
+                    }
+                } else {
+                    latest.replace(item);
+                    index = itr_index;
+                }
+            }
+        }
+        if index != usize::MAX {
+            return Some((index, eq_itr));
+        }
+        None
+    }
+}
+
 #[derive(Default)]
 pub struct MergeIterOverBuilder {
-    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     reverse: bool,
 }
 
@@ -118,14 +161,14 @@ impl MergeIterOverBuilder {
         self
     }
 
-    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output=IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+        iters: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     ) -> MergeIterOverBuilder {
         self.all.extend(iters);
         self
@@ -272,7 +315,7 @@ async fn merge_iter_skip() {
         let miter = builder.build();
         assert!(miter.peek().is_none());
         let mut count = 0;
-        keys.lock().await.sort_by(|a, b | b.cmp(a));
+        keys.lock().await.sort_by(|a, b| b.cmp(a));
         while let Some(value) = miter.next() {
             info!("{}", String::from_utf8_lossy(value.key()));
             let expect = keys.lock().await;
@@ -281,5 +324,66 @@ async fn merge_iter_skip() {
             count += 1;
         }
         assert_eq!(count as u32, m * n);
+    }
+}
+
+#[tokio::test]
+async fn merge_iter_random() {
+    use itertools::Itertools;
+    crate::test_util::tracing_log();
+    let st1 = SkipList::new(1 << 20);
+    let st2 = SkipList::new(1 << 20);
+    let st3 = SkipList::new(1 << 20);
+    let mut keys = vec![];
+    for i in 0..10000 {
+        let key = rand::random::<usize>() % 10000;
+        let key = format!("k{:05}", key).into_bytes().to_vec();
+        keys.push(key.clone());
+        if i % 3 == 0 {
+            st1.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
+        } else if i % 3 == 1 {
+            st2.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
+        } else {
+            st3.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
+        }
+    }
+
+    {
+        let builder = MergeIterOverBuilder::default()
+            .add(Box::new(UniIterator::new(st1.clone(), false)))
+            .add(Box::new(UniIterator::new(st2.clone(), false)))
+            .add(Box::new(UniIterator::new(st3.clone(), false)));
+        keys.sort();
+        let keys = keys.clone().into_iter().unique().collect::<Vec<_>>();
+        let miter = builder.build();
+        assert!(miter.peek().is_none());
+        let mut count = 0;
+        while let Some(value) = miter.next() {
+            info!("{}", String::from_utf8_lossy(value.key()));
+            let expect = keys.get(count).unwrap();
+            assert_eq!(value.key(), expect);
+            count += 1;
+        }
+        assert_eq!(count, keys.len());
+    }
+
+    {
+        let builder = MergeIterOverBuilder::default()
+            .reverse(true)
+            .add(Box::new(UniIterator::new(st1.clone(), true)))
+            .add(Box::new(UniIterator::new(st2.clone(), true)))
+            .add(Box::new(UniIterator::new(st3.clone(), true)));
+        keys.sort_by(|a, b| b.cmp(a));
+        let keys = keys.into_iter().unique().collect::<Vec<_>>();
+        let miter = builder.build();
+        assert!(miter.peek().is_none());
+        let mut count = 0;
+        while let Some(value) = miter.next() {
+            info!("{}", String::from_utf8_lossy(value.key()));
+            let expect = keys.get(count).unwrap();
+            assert_eq!(value.key(), expect);
+            count += 1;
+        }
+        assert_eq!(count, keys.len());
     }
 }
