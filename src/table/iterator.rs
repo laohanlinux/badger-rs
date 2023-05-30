@@ -12,6 +12,7 @@ use std::ops::Deref;
 use std::process::id;
 use std::ptr::{slice_from_raw_parts, NonNull};
 use std::{cmp, fmt, io};
+use log::debug;
 use tracing::info;
 
 pub enum IteratorSeek {
@@ -57,7 +58,7 @@ impl fmt::Display for BlockIterator {
             .last_header
             .borrow()
             .as_ref()
-            .map(|h| format!("{}", h))
+            .map(|h| format!("{:?}", h))
             .or_else(|| Some("Empty".to_string()))
             .unwrap();
         write!(
@@ -88,6 +89,9 @@ impl<'a> BlockIteratorItem<'a> {
 
 impl BlockIterator {
     pub fn new(data: Vec<u8>) -> Self {
+        #[cfg(test)]
+        debug!("build a BlockIterator, buffer len: {}", data.len());
+
         Self {
             data,
             pos: RefCell::new(0),
@@ -145,21 +149,30 @@ impl BlockIterator {
         self.last_block.borrow_mut().take();
     }
 
+    // TODO Opz Code
     pub(crate) fn next(&self) -> Option<BlockIteratorItem> {
         let mut pos = self.pos.borrow_mut();
         if *pos >= self.data.len() as u32 {
             return None;
         }
         //load header
-        let h = Header::from(&self.data[*pos as usize..*pos as usize + Header::size()]);
+        let mut h = Header::from(&self.data[*pos as usize..*pos as usize + Header::size()]);
         *self.last_header.borrow_mut() = Some(h.clone());
         //move pos cursor
         *pos += Header::size() as u32;
 
-        // dummy header
-        if h.is_dummy() {
+        if *pos >= self.data.len() as u32 {
             return None;
         }
+        // If the key is dummy, What should be do continue ...
+        if h.is_dummy() {
+            h = Header::from(&self.data[*pos as usize..*pos as usize + Header::size()]);
+            *self.last_header.borrow_mut() = Some(h.clone());
+            *pos += Header::size() as u32;
+            drop(pos);
+            self.parse_kv(&h);
+        }
+        let mut pos = self.pos.borrow_mut();
 
         // Populate baseKey if it isn't set yet. This would only happen for the first Next.
         if self.base_key.borrow().is_empty() {
@@ -228,7 +241,7 @@ impl BlockIterator {
         *pos += h.k_len as u32;
         assert!(
             *pos as usize + h.v_len as usize <= self.data.len(),
-            "Value exceeded size of block: {} {} {} {} {}",
+            "Value exceeded size of block: {} {} {} {} {:?}",
             pos,
             h.k_len,
             h.v_len,

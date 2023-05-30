@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use bytes::{Buf, BufMut, BytesMut};
 use growable_bloom_filter::GrowableBloom;
-use log::info;
+use log::{debug, info};
 use serde_json;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
@@ -15,22 +15,12 @@ use std::hash::Hasher;
 use std::io::{self, Cursor, Read, Write};
 use std::str::pattern::Searcher;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub(crate) struct Header {
     pub(crate) p_len: u16, // Overlap with base key(Prefix length)
     pub(crate) k_len: u16, // Length of the diff. Eg: "d" = "abcd" - "abc"
     pub(crate) v_len: u16, // Length of the value.
     pub(crate) prev: u32, // Offset for the previous key-value pair. The offset is relative to `block` base offset.
-}
-
-impl fmt::Display for Header {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "p_len:{}, k_len:{}, v_len:{}, prev:{}",
-            self.p_len, self.k_len, self.v_len, self.prev
-        )
-    }
 }
 
 impl Header {
@@ -63,26 +53,6 @@ impl Encode for Header {
     }
 }
 
-// #[async_trait]
-// impl<R, W> AsyncEncDec<R, W> for Header
-// where
-//     R: AsyncRead + Unpin + Sync + Send,
-//     W: AsyncWrite + Unpin + Sync + Send,
-// {
-//     async fn enc(&self, wt: &mut W) -> crate::Result<usize> {
-//         wt.write_u16(self.p_len).await?;
-//         wt.write_u16(self.k_len).await?;
-//         wt.write_u16(self.v_len).await?;
-//         wt.write_u32(self.prev).await?;
-//         wt.flush().await?;
-//         Ok(Header::size())
-//     }
-//
-//     async fn dec(&mut self, rd: &R) -> crate::Result<()> {
-//         todo!()
-//     }
-// }
-
 impl From<&[u8]> for Header {
     fn from(buffer: &[u8]) -> Self {
         let mut header = Header::default();
@@ -101,19 +71,19 @@ impl Into<Vec<u8>> for Header {
 
 // Used in building a table.
 pub struct Builder {
-    counter: usize, // Number of keys written for the current block.
-    buf: Cursor<Vec<u8>>,
-    base_key: Vec<u8>,  // Base key for the current block.
-    base_offset: u32,   // Offset for the current block.
-    restarts: Vec<u32>, // Base offsets of every block.
+    counter: usize,       // Number of keys written for the current block.
+    buf: Cursor<Vec<u8>>, // bytes buffer
+    base_key: Vec<u8>,    // Base key for the current block.
+    base_offset: u32,     // Offset for the current block.
+    restarts: Vec<u32>,   // Base offsets of every block.
     prev_offset: u32, // Tracks offset for the previous key-value-pair. Offset is relative to block base offset.
     key_buf: Cursor<Vec<u8>>,
     key_count: u32,
 }
 
 impl Builder {
+    // the max keys number of every block.
     const RESTART_INTERVAL: usize = 100;
-
     pub(crate) fn empty(&self) -> bool {
         self.buf.is_empty()
     }
@@ -171,6 +141,7 @@ impl Builder {
         self.counter += 1;
     }
 
+    // Add a key-value pair that indicates the end of a block. The key and value for this pair should both be empty.
     fn finish_block(&mut self) {
         // When we are at the end of the block and Valid=false, and the user wants to do a Prev,
         // we need a dummy header to tell us the offset of the previous key-value pair.
@@ -182,7 +153,7 @@ impl Builder {
     pub fn add(&mut self, key: &[u8], value: &ValueStruct) -> crate::y::Result<()> {
         if self.counter >= Self::RESTART_INTERVAL {
             self.finish_block();
-            info!(
+            debug!(
                 "create new block, base:{:<10}, pre: {:5}, base-key: {:?}",
                 self.base_offset,
                 self.prev_offset,
@@ -276,22 +247,4 @@ impl Default for Builder {
             key_count: 0,
         }
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn t() {
-    use tokio::io::AsyncWriteExt;
-    // let mut cursor = Cursor::new(vec![0u8; 1]);
-    // cursor.write_all(b"abc").unwrap();
-    // println!("{:?}", cursor.into_inner());
-
-    // tokio::runtime::Runtime::new().unwrap().spawn(async || {}).await.unwrap();
-    tokio::spawn(async {
-        let mut wt = tokio::io::BufWriter::new(vec![0u8; 0]);
-        wt.write_all(b"abc").await.unwrap();
-        wt.flush().await.unwrap();
-        let buffer = wt.into_inner();
-        println!("{:?}", buffer);
-    })
-    .await;
 }

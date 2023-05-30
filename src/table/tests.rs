@@ -40,6 +40,7 @@ mod utils {
 
     #[test]
     fn it_block_iterator() {
+        crate::test_util::tracing_log();
         let itr = BlockIterator::new(new_builder("anc", 10000).finish());
         let mut i = 0;
         while let Some(item) = itr.next() {
@@ -549,7 +550,6 @@ mod utils {
             );
             assert!(got.is_ok());
         }
-
         builder
     }
 

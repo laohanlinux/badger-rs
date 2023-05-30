@@ -43,14 +43,6 @@ pub(crate) struct KeyOffset {
 
 impl Display for KeyOffset {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        // let key = String::from_utf8(self.key.clone())
-        //     .map_err(|_| "...")
-        //     .unwrap();
-        // write!(
-        //     f,
-        //     "key: {}  | offset:{:10}| len:{}",
-        //     key, self.offset, self.len
-        // )
         f.debug_struct("KeyOffset")
             .field("key", &String::from_utf8_lossy(&self.key))
             .field("offset", &self.offset)
@@ -416,7 +408,7 @@ pub fn get_id_map(dir: &str) -> HashSet<u64> {
             debug!("Skip file, {:?}", fid.unwrap_err());
             continue;
         }
-        info!("What dir : {:?} {:?}", fid, dir_el.file_name());
+        debug!("What dir : {:?} {:?}", fid, dir_el.file_name());
         ids.insert(fid.unwrap());
     }
     ids
