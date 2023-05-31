@@ -83,7 +83,7 @@ pub struct Builder {
 
 impl Builder {
     // the max keys number of every block.
-    const RESTART_INTERVAL: usize = 100;
+    pub(crate) const RESTART_INTERVAL: usize = 100;
     pub(crate) fn empty(&self) -> bool {
         self.buf.is_empty()
     }

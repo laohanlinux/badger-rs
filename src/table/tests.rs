@@ -18,6 +18,7 @@ mod utils {
     use std::borrow::Borrow;
     use std::cell::RefCell;
     use std::cmp::Ordering;
+    use std::collections::HashSet;
     use std::env::temp_dir;
     use std::fmt::format;
     use std::fs::File;
@@ -29,6 +30,7 @@ mod utils {
     use log::debug;
     use tokio::io::AsyncSeekExt;
     use tokio_metrics::TaskMetrics;
+    use crate::table::table;
 
     #[test]
     fn it_block_iterator1() {
@@ -46,7 +48,8 @@ mod utils {
         while let Some(item) = itr.next() {
             i += 1;
         }
-        assert_eq!(i, 10000);
+        // Notice, itr only one block iterator
+        assert_eq!(i, Builder::RESTART_INTERVAL);
     }
 
     #[test]
@@ -204,6 +207,26 @@ mod utils {
             iter.seek(key("key", -1).as_bytes()).as_ref().unwrap().key(),
             key("key", 0).as_bytes()
         );
+    }
+
+
+    #[test]
+    fn table2() {
+        let n = 10000;
+        let (fp, path) = build_test_table("key", n);
+        let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
+        let tb  = Table::new(table);
+         for reverse in vec![false, true]{
+            let iter = crate::table::iterator::IteratorImpl::new(tb.clone(), reverse);
+            let mut count = 0;
+            let mut keys = HashSet::new();
+            while let Some(item) = iter.next() {
+                count += 1;
+                keys.insert(item.key);
+            }
+            assert_eq!(count, n);
+            assert_eq!(count as usize, keys.len());
+        }
     }
 
     #[test]

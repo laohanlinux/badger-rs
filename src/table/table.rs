@@ -359,20 +359,6 @@ impl Display for TableCore {
             .field("smallest", &smallest)
             .field("biggest", &biggest)
             .finish()
-        // writeln!(
-        //     f,
-        //     "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}, smallest: {}, biggest: {}",
-        //     self._ref.load(Ordering::Relaxed),
-        //     self.file_name,
-        //     self.block_index.len(),
-        //     self.id,
-        //     self.table_size,
-        //     smallest, biggest,
-        // ).unwrap();
-        // for index in index_str {
-        //     writeln!(f, "{}", index).unwrap();
-        // }
-        // Ok(())
     }
 }
 
@@ -437,31 +423,3 @@ pub fn new_file_name(id: u64, dir: &str) -> String {
         .unwrap()
         .to_string()
 }
-
-// #[tokio::test]
-// async fn t_seek() {
-//     crate::test_util::tracing_log();
-//     let n = 299;
-//     let st = SkipList::new(1 << 15);
-//     for i in 0..n {
-//         st.put(
-//             &format!("{}", i).into_bytes(),
-//             ValueStruct::new(format!("{}", i).into_bytes(), 0, 0, i),
-//         );
-//     }
-//     let got = st.get(format!("{}", 0).as_bytes()).unwrap();
-//     println!("{:?}", got);
-//     let path = temp_dir().join("1.sst");
-//     let path = path.to_str().unwrap();
-//
-//     let fp = create_synced_file(path, true).unwrap();
-//     let mut fp = tokio::fs::File::from_std(fp);
-//     write_level0_table(&st, &mut fp).await.unwrap();
-//     let fp = fp.into_std().await;
-//     let tc = TableCore::open_table(fp, path, FileLoadingMode::MemoryMap).unwrap();
-//     let tb = Table::from(tc);
-//     let itr = crate::table::iterator::IteratorImpl::new(tb, false);
-//     // itr.seek_to_first().unwrap();
-//     let value = itr.seek(format!("{}", 0).as_bytes()).unwrap();
-//     info!("{:?}", &value.value().value);
-// }

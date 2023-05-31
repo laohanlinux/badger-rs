@@ -3,6 +3,7 @@ use crate::table::table::{Block, Table, TableCore};
 use crate::y::iterator::{KeyValue, Xiterator};
 use crate::y::{Result, ValueStruct};
 use crate::{y, Error};
+use log::debug;
 use std::borrow::{Borrow, BorrowMut};
 use std::cell::{Ref, RefCell, RefMut};
 use std::cmp::Ordering;
@@ -12,7 +13,6 @@ use std::ops::Deref;
 use std::process::id;
 use std::ptr::{slice_from_raw_parts, NonNull};
 use std::{cmp, fmt, io};
-use log::debug;
 use tracing::info;
 
 pub enum IteratorSeek {
@@ -161,18 +161,10 @@ impl BlockIterator {
         //move pos cursor
         *pos += Header::size() as u32;
 
-        if *pos >= self.data.len() as u32 {
-            return None;
-        }
         // If the key is dummy, What should be do continue ...
         if h.is_dummy() {
-            h = Header::from(&self.data[*pos as usize..*pos as usize + Header::size()]);
-            *self.last_header.borrow_mut() = Some(h.clone());
-            *pos += Header::size() as u32;
-            drop(pos);
-            self.parse_kv(&h);
+            return None;
         }
-        let mut pos = self.pos.borrow_mut();
 
         // Populate baseKey if it isn't set yet. This would only happen for the first Next.
         if self.base_key.borrow().is_empty() {
@@ -228,10 +220,6 @@ impl BlockIterator {
         Some(BlockIteratorItem { key, value })
     }
 
-    pub(crate) fn _next(&self) -> Option<BlockIteratorItem> {
-        self.next()
-    }
-
     fn parse_kv(&self, h: &Header) -> (Vec<u8>, &[u8]) {
         let mut pos = self.pos.borrow_mut();
         let mut key = vec![0u8; (h.p_len + h.k_len) as usize];
@@ -284,10 +272,11 @@ impl IteratorItem {
     }
 }
 
+/// TODO add start or end
 /// An iterator for a table.
 pub struct IteratorImpl {
     table: Table,
-    bpos: RefCell<usize>,
+    bpos: RefCell<isize>,
     // block chunk index
     // start 0 to block.len() - 1
     bi: RefCell<Option<BlockIterator>>,
@@ -296,28 +285,14 @@ pub struct IteratorImpl {
     reversed: bool,
 }
 
-impl<'a> std::iter::Iterator for IteratorImpl {
-    type Item = IteratorItem;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if !self.reversed {
-            self._next()
-        } else {
-            self.prev()
-        }
-    }
-}
-
 impl fmt::Display for IteratorImpl {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let bi = self.bi.borrow().as_ref().map(|b| format!("{}", b)).unwrap();
-        write!(
-            f,
-            "Iter: bpos: {}, bi:{:?}, reversed:{}",
-            self.bpos.borrow(),
-            bi,
-            self.reversed
-        )
+        f.debug_struct("IteratorImpl")
+            .field("bpos", &self.bpos.borrow())
+            .field("bi", &self.bi.borrow().is_some())
+            .field("reverse", &self.reversed)
+            .finish()
     }
 }
 
@@ -364,12 +339,14 @@ impl Xiterator for IteratorImpl {
 impl IteratorImpl {
     pub fn new(table: Table, reversed: bool) -> IteratorImpl {
         table.incr_ref(); // Important
-        IteratorImpl {
+        let mut itr = IteratorImpl {
             table,
             bpos: RefCell::new(0),
             bi: RefCell::new(None),
             reversed,
-        }
+        };
+        itr.reset();
+        itr
     }
 
     pub fn seek_to_first(&self) -> Option<IteratorItem> {
@@ -388,7 +365,7 @@ impl IteratorImpl {
         if self.table.block_index.is_empty() {
             return None;
         }
-        *self.bpos.borrow_mut() = self.table.block_index.len() - 1;
+        *self.bpos.borrow_mut() = (self.table.block_index.len() - 1) as isize;
         let bi = self.get_bi_by_bpos(*self.bpos.borrow());
         bi.as_ref()
             .unwrap()
@@ -413,26 +390,26 @@ impl IteratorImpl {
             .block_index
             .binary_search_by(|ko| ko.key.as_slice().cmp(key));
         if idx.is_ok() {
-            return self.seek_helper(idx.unwrap(), key);
+            return self.seek_helper(idx.unwrap() as isize, key);
         }
 
         // not found
         let idx = idx.err().unwrap();
         // info!("block_index {:?}, {:?}", idx, self.table.block_index);
         if idx == 0 {
-            return self.seek_helper(idx, key);
+            return self.seek_helper(idx as isize, key);
         }
 
         if idx >= self.table.block_index.len() {
-            return self.seek_helper(idx - 1, key);
+            return self.seek_helper((idx - 1) as isize, key);
         }
 
         //[ (5,6,7), (10, 11), (12, 15)], find 6, check (5,6,7) ~ (10, 11),
-        let item = self.seek_helper(idx - 1, key);
+        let item = self.seek_helper((idx - 1) as isize, key);
         if item.is_some() {
             return item;
         }
-        self.seek_helper(idx, key)
+        self.seek_helper(idx as isize, key)
     }
 
     // maybe reset bpos
@@ -447,7 +424,7 @@ impl IteratorImpl {
             .block_index
             .binary_search_by(|ko| ko.key.as_slice().cmp(key));
         if idx.is_ok() {
-            return self.seek_helper_rewind(idx.unwrap(), key);
+            return self.seek_helper_rewind(idx.unwrap() as isize, key);
         }
 
         // not found
@@ -455,7 +432,7 @@ impl IteratorImpl {
         if idx == 0 {
             return None;
         }
-        self.seek_helper_rewind(idx - 1, key)
+        self.seek_helper_rewind((idx - 1) as isize, key)
     }
 
     // brings us to a key that is >= input key.
@@ -508,7 +485,7 @@ impl IteratorImpl {
 
     fn _next(&self) -> Option<IteratorItem> {
         let mut bpos = self.bpos.borrow_mut();
-        if *bpos >= self.table.block_index.len() {
+        if *bpos >= self.table.block_index.len() as isize {
             return None;
         }
         let mut bi = self.get_or_set_bi(*bpos);
@@ -524,12 +501,17 @@ impl IteratorImpl {
 
     /// Note: Reset will move to first item.
     pub(crate) fn reset(&self) {
-        *self.bpos.borrow_mut() = 0;
-        self.bi.borrow_mut().take();
+        if !self.reversed {
+            *self.bpos.borrow_mut() = 0;
+            self.bi.borrow_mut().take();
+        } else {
+            *self.bpos.borrow_mut() = (self.table.block_index.len() - 1) as isize;
+            self.bi.borrow_mut().take();
+        }
     }
 
     // >= key
-    fn seek_helper(&self, block_index: usize, key: &[u8]) -> Option<IteratorItem> {
+    fn seek_helper(&self, block_index: isize, key: &[u8]) -> Option<IteratorItem> {
         *self.bpos.borrow_mut() = block_index;
         let bi = self.get_bi_by_bpos(*self.bpos.borrow());
         bi.as_ref()
@@ -538,7 +520,7 @@ impl IteratorImpl {
             .map(|b_item| b_item.into())
     }
 
-    fn seek_helper_rewind(&self, block_index: usize, key: &[u8]) -> Option<IteratorItem> {
+    fn seek_helper_rewind(&self, block_index: isize, key: &[u8]) -> Option<IteratorItem> {
         *self.bpos.borrow_mut() = block_index;
         let bi = self.get_bi_by_bpos(*self.bpos.borrow());
         bi.as_ref()
@@ -556,19 +538,21 @@ impl IteratorImpl {
         unsafe { &*bi }
     }
 
-    fn get_or_set_bi(&self, bpos: usize) -> RefMut<'_, Option<BlockIterator>> {
+    fn get_or_set_bi(&self, bpos: isize) -> RefMut<'_, Option<BlockIterator>> {
+        assert!(bpos >= 0);
         let mut bi = self.bi.borrow_mut();
         if bi.is_some() {
             return bi;
         }
-        let block = self.table.block(bpos).unwrap();
+        let block = self.table.block(bpos as usize).unwrap();
         let it = BlockIterator::new(block.data);
         *bi = Some(it);
         bi
     }
 
-    fn get_bi_by_bpos(&self, bpos: usize) -> RefMut<'_, Option<BlockIterator>> {
-        let block = self.table.block(bpos).unwrap();
+    fn get_bi_by_bpos(&self, bpos: isize) -> RefMut<'_, Option<BlockIterator>> {
+        assert!(bpos >= 0);
+        let block = self.table.block(bpos as usize).unwrap();
         // info!("===>{:?}, {:?}", bpos, block);
         let mut bi = self.bi.borrow_mut();
         let it = BlockIterator::new(block.data);

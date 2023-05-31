@@ -87,9 +87,9 @@ pub trait Xiterator {
     /// Same to std iterator next
     fn next(&self) -> Option<Self::Output>;
     /// Same to std iterator rev (But not implement by now!)
-    fn rev(&self) -> Option<Self::Output> {
-        todo!()
-    }
+    // fn rev(&self) -> Option<Self::Output> {
+    //     todo!()
+    // }
     /// Seeks to first element (or last element for reverse iterator).
     fn rewind(&self) -> Option<Self::Output>;
     /// Seek with key, return a element that it's key >= key or <= key.
