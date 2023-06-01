@@ -572,6 +572,7 @@ impl<'a> From<BlockIteratorItem<'a>> for IteratorItem {
 /// concatenates the sequences defined by several iterators.  (It only works with
 /// TableIterators, probably just because it's faster to not be so generic.)
 pub struct ConcatIterator {
+    // Index < 0, indicate uninit
     index: RefCell<isize>,
     // Which iterator is active now. todo use usize
     iters: Vec<IteratorImpl>,
@@ -579,6 +580,7 @@ pub struct ConcatIterator {
     tables: Vec<Table>,
     // Disregarding `reversed`, this is in ascending order.
     reversed: bool,
+    init: RefCell<bool>,
 }
 
 impl ConcatIterator {
@@ -594,6 +596,7 @@ impl ConcatIterator {
             iters,
             tables,
             reversed,
+            init: RefCell::new(false),
         }
     }
 
@@ -606,9 +609,9 @@ impl ConcatIterator {
     }
 
     fn get_cur(&self) -> Option<&IteratorImpl> {
-        if *self.index.borrow() < 0 {
-            return None;
-        }
+        #[cfg(test)]
+        assert!(*self.index.borrow() >= 0, "it should be not happen");
+
         let cur = self.index.borrow();
         let iter = &self.iters[*cur as usize];
         Some(iter)
@@ -620,30 +623,34 @@ impl Xiterator for ConcatIterator {
 
     /// advances our concat iterator.
     fn next(&self) -> Option<Self::Output> {
-        if *self.index.borrow() < 0 {
-            if !self.reversed {
-                *self.index.borrow_mut() = 0;
-            } else {
-                *self.index.borrow_mut() = (self.iters.len() - 1) as isize;
-            }
-            return self.peek();
+        if self.iters.is_empty() {
+            return None;
         }
-        loop {
-            //  In case there are empty tables.
-            let index = self.index.borrow().clone();
+        if !*self.init.borrow() {
+            // Not init
             if !self.reversed {
-                self.set_idx(index + 1);
+                self.set_idx(0);
             } else {
-                self.set_idx(index - 1);
+                self.set_idx((self.iters.len() - 1) as isize);
             }
-            if self.get_cur().is_none() {
-                // End of list. Valid will become false.
-                return None;
+        }
+
+        while (!self.reversed && *self.index.borrow() < self.iters.len())
+            || (self.reversed && *self.index.borrow() >= 0)
+        {
+            let mut index = *self.index.borrow();
+            let itr = self.get_cur().unwrap();
+            if let Some(item) = itr.next() {
+                return Some(item);
             }
-            let item = self.get_cur().unwrap().rewind();
-            if item.is_some() {
-                return item;
+            // Get next iterator
+            if !self.reversed {
+                index += 1;
+            } else {
+                index -= 1;
             }
+            self.set_idx(index);
+            return None;
         }
     }
 
@@ -663,6 +670,9 @@ impl Xiterator for ConcatIterator {
 
     /// Brings us to element >= key if reversed is false. Otherwise, <= key.
     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+        if self.iters.is_empty() {
+            return None;
+        }
         if !self.reversed {
             // >= key
             let idx = self.tables.binary_search_by(|tb| tb.biggest().cmp(key));

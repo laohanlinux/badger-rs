@@ -9,9 +9,11 @@ mod utils {
     use crate::table::iterator::{
         BlockIterator, ConcatIterator, IteratorImpl, IteratorItem, IteratorSeek,
     };
+    use crate::table::table;
     use crate::table::table::{Table, TableCore, FILE_SUFFIX};
     use crate::y::{open_synced_file, read_at, ValueStruct};
     use crate::{MergeIterOverBuilder, Xiterator};
+    use log::debug;
     use memmap::MmapOptions;
     use rand::random;
     use serde_json::ser::CharEscape::Tab;
@@ -27,14 +29,12 @@ mod utils {
     use std::process::Output;
     use std::sync::Arc;
     use std::thread::spawn;
-    use log::debug;
     use tokio::io::AsyncSeekExt;
     use tokio_metrics::TaskMetrics;
-    use crate::table::table;
 
     #[test]
     fn it_block_iterator1() {
-        let data = new_builder2(10000).finish();
+        let data = new_builder("", 10000).finish();
         let it = BlockIterator::new(data);
         let got = it.seek(format!("{}", 0).as_bytes(), IteratorSeek::Origin);
         assert!(got.is_some());
@@ -48,22 +48,21 @@ mod utils {
         while let Some(item) = itr.next() {
             i += 1;
         }
-        // Notice, itr only one block iterator
+        // Notice, itr only one block iterator, If you want iterator all keys that should use IteratorImpl
         assert_eq!(i, Builder::RESTART_INTERVAL);
     }
 
     #[test]
-    fn seek_to_fist() {
-        let mut joins = vec![];
+    fn seek_to_first() {
+        crate::test_util::tracing_log();
         for n in vec![101, 199, 200, 250, 9999, 10000] {
-            joins.push(spawn(move || {
-                let (mut fp, path) = build_test_table("key", n);
-                let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
-            }));
-        }
-
-        for join in joins {
-            join.join().unwrap();
+            let (mut fp, path) = build_test_table("key", n);
+            let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
+            let itr = IteratorImpl::new(Table::new(table), false);
+            let value = itr.seek_to_first();
+            assert!(value.is_some());
+            let v = value.as_ref().unwrap();
+            assert_eq!(b"0".as_slice(), &v.value().value);
         }
     }
 
@@ -209,14 +208,13 @@ mod utils {
         );
     }
 
-
     #[test]
     fn table2() {
         let n = 10000;
         let (fp, path) = build_test_table("key", n);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
-        let tb  = Table::new(table);
-         for reverse in vec![false, true]{
+        let tb = Table::new(table);
+        for reverse in vec![false, true] {
             let iter = crate::table::iterator::IteratorImpl::new(tb.clone(), reverse);
             let mut count = 0;
             let mut keys = HashSet::new();
@@ -321,7 +319,8 @@ mod utils {
     }
 
     #[test]
-    fn concat_iterator() {
+    fn concat_iterator_tables() {
+        crate::test_util::tracing_log();
         let f1 = TableBuilder::new()
             .mode(FileLoadingMode::MemoryMap)
             .build_n("keya", 10000);
@@ -334,14 +333,14 @@ mod utils {
 
         {
             let iter = ConcatIterator::new(vec![f1.clone(), f2.clone(), f3.clone()], false);
-            assert!(iter.rewind().is_some());
+            //assert!(iter.rewind().is_some());
             let mut count = 0;
             while let Some(item) = iter.next() {
-                count += 1;
                 let value = item.value();
                 assert_eq!(format!("{}", count % 10000).as_bytes(), value.value);
+                count += 1;
             }
-            assert_eq!(count + 1, 30000);
+            assert_eq!(count, 30000);
 
             let value = iter.seek(b"a");
             assert_eq!(value.as_ref().unwrap().key(), b"keya0000");
@@ -573,21 +572,6 @@ mod utils {
             );
             assert!(got.is_ok());
         }
-        builder
-    }
-
-    fn new_builder2(n: isize) -> Builder {
-        assert!(n <= 10000);
-        let mut builder = Builder::default();
-
-        for i in 0..n {
-            let key = format!("{}", i).as_bytes().to_vec();
-            let v = format!("{}", i).as_bytes().to_vec();
-            builder
-                .add(&key, &ValueStruct::new(v.clone(), 'A' as u8, 0, i as u64))
-                .unwrap();
-        }
-
         builder
     }
 
