@@ -33,30 +33,84 @@ mod utils {
     use tokio_metrics::TaskMetrics;
 
     #[test]
-    fn it_block_iterator1() {
-        let data = new_builder("", 10000).finish();
-        let it = BlockIterator::new(data);
-        let got = it.seek(format!("{}", 0).as_bytes(), IteratorSeek::Origin);
-        assert!(got.is_some());
-    }
-
-    #[test]
-    fn it_block_iterator() {
-        crate::test_util::tracing_log();
-        let itr = BlockIterator::new(new_builder("anc", 10000).finish());
-        let mut i = 0;
-        while let Some(item) = itr.next() {
-            i += 1;
+    fn iterator_table() {
+        let (fp, path) = build_test_table("key", 10000);
+        let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
+        let iter = IteratorImpl::new(Table::new(table), false);
+        let mut kid = 1010;
+        let seek = key("key", kid);
+        iter.seek(seek.as_bytes());
+        kid += 1;
+        while let Some(item) = iter.next() {
+            assert_eq!(item.key(), key("key", kid).as_bytes());
+            kid += 1;
         }
-        // Notice, itr only one block iterator, If you want iterator all keys that should use IteratorImpl
-        assert_eq!(i, Builder::RESTART_INTERVAL);
+
+        assert_eq!(kid, 10000, "Expected kid: 10000. Got: {}", kid);
+        assert!(iter.seek(key("key", 99999).as_bytes()).is_none());
+        assert_eq!(
+            iter.seek(key("key", -1).as_bytes()).as_ref().unwrap().key(),
+            key("key", 0).as_bytes()
+        );
     }
 
     #[test]
-    fn seek_to_first() {
+    fn iterator_tables() {
+        let n = 10000;
+        let (fp, path) = build_test_table("key", n);
+        let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
+        let tb = Table::new(table);
+        for reverse in [false, true] {
+            let itr = IteratorImpl::new(tb.clone(), reverse);
+            let mut count = 0;
+            let mut keys = HashSet::new();
+            while let Some(item) = itr.next() {
+                count += 1;
+                keys.insert(item.key);
+            }
+            assert_eq!(count, n);
+            assert_eq!(count as usize, keys.len());
+        }
+        // after rewind
+        for reverse in [false, true] {
+            let itr = IteratorImpl::new(tb.clone(), reverse);
+            let item = itr.rewind().unwrap();
+            let mut count = 1;
+            let mut keys = HashSet::new();
+            keys.insert(item.key);
+            while let Some(item) = itr.next() {
+                count += 1;
+                keys.insert(item.key);
+            }
+            assert_eq!(count, n);
+            assert_eq!(count as usize, keys.len());
+        }
+    }
+
+    #[test]
+    fn block_iterator() {
+        {
+            let data = new_builder("", 10000).finish();
+            let it = BlockIterator::new(data);
+            let got = it.seek(format!("{}", 0).as_bytes(), IteratorSeek::Origin);
+            assert!(got.is_some());
+        }
+        {
+            let itr = BlockIterator::new(new_builder("anc", 10000).finish());
+            let mut i = 0;
+            while itr.next().is_some() {
+                i += 1;
+            }
+            // Notice, itr only one block iterator, If you want iterator all keys that should use IteratorImpl
+            assert_eq!(i, Builder::RESTART_INTERVAL);
+        }
+    }
+
+    #[test]
+    fn iterator_seek_to_first() {
         crate::test_util::tracing_log();
-        for n in vec![101, 199, 200, 250, 9999, 10000] {
-            let (mut fp, path) = build_test_table("key", n);
+        for n in [101, 199, 200, 250, 9999, 10000] {
+            let (fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
             let itr = IteratorImpl::new(Table::new(table), false);
             let value = itr.seek_to_first();
@@ -67,11 +121,11 @@ mod utils {
     }
 
     #[test]
-    fn seek_to_last() {
-        for n in vec![101, 199, 200, 250, 9999, 10000] {
-            let (mut fp, path) = build_test_table("key", n);
+    fn iterator_seek_to_last() {
+        for n in [101, 199, 200, 250, 9999, 10000] {
+            let (fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
-            let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
+            let iter = IteratorImpl::new(Table::new(table), false);
             let value = iter.seek_to_last();
             assert!(value.is_some());
             let v = value.as_ref().unwrap().value();
@@ -88,12 +142,11 @@ mod utils {
     }
 
     #[test]
-    fn seek() {
-        let (mut fp, path) = build_test_table("k", 10000);
+    fn iterator_seek() {
+        let (fp, path) = build_test_table("k", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
-
-        let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
-
+        let itr = IteratorImpl::new(Table::new(table), false);
+        // generate test data
         let data = vec![
             ("abc", true, "k0000"),
             ("k0100", true, "k0100"),
@@ -105,7 +158,7 @@ mod utils {
         ];
 
         for tt in data {
-            let value = iter.seek(tt.0.as_bytes());
+            let value = itr.seek(tt.0.as_bytes());
             assert_eq!(value.is_some(), tt.1);
             if value.is_some() {
                 assert_eq!(value.as_ref().unwrap().key(), tt.2.as_bytes());
@@ -114,11 +167,10 @@ mod utils {
     }
 
     #[test]
-    fn seek_for_prev() {
-        let (mut fp, path) = build_test_table("k", 10000);
+    fn iterator_seek_for_prev() {
+        let (fp, path) = build_test_table("k", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
-
-        let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
+        let itr = IteratorImpl::new(Table::new(table), false);
         let data = vec![
             ("abc", false, ""),
             ("k0100", true, "k0100"),
@@ -130,7 +182,7 @@ mod utils {
         ];
 
         for tt in data {
-            let value = iter.seek_for_prev(tt.0.as_bytes());
+            let value = itr.seek_for_prev(tt.0.as_bytes());
             assert_eq!(value.is_some(), tt.1);
             if value.is_some() {
                 assert_eq!(value.as_ref().unwrap().key(), tt.2.as_bytes());
@@ -140,10 +192,10 @@ mod utils {
 
     #[test]
     fn iterator_from_start() {
-        for n in vec![101, 199, 200, 250, 9999, 10000] {
-            let (mut fp, path) = build_test_table("key", n);
+        for n in [101, 199, 200, 250, 9999, 10000] {
+            let (fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
-            let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
+            let iter = IteratorImpl::new(Table::new(table), false);
             iter.reset();
             let mut count = 0;
             let value = iter.seek(b"");
@@ -164,17 +216,14 @@ mod utils {
 
     #[test]
     fn iterator_from_end() {
-        for n in vec![101, 199, 200, 250, 9999, 10000] {
-            let (mut fp, path) = build_test_table("key", n);
+        for n in [101, 199, 200, 250, 9999, 10000] {
+            let (fp, path) = build_test_table("key", n);
             let table = TableCore::open_table(fp, &path, FileLoadingMode::LoadToRADM).unwrap();
-            let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
+            let iter = IteratorImpl::new(Table::new(table), false);
             iter.reset();
             let value = iter.seek(b"zzzzzz");
             assert!(value.is_none());
-            // println!("{} {}", n, iter);
-
             for i in (0..n).rev() {
-                // println!("{} {}", n, iter);
                 let value = iter.prev();
                 assert!(value.is_some());
                 let value = value.as_ref().unwrap().value();
@@ -187,53 +236,12 @@ mod utils {
     }
 
     #[test]
-    fn table() {
-        let (fp, path) = build_test_table("key", 10000);
-        let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
-        let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
-        let mut kid = 1010;
-        let seek = key("key", kid);
-        iter.seek(seek.as_bytes());
-        kid += 1;
-        while let Some(item) = iter.next() {
-            assert_eq!(item.key(), key("key", kid).as_bytes());
-            kid += 1;
-        }
-
-        assert_eq!(kid, 10000, "Expected kid: 10000. Got: {}", kid);
-        assert!(iter.seek(key("key", 99999).as_bytes()).is_none());
-        assert_eq!(
-            iter.seek(key("key", -1).as_bytes()).as_ref().unwrap().key(),
-            key("key", 0).as_bytes()
-        );
-    }
-
-    #[test]
-    fn table2() {
-        let n = 10000;
-        let (fp, path) = build_test_table("key", n);
-        let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
-        let tb = Table::new(table);
-        for reverse in vec![false, true] {
-            let iter = crate::table::iterator::IteratorImpl::new(tb.clone(), reverse);
-            let mut count = 0;
-            let mut keys = HashSet::new();
-            while let Some(item) = iter.next() {
-                count += 1;
-                keys.insert(item.key);
-            }
-            assert_eq!(count, n);
-            assert_eq!(count as usize, keys.len());
-        }
-    }
-
-    #[test]
-    fn iterate_back_and_forth() {
+    fn iterator_back_and_forth() {
         let (fp, path) = build_test_table("key", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap();
 
         let seek = key("key", 1010);
-        let iter = crate::table::iterator::IteratorImpl::new(Table::new(table), false);
+        let iter = IteratorImpl::new(Table::new(table), false);
         let item = iter.seek(seek.as_bytes());
         assert!(item.is_some());
         assert_eq!(item.as_ref().unwrap().key(), seek.as_bytes().to_vec());
@@ -266,40 +274,66 @@ mod utils {
     }
 
     #[test]
-    fn uni_iterator() {
-        let (fp, path) = build_test_table("key", 10000);
+    fn concat_iterator_base() {
+        let n = 10000;
+        let (fp, path) = build_test_table("key", n);
         let table =
             Table::new(TableCore::open_table(fp, &path, FileLoadingMode::MemoryMap).unwrap());
 
         {
-            let iter = crate::table::iterator::IteratorImpl::new(table.clone(), false);
-            iter.rewind();
-            let mut count = 0;
-            while let Some(item) = iter.next() {
+            let itr = IteratorImpl::new(table.clone(), false);
+            itr.rewind();
+            let mut count = 1;
+            while let Some(item) = itr.next() {
                 let value = item.value();
-                count += 1;
                 assert_eq!(format!("{}", count).as_bytes().to_vec(), value.value);
                 assert_eq!('A' as u8, value.meta);
                 assert_eq!(count, value.cas_counter);
+                count += 1;
             }
-            assert_eq!(count + 1, 10000);
+            assert_eq!(count, n as u64);
         }
 
         {
-            let iter = crate::table::iterator::IteratorImpl::new(table.clone(), true);
-            iter.rewind();
+            let itr = IteratorImpl::new(table.clone(), false);
             let mut count = 0;
-            while let Some(item) = iter.next() {
+            while let Some(item) = itr.next() {
+                let value = item.value();
+                assert_eq!(format!("{}", count).as_bytes().to_vec(), value.value);
+                count += 1;
+            }
+            assert_eq!(count, n as u64);
+        }
+
+        {
+            let itr = IteratorImpl::new(table.clone(), true);
+            itr.rewind();
+            let mut count = 0;
+            while let Some(item) = itr.next() {
                 let value = item.value();
                 count += 1;
                 assert_eq!(
-                    format!("{}", 10000 - 1 - count).as_bytes().to_vec(),
+                    format!("{}", n as u64 - 1 - count).as_bytes().to_vec(),
                     value.value
                 );
                 assert_eq!('A' as u8, value.meta);
-                assert_eq!(10000 - 1 - count, value.cas_counter);
+                assert_eq!(n as u64 - 1 - count, value.cas_counter);
             }
-            assert_eq!(count + 1, 10000);
+            assert_eq!(count + 1, n as u64);
+        }
+
+        {
+            let itr = IteratorImpl::new(table.clone(), true);
+            let mut count = 0;
+            while let Some(item) = itr.next() {
+                let value = item.value();
+                assert_eq!(
+                    format!("{}", n as u64 - 1 - count).as_bytes().to_vec(),
+                    value.value
+                );
+                count += 1;
+            }
+            assert_eq!(count, n as u64);
         }
     }
 
@@ -332,40 +366,40 @@ mod utils {
             .build_n("keyc", 10000);
 
         {
-            let iter = ConcatIterator::new(vec![f1.clone(), f2.clone(), f3.clone()], false);
+            let itr = ConcatIterator::new(vec![f1.clone(), f2.clone(), f3.clone()], false);
             //assert!(iter.rewind().is_some());
             let mut count = 0;
-            while let Some(item) = iter.next() {
+            while let Some(item) = itr.next() {
                 let value = item.value();
                 assert_eq!(format!("{}", count % 10000).as_bytes(), value.value);
                 count += 1;
             }
             assert_eq!(count, 30000);
 
-            let value = iter.seek(b"a");
+            let value = itr.seek(b"a");
             assert_eq!(value.as_ref().unwrap().key(), b"keya0000");
             assert_eq!(value.as_ref().unwrap().value().value, b"0");
 
-            let value = iter.seek(b"keyb");
+            let value = itr.seek(b"keyb");
             assert_eq!(value.as_ref().unwrap().key(), b"keyb0000");
             assert_eq!(value.as_ref().unwrap().value().value, b"0");
 
-            let value = iter.seek(b"keyb9999b");
+            let value = itr.seek(b"keyb9999b");
             assert_eq!(value.as_ref().unwrap().key(), b"keyc0000");
             assert_eq!(value.as_ref().unwrap().value().value, b"0");
 
-            let value = iter.seek(b"keyd");
+            let value = itr.seek(b"keyd");
             assert!(value.is_none());
         }
 
         {
-            let iter = ConcatIterator::new(vec![f1.clone(), f2.clone(), f3.clone()], true);
-            assert!(iter.rewind().is_some());
+            let itr = ConcatIterator::new(vec![f1.clone(), f2.clone(), f3.clone()], true);
+            assert!(itr.rewind().is_some());
         }
     }
 
     #[test]
-    fn merge_iterator() {
+    fn merge_iterator_base() {
         let f1 = TableBuilder::new()
             .mode(FileLoadingMode::MemoryMap)
             .key_value(vec![

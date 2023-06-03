@@ -635,7 +635,7 @@ impl Xiterator for ConcatIterator {
             }
         }
 
-        while (!self.reversed && *self.index.borrow() < self.iters.len())
+        while (!self.reversed && *self.index.borrow() < self.iters.len() as isize)
             || (self.reversed && *self.index.borrow() >= 0)
         {
             let mut index = *self.index.borrow();
@@ -650,8 +650,9 @@ impl Xiterator for ConcatIterator {
                 index -= 1;
             }
             self.set_idx(index);
-            return None;
         }
+
+        None
     }
 
     fn rewind(&self) -> Option<Self::Output> {
