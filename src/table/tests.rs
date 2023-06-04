@@ -355,23 +355,23 @@ mod utils {
     #[test]
     fn concat_iterator_tables() {
         crate::test_util::tracing_log();
+        let n = 10000;
         let f1 = TableBuilder::new()
             .mode(FileLoadingMode::MemoryMap)
-            .build_n("keya", 10000);
+            .build_n("keya", n);
         let f2 = TableBuilder::new()
             .mode(FileLoadingMode::LoadToRADM)
-            .build_n("keyb", 10000);
+            .build_n("keyb", n);
         let f3 = TableBuilder::new()
             .mode(FileLoadingMode::FileIO)
-            .build_n("keyc", 10000);
+            .build_n("keyc", n);
 
         {
             let itr = ConcatIterator::new(vec![f1.clone(), f2.clone(), f3.clone()], false);
-            //assert!(iter.rewind().is_some());
             let mut count = 0;
             while let Some(item) = itr.next() {
                 let value = item.value();
-                assert_eq!(format!("{}", count % 10000).as_bytes(), value.value);
+                assert_eq!(format!("{}", count % n).as_bytes(), value.value);
                 count += 1;
             }
             assert_eq!(count, 30000);
@@ -400,6 +400,7 @@ mod utils {
 
     #[test]
     fn merge_iterator_base() {
+        crate::test_util::tracing_log();
         let f1 = TableBuilder::new()
             .mode(FileLoadingMode::MemoryMap)
             .key_value(vec![
@@ -417,7 +418,7 @@ mod utils {
 
         let itr1 = Box::new(IteratorImpl::new(f1, false));
         let itr2 = Box::new(ConcatIterator::new(vec![f2], false));
-        let mut miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
+        let miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
         let item = miter.next().unwrap();
@@ -425,13 +426,14 @@ mod utils {
         let item = miter.next().unwrap();
         assert_eq!(item.key(), b"k2");
         let item = miter.next();
-        println!("{:?}", item);
         assert!(item.is_none());
+        // Rewind iterator
         let item = miter.rewind().unwrap();
         assert_eq!(item.key(), b"k1");
         let item = miter.peek().unwrap();
         assert_eq!(item.key(), b"k1");
         assert_eq!(item.value().value, b"a1");
+        // After next iterator
         let item = miter.next().unwrap();
         assert_eq!(item.key(), b"k2");
         assert_eq!(item.value().value, b"a2");
@@ -457,7 +459,7 @@ mod utils {
 
         let itr1 = Box::new(IteratorImpl::new(f1, true));
         let itr2 = Box::new(ConcatIterator::new(vec![f2], true));
-        let mut miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
+        let miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
         let item = miter.rewind().unwrap();
@@ -484,7 +486,7 @@ mod utils {
 
         let itr1 = Box::new(ConcatIterator::new(vec![f1], false));
         let itr2 = Box::new(ConcatIterator::new(vec![f2], false));
-        let mut miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
+        let miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
 
@@ -629,6 +631,7 @@ mod utils {
         path: String,
         key_value: Vec<(Vec<u8>, Vec<u8>)>,
         mode: FileLoadingMode,
+        pre: Option<String>,
     }
 
     impl TableBuilder {
@@ -638,6 +641,7 @@ mod utils {
                 // key_prefix: "".to_string(),
                 key_value: vec![],
                 mode: FileLoadingMode::MemoryMap,
+                pre: None,
             }
         }
 
@@ -653,6 +657,11 @@ mod utils {
 
         fn key_value(mut self, key_value: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
             self.key_value = key_value;
+            self
+        }
+
+        fn prefix(mut self, prefix: String) -> Self {
+            self.pre = Some(prefix);
             self
         }
 

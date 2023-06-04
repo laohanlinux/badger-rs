@@ -601,16 +601,13 @@ impl ConcatIterator {
     }
 
     fn set_idx(&self, idx: isize) {
-        if idx >= self.iters.len() as isize {
-            *self.index.borrow_mut() = -1;
-        } else {
-            *self.index.borrow_mut() = idx;
-        }
+        *self.index.borrow_mut() = idx;
     }
 
     fn get_cur(&self) -> Option<&IteratorImpl> {
-        #[cfg(test)]
-        assert!(*self.index.borrow() >= 0, "it should be not happen");
+        if *self.index.borrow() < 0 || *self.index.borrow() >= self.iters.len() as isize {
+            return None;
+        }
 
         let cur = self.index.borrow();
         let iter = &self.iters[*cur as usize];
@@ -664,6 +661,10 @@ impl Xiterator for ConcatIterator {
             self.set_idx(0);
         } else {
             self.set_idx(self.iters.len() as isize - 1);
+        }
+        for itr in self.iters.iter() {
+            itr.reset();
+            debug!("rewind iterator");
         }
         // 2: reset iterator of current table
         self.get_cur().unwrap().rewind()

@@ -20,9 +20,16 @@ pub struct MergeCursor {
     pub cur_item: Option<IteratorItem>,
 }
 
+impl MergeCursor {
+    fn replace(&mut self, index: usize, cur_item: Option<IteratorItem>) {
+        self.index = index;
+        self.cur_item = cur_item;
+    }
+}
+
 pub struct MergeIterator {
     pub reverse: bool,
-    pub itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
 }
 
@@ -49,7 +56,6 @@ impl Xiterator for MergeIterator {
         };
 
         for (itr_index, itr) in self.itrs.iter().enumerate() {
-            // debug!("itr {}", itr_index);
             if let Some(item) = itr.peek() {
                 if let Some(have_latest) = &mut latest {
                     match need_cmp(have_latest.key(), item.key()) {
@@ -78,8 +84,7 @@ impl Xiterator for MergeIterator {
         // info!("Do one {}", index);
         if index != usize::MAX {
             assert!(latest.is_some());
-            self.cursor.borrow_mut().cur_item.replace(latest.unwrap());
-            self.cursor.borrow_mut().index = index;
+            self.cursor.borrow_mut().replace(index, latest);
             self.itrs.get(index).as_ref().unwrap().next();
             // debug!("move it");
         } else {
@@ -90,13 +95,44 @@ impl Xiterator for MergeIterator {
     }
 
     fn rewind(&self) -> Option<Self::Output> {
-        for itr in &self.itrs {
+        if self.itrs.is_empty() {
+            return None;
+        }
+        for itr in self.itrs.iter() {
             itr.rewind();
         }
-        if let Some((index, _)) = self.find_smallest_or_biggest() {
-            return self.itrs[index].peek();
+
+        let mut min_or_max = None;
+        if !self.reverse {
+            min_or_max = self.itrs.iter().min_by_key(|itr| {
+                let key = itr.peek();
+                key.unwrap().key
+            });
+        } else {
+            min_or_max = self.itrs.iter().max_by_key(|itr| {
+                let key = itr.peek();
+                key.unwrap().key
+            });
         }
-        None
+        assert!(min_or_max.is_some());
+        let min_or_max = min_or_max.unwrap();
+
+        let mut update = false;
+        let mut indexes = (0..self.itrs.len()).into_iter().collect::<Vec<_>>();
+        if self.reverse {
+            indexes.reverse();
+        }
+        for index in indexes {
+            let itr = &self.itrs[index];
+            if let Some(item) = itr.peek() && item.key() == min_or_max.peek().as_ref().unwrap().key(){
+                    if !update {
+                        self.cursor.borrow_mut().replace(index, Some(item));
+                    }
+                    update = true;
+                    itr.next();
+                }
+        }
+        self.peek()
     }
 
     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
@@ -151,7 +187,7 @@ impl MergeIterator {
 
 #[derive(Default)]
 pub struct MergeIterOverBuilder {
-    all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     reverse: bool,
 }
 
@@ -161,14 +197,14 @@ impl MergeIterOverBuilder {
         self
     }
 
-    pub fn add(mut self, x: Box<dyn Xiterator<Output=IteratorItem>>) -> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     ) -> MergeIterOverBuilder {
         self.all.extend(iters);
         self
