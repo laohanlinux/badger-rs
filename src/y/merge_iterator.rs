@@ -29,7 +29,7 @@ impl MergeCursor {
 
 pub struct MergeIterator {
     pub reverse: bool,
-    pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    pub itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
 }
 
@@ -94,6 +94,7 @@ impl Xiterator for MergeIterator {
         self.peek()
     }
 
+    /// Notice: Only rewind inner iterators list. Not reverse self.itrs vec sequence
     fn rewind(&self) -> Option<Self::Output> {
         if self.itrs.is_empty() {
             return None;
@@ -104,33 +105,39 @@ impl Xiterator for MergeIterator {
 
         let mut min_or_max = None;
         if !self.reverse {
-            min_or_max = self.itrs.iter().min_by_key(|itr| {
-                let key = itr.peek();
-                key.unwrap().key
+            min_or_max = self.itrs.iter().max_by_key(|itr| {
+                if let Some(item) = self.peek() {
+                    return item.key;
+                } else {
+                    vec![]
+                }
             });
         } else {
-            min_or_max = self.itrs.iter().max_by_key(|itr| {
-                let key = itr.peek();
-                key.unwrap().key
+            min_or_max = self.itrs.iter().min_by_key(|itr| {
+                if let Some(item) = self.peek() {
+                    return item.key;
+                } else {
+                    vec![]
+                }
             });
         }
         assert!(min_or_max.is_some());
-        let min_or_max = min_or_max.unwrap();
+        let min_or_max = min_or_max.unwrap().peek();
+        assert!(min_or_max.is_some());
+        let min_or_max_item = min_or_max.unwrap();
 
         let mut update = false;
         let mut indexes = (0..self.itrs.len()).into_iter().collect::<Vec<_>>();
-        if self.reverse {
-            indexes.reverse();
-        }
+
         for index in indexes {
             let itr = &self.itrs[index];
-            if let Some(item) = itr.peek() && item.key() == min_or_max.peek().as_ref().unwrap().key(){
-                    if !update {
-                        self.cursor.borrow_mut().replace(index, Some(item));
-                    }
-                    update = true;
-                    itr.next();
+            if let Some(item) = itr.peek() && item.key() == min_or_max_item.key() {
+                if !update {
+                    self.cursor.borrow_mut().replace(index, Some(item));
                 }
+                update = true;
+                itr.next();
+            }
         }
         self.peek()
     }
@@ -142,6 +149,14 @@ impl Xiterator for MergeIterator {
     // MayBe we avoid copy!
     fn peek(&self) -> Option<Self::Output> {
         self.cursor.borrow().cur_item.clone()
+    }
+}
+
+impl std::iter::Iterator for MergeIterator {
+    type Item = IteratorItem;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Xiterator::next(self)
     }
 }
 
@@ -187,7 +202,7 @@ impl MergeIterator {
 
 #[derive(Default)]
 pub struct MergeIterOverBuilder {
-    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     reverse: bool,
 }
 
@@ -197,14 +212,14 @@ impl MergeIterOverBuilder {
         self
     }
 
-    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output=IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+        iters: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     ) -> MergeIterOverBuilder {
         self.all.extend(iters);
         self
@@ -332,7 +347,7 @@ async fn merge_iter_skip() {
         assert!(miter.peek().is_none());
         let mut count = 0;
         while let Some(value) = miter.next() {
-            info!("{}", String::from_utf8_lossy(value.key()));
+            // info!("{}", String::from_utf8_lossy(value.key()));
             let expect = keys.lock().await;
             let expect = expect.get(count).unwrap();
             assert_eq!(value.key(), expect);
@@ -353,7 +368,7 @@ async fn merge_iter_skip() {
         let mut count = 0;
         keys.lock().await.sort_by(|a, b| b.cmp(a));
         while let Some(value) = miter.next() {
-            info!("{}", String::from_utf8_lossy(value.key()));
+            // info!("{}", String::from_utf8_lossy(value.key()));
             let expect = keys.lock().await;
             let expect = expect.get(count).unwrap();
             assert_eq!(value.key(), expect);
@@ -395,7 +410,7 @@ async fn merge_iter_random() {
         assert!(miter.peek().is_none());
         let mut count = 0;
         while let Some(value) = miter.next() {
-            info!("{}", String::from_utf8_lossy(value.key()));
+            // info!("{}", String::from_utf8_lossy(value.key()));
             let expect = keys.get(count).unwrap();
             assert_eq!(value.key(), expect);
             count += 1;
@@ -415,7 +430,7 @@ async fn merge_iter_random() {
         assert!(miter.peek().is_none());
         let mut count = 0;
         while let Some(value) = miter.next() {
-            info!("{}", String::from_utf8_lossy(value.key()));
+            // info!("{}", String::from_utf8_lossy(value.key()));
             let expect = keys.get(count).unwrap();
             assert_eq!(value.key(), expect);
             count += 1;

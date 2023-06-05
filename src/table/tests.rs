@@ -418,7 +418,7 @@ mod utils {
 
         let itr1 = Box::new(IteratorImpl::new(f1, false));
         let itr2 = Box::new(ConcatIterator::new(vec![f2], false));
-        let miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
+        let miter = MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
         let item = miter.next().unwrap();
@@ -441,7 +441,8 @@ mod utils {
     }
 
     #[test]
-    fn merge_iterator_reversed() {
+    fn merge_iterator_reversed_base() {
+        crate::test_util::tracing_log();
         let f1 = TableBuilder::new()
             .mode(FileLoadingMode::MemoryMap)
             .key_value(vec![
@@ -459,7 +460,8 @@ mod utils {
 
         let itr1 = Box::new(IteratorImpl::new(f1, true));
         let itr2 = Box::new(ConcatIterator::new(vec![f2], true));
-        let miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
+        let miter = MergeIterOverBuilder::default()
+            .reverse(true)
             .add_batch(vec![itr1, itr2])
             .build();
         let item = miter.rewind().unwrap();
@@ -486,7 +488,8 @@ mod utils {
 
         let itr1 = Box::new(ConcatIterator::new(vec![f1], false));
         let itr2 = Box::new(ConcatIterator::new(vec![f2], false));
-        let miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
+        let miter = MergeIterOverBuilder::default()
+            .reverse(true)
             .add_batch(vec![itr1, itr2])
             .build();
 
@@ -505,7 +508,7 @@ mod utils {
     }
 
     #[test]
-    fn merge_iterator_reversed_take_two() {
+    fn merge_iterator_take_two() {
         let f1 = TableBuilder::new().mode(FileLoadingMode::MemoryMap).build();
         let f2 = TableBuilder::new()
             .mode(FileLoadingMode::MemoryMap)
@@ -516,7 +519,7 @@ mod utils {
             .build();
         let itr1 = Box::new(ConcatIterator::new(vec![f1], false));
         let itr2 = Box::new(ConcatIterator::new(vec![f2], false));
-        let mut miter = crate::y::merge_iterator::MergeIterOverBuilder::default()
+        let miter = MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
 
@@ -536,6 +539,7 @@ mod utils {
 
     #[test]
     fn iter() {
+        crate::test_util::tracing_log();
         let f1 = TableBuilder::new()
             .mode(FileLoadingMode::MemoryMap)
             .key_value(vec![
@@ -544,12 +548,16 @@ mod utils {
             ])
             .build();
         let itr = IteratorImpl::new(f1, false);
-        let mut mitr = crate::y::merge_iterator::MergeIterOverBuilder::default()
+        let mitr = MergeIterOverBuilder::default()
             .add(Box::new(itr))
             .build();
         assert_eq!(mitr.next().unwrap().key(), b"k1");
         assert_eq!(mitr.next().unwrap().key(), b"k2");
         assert!(mitr.next().is_none());
+
+        mitr.rewind();
+        let count = mitr.into_iter().count();
+        assert_eq!(count, 1);
     }
 
     #[test]
