@@ -14,7 +14,7 @@ use memmap::{Mmap, MmapMut};
 use parking_lot::*;
 use rand::random;
 use serde_json::to_vec;
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::{Ref, RefCell, RefMut, UnsafeCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::{read_dir, remove_file, File, OpenOptions};
@@ -1066,7 +1066,7 @@ impl ValueLogCore {
             keep: f64,
             discard: f64,
         }
-        let reason = ArcMx::new(parking_lot::Mutex::new(Reason::default()));
+        let mut reason = Reason::default();
         let window = 100.0; //  limit 100M for gc every time
         let mut count = 0;
         // Pick a random start point for the log.
@@ -1074,100 +1074,101 @@ impl ValueLogCore {
         let mut skipped = 0.0;
         let start = SystemTime::now();
         // Random pick a vlog file for gc
-        let lf = self.pick_log().await.ok_or(Error::ValueNoRewrite)?;
-        let fid = lf.read().await.fid;
-        // Ennnnnnn
-        let vlog = unsafe { &*(self as *const ValueLogCore as *mut ValueLogCore) };
-        lf.clone()
-            .read()
-            .await
-            .iterate_by_offset(0, &mut |entry, vptr| {
-                let kv = vlog.get_kv();
-                let reason = reason.clone();
-                Box::pin(async move {
-                    let mut reason = reason.lock();
-                    let esz = vptr.len as f64 / (1 << 20) as f64; // in MBs, +4 for the CAS stuff.
-                    skipped += esz;
-                    if skipped < skip_first_m {
-                        // Skip
-                        return Ok(true);
-                    }
-                    count += 1;
-                    // TODO confiure
-                    if count % 100 == 0 {
-                        tokio::time::sleep(Duration::from_millis(1)).await;
-                    }
-                    reason.total += esz;
-                    if reason.total > window {
-                        // return Err(Error::StopGC);
-                        return Ok(false);
-                    }
-                    if start.elapsed().unwrap().as_secs() > 10 {
-                        // return Err(Error::StopGC);
-                        return Ok(false);
-                    }
-                    // Get the late value
-                    let vs = kv._get(&entry.key)?;
-                    if (vs.meta & MetaBit::BIT_DELETE.bits()) > 0 {
-                        // Key has been deleted. Discard.
-                        reason.discard += esz;
-                        return Ok(true); // Continue
-                    }
-                    if (vs.meta & MetaBit::BIT_VALUE_POINTER.bits()) == 0 {
-                        // Value is stored alongside key. Discard.
-                        reason.discard += esz;
-                        return Ok(true);
-                    }
-                    // Value is still present in value log.
-                    assert!(!vs.value.is_empty());
-                    let mut vptr = vptr.clone(); // TODO avoid copy
-                    vptr.dec(&mut io::Cursor::new(vs.value))?;
-                    if vptr.fid > fid {
-                        // Value is present in a later log. Discard.
-                        reason.discard += esz;
-                        return Ok(true);
-                    }
+        // Ennnnnnn, Why, Oooo No, has a life time problem, so i want to yield a new ownership for Self.
+        let mut fid = 0;
+        {
+            let lf = self.pick_log().await.ok_or(Error::ValueNoRewrite)?;
+            // store the merge file id..
+            fid = lf.read().await.fid;
+            let wg = WaitGroup::new();
+            let fut = Channel::new(1);
+            let notify = fut.tx();
+            let ctx = wg.worker();
+            // spawn a worker to iterator `lf` from offset 0
+            tokio::spawn(async move {
+                lf.read()
+                    .await
+                    .async_iterate_by_offset(ctx, 0, notify)
+                    .await;
+            });
+            while let Ok((entry, vptr)) = fut.recv().await {
+                let esz = vptr.len as f64 / (1 << 20) as f64; // in MBs, +4 for the CAS stuff.
+                skipped += esz;
+                if skipped < skip_first_m {
+                    // Skip
+                    continue;
+                }
+                count += 1;
+                // TODO confiure
+                if count % 100 == 0 {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+                reason.total += esz;
+                if reason.total > window {
+                    return Ok(());
+                }
+                if start.elapsed().unwrap().as_secs() > 10 {
+                    return Ok(());
+                }
+                // Get the late value
+                let vs = self.get_kv()._get(&entry.key)?;
+                if (vs.meta & MetaBit::BIT_DELETE.bits()) > 0 {
+                    // Key has been deleted. Discard.
+                    reason.discard += esz;
+                    continue;
+                }
+                if (vs.meta & MetaBit::BIT_VALUE_POINTER.bits()) == 0 {
+                    // Value is stored alongside key. Discard.
+                    reason.discard += esz;
+                    continue;
+                }
+                // Value is still present in value log.
+                assert!(!vs.value.is_empty());
+                let mut vptr = vptr.clone(); // TODO avoid copy
+                vptr.dec(&mut io::Cursor::new(vs.value))?;
+                if vptr.fid > fid {
+                    // Value is present in a later log. Discard.
+                    reason.discard += esz;
+                    continue;
+                }
 
-                    if vptr.offset > entry.offset {
-                        // Value is present in a later offset, but in the same log.
-                        reason.discard += esz;
-                        return Ok(true);
+                if vptr.offset > entry.offset {
+                    // Value is present in a later offset, but in the same log.
+                    reason.discard += esz;
+                    continue;
+                }
+                if vptr.fid == fid && vptr.offset == entry.offset {
+                    // This is still the active entry, This would need to be rewritten.
+                    reason.keep += esz;
+                } else {
+                    // TODO Maybe abort gc process, it should be happen
+                    info!("Reason={:?}", reason);
+                    let err = self
+                        .read_value_bytes(&vptr, |buf| {
+                            let mut unexpect_entry = Entry::default();
+                            unexpect_entry.dec(&mut io::Cursor::new(buf))?;
+                            unexpect_entry.offset = vptr.offset;
+                            if unexpect_entry.get_cas_counter() == entry.get_cas_counter() {
+                                info!("Latest Entry Header in LSM: {}", unexpect_entry);
+                                info!("Latest Entry in Log: {}", entry);
+                            }
+                            Ok(())
+                        })
+                        .await;
+                    if err.is_err() {
+                        return Err("Stop iteration".into());
                     }
-
-                    if vptr.fid == fid && vptr.offset == entry.offset {
-                        // This is still the active entry, This would need to be rewritten.
-                        reason.keep += esz;
-                    } else {
-                        // TODO Maybe abort gc process, it should be happen
-                        info!("Reason={:?}", reason);
-                        let err = vlog
-                            .read_value_bytes(&vptr, |buf| {
-                                let mut unexpect_entry = Entry::default();
-                                unexpect_entry.dec(&mut io::Cursor::new(buf))?;
-                                unexpect_entry.offset = vptr.offset;
-                                if unexpect_entry.get_cas_counter() == entry.get_cas_counter() {
-                                    info!("Latest Entry Header in LSM: {}", unexpect_entry);
-                                    info!("Latest Entry in Log: {}", entry);
-                                }
-                                Ok(())
-                            })
-                            .await;
-                        if err.is_err() {
-                            return Err("Stop iteration".into());
-                        }
-                    }
-                    Ok(true)
-                })
-            })
-            .await?;
-        let reason = reason.lock();
+                }
+            }
+        }
         info!("Fid: {} Data status={:?}", fid, reason);
         if reason.total < 10.0 || reason.discard < gc_threshold * reason.total {
-            info!("Skipping GC on fid: {}", lf.read().await.fid);
+            info!("Skipping GC on fid: {}", fid);
             return Err(Error::ValueNoRewrite);
         }
 
-        info!("REWRITING VLOG {}", lf.read().await.fid);
+        info!("REWRITING VLOG {}", fid);
+        let lf = self.pick_log_by_vlog_id(&fid).await;
         self.rewrite(lf, self.get_kv()).await?;
         Ok(())
     }

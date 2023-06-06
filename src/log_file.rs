@@ -1,8 +1,11 @@
+use crate::types::Channel;
 use crate::value_log::{Entry, Header, ValuePointer};
 use crate::y::{create_synced_file, Result};
 use crate::y::{is_eof, read_at, Decode};
 use crate::Error;
+use async_channel::Sender;
 use byteorder::{BigEndian, ReadBytesExt};
+use drop_cell::defer;
 use either::Either;
 use log::info;
 use memmap::{Mmap, MmapMut};
@@ -106,6 +109,27 @@ impl LogFile {
             v.push((entry, vpt))
         }
         Ok((v, cursor_offset))
+    }
+
+    pub(crate) async fn async_iterate_by_offset(
+        &self,
+        ctx: awaitgroup::Worker,
+        mut offset: u32,
+        notify: Sender<(Entry, ValuePointer)>,
+    ) {
+        defer! {ctx.done()}
+        loop {
+            let (v, next) = self.read_entries(offset, 1).await.unwrap();
+            offset = next;
+            if v.is_empty() {
+                notify.close();
+                return;
+            } else {
+                for item in v {
+                    notify.send(item).await.unwrap();
+                }
+            }
+        }
     }
 
     // async iterate from offset that must be call with thread safety
