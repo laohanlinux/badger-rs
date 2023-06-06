@@ -39,13 +39,6 @@ async fn t_1_write() {
 
 #[tokio::test]
 async fn t_batch_write() {
-    let default_panic = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        default_panic(info);
-        info!("panic info: {}", info);
-        std::fs::write("out.put", info.to_string()).expect("TODO: panic message");
-        std::process::exit(1);
-    }));
     use crate::test_util::{mock_log, mock_log_terminal, random_tmp_dir, tracing_log};
     tracing_log();
     let dir = random_tmp_dir();
@@ -111,7 +104,10 @@ async fn t_concurrent_write() {
     let keys = keys.lock().await;
     let got = kv.get_with_ext(b"k00003_00000008").await.unwrap();
     let value = got.read().await;
-    println!("{:?}", String::from_utf8_lossy(value.get_value().await.as_ref().unwrap()));
+    println!(
+        "{:?}",
+        String::from_utf8_lossy(value.get_value().await.as_ref().unwrap())
+    );
     while let Some(item) = itr.next().await {
         let kv_item = item.read().await;
         println!("load key: {}", String::from_utf8_lossy(kv_item.key()));

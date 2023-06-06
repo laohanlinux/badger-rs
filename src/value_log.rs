@@ -8,8 +8,8 @@ use crc32fast::Hasher;
 use drop_cell::defer;
 use either::Either;
 use libc::{endgrent, memchr};
-use log::info;
 use log::kv::Source;
+use log::{debug, info};
 use memmap::{Mmap, MmapMut};
 use parking_lot::*;
 use rand::random;
@@ -467,6 +467,7 @@ impl ValueLogCore {
         let mut path = Path::new(dir_path).join(format!("{:06}.vlog", fid));
         path.to_str().unwrap().to_string()
     }
+
     fn fpath(&self, fid: u32) -> String {
         ValueLogCore::vlog_file_path(&self.dir_path, fid)
     }
@@ -1080,10 +1081,10 @@ impl ValueLogCore {
             let lf = self.pick_log().await.ok_or(Error::ValueNoRewrite)?;
             // store the merge file id..
             fid = lf.read().await.fid;
-            let wg = WaitGroup::new();
+            let wg = Closer::new("relay iterator".to_owned());
             let fut = Channel::new(1);
             let notify = fut.tx();
-            let ctx = wg.worker();
+            let ctx = wg.spawn();
             // spawn a worker to iterator `lf` from offset 0
             tokio::spawn(async move {
                 lf.read()
@@ -1099,15 +1100,25 @@ impl ValueLogCore {
                     continue;
                 }
                 count += 1;
+
+                #[cfg(test)]
+                if count == 1 {
+                    debug!("merge from {}", vptr.offset);
+                }
+
                 // TODO confiure
                 if count % 100 == 0 {
                     tokio::time::sleep(Duration::from_millis(1)).await;
                 }
                 reason.total += esz;
+                // more then window limit.
                 if reason.total > window {
+                    wg.signal_and_wait().await;
                     return Ok(());
                 }
+                // more then merge max time
                 if start.elapsed().unwrap().as_secs() > 10 {
+                    wg.signal_and_wait().await;
                     return Ok(());
                 }
                 // Get the late value
@@ -1156,11 +1167,14 @@ impl ValueLogCore {
                         })
                         .await;
                     if err.is_err() {
+                        wg.signal_and_wait().await;
                         return Err("Stop iteration".into());
                     }
                 }
             }
+            wg.signal_and_wait().await;
         }
+
         info!("Fid: {} Data status={:?}", fid, reason);
         if reason.total < 10.0 || reason.discard < gc_threshold * reason.total {
             info!("Skipping GC on fid: {}", fid);

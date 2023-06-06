@@ -29,7 +29,7 @@ impl MergeCursor {
 
 pub struct MergeIterator {
     pub reverse: bool,
-    pub itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
 }
 
@@ -202,7 +202,7 @@ impl MergeIterator {
 
 #[derive(Default)]
 pub struct MergeIterOverBuilder {
-    all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     reverse: bool,
 }
 
@@ -212,14 +212,14 @@ impl MergeIterOverBuilder {
         self
     }
 
-    pub fn add(mut self, x: Box<dyn Xiterator<Output=IteratorItem>>) -> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     ) -> MergeIterOverBuilder {
         self.all.extend(iters);
         self

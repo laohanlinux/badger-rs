@@ -1,4 +1,4 @@
-use crate::types::Channel;
+use crate::types::{Channel, Closer};
 use crate::value_log::{Entry, Header, ValuePointer};
 use crate::y::{create_synced_file, Result};
 use crate::y::{is_eof, read_at, Decode};
@@ -21,8 +21,8 @@ use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::atomic::AtomicU64;
-use std::task::{Context, Poll};
 use std::time::SystemTime;
+use tokio::select;
 
 // MmapType is a Mmap and MmapMut tule
 pub(crate) struct MmapType(Either<Mmap, MmapMut>);
@@ -113,20 +113,25 @@ impl LogFile {
 
     pub(crate) async fn async_iterate_by_offset(
         &self,
-        ctx: awaitgroup::Worker,
+        ctx: Closer,
         mut offset: u32,
         notify: Sender<(Entry, ValuePointer)>,
     ) {
         defer! {ctx.done()}
+        defer! {notify.close();}
+        let has_been_close = ctx.has_been_closed();
         loop {
             let (v, next) = self.read_entries(offset, 1).await.unwrap();
             offset = next;
             if v.is_empty() {
-                notify.close();
                 return;
             } else {
+                // TODO batch sender
                 for item in v {
-                    notify.send(item).await.unwrap();
+                    select! {
+                       _ = has_been_close.recv() => {},
+                       _ = notify.send(item) => {},
+                    }
                 }
             }
         }
