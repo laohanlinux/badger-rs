@@ -107,8 +107,10 @@ impl Xiterator for MergeIterator {
         if !self.reverse {
             min_or_max = self.itrs.iter().max_by_key(|itr| {
                 if let Some(item) = self.peek() {
+                    debug!("peek: {}", item);
                     return item.key;
                 } else {
+                    debug!("ONon, peek");
                     vec![]
                 }
             });
@@ -122,12 +124,21 @@ impl Xiterator for MergeIterator {
             });
         }
         assert!(min_or_max.is_some());
+        debug!(
+            "min or max {}, {}",
+            self.reverse,
+            min_or_max.as_ref().unwrap().id()
+        );
         let min_or_max = min_or_max.unwrap().peek();
-        assert!(min_or_max.is_some());
+        if min_or_max.is_none() {
+            assert_eq!(self.count(), 0);
+            return None;
+        }
+
         let min_or_max_item = min_or_max.unwrap();
 
         let mut update = false;
-        let mut indexes = (0..self.itrs.len()).into_iter().collect::<Vec<_>>();
+        let indexes = (0..self.itrs.len()).into_iter().collect::<Vec<_>>();
 
         for index in indexes {
             let itr = &self.itrs[index];
@@ -161,6 +172,27 @@ impl std::iter::Iterator for MergeIterator {
 }
 
 impl MergeIterator {
+    fn count(&self) -> usize {
+        let mut count = 0;
+        for itr in &self.itrs {
+            itr.rewind();
+        }
+        for (index, itr) in self.itrs.iter().enumerate() {
+            let ay = std::any::Any::type_id(itr);
+
+            // while itr.next().is_some() {
+            debug!(
+                "{:?}, {}, cout => {:?}",
+                ay,
+                index,
+                String::from_utf8_lossy(&itr.peek().unwrap().key())
+            );
+            count += 1;
+            //}
+        }
+        count
+    }
+
     fn find_smallest_or_biggest(&self) -> Option<(usize, Vec<usize>)> {
         if self.itrs.is_empty() {
             return None;
