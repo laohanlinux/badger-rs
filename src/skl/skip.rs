@@ -469,7 +469,6 @@ impl Xiterator for UniIterator {
     type Output = IteratorItem;
 
     fn next(&self) -> Option<Self::Output> {
-        // println!("{:?}, {}, execute at UniIterator!", self.iter, self.id);
         if !self.reversed {
             self.iter.next()
         } else {
@@ -495,6 +494,10 @@ impl Xiterator for UniIterator {
 
     fn peek(&self) -> Option<Self::Output> {
         self.iter.peek()
+    }
+
+    fn id(&self) -> String {
+        format!("st_{}", random::<u32>())
     }
 
     fn close(&self) {

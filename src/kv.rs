@@ -14,8 +14,7 @@ use crate::y::{
 };
 use crate::Error::{NotFound, Unexpected};
 use crate::{
-    Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager,
-    UniIterator, Xiterator,
+    Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager, UniIterator, Xiterator,
 };
 use anyhow::__private::kind::TraitKind;
 use async_channel::RecvError;

@@ -548,9 +548,7 @@ mod utils {
             ])
             .build();
         let itr = IteratorImpl::new(f1, false);
-        let mitr = MergeIterOverBuilder::default()
-            .add(Box::new(itr))
-            .build();
+        let mitr = MergeIterOverBuilder::default().add(Box::new(itr)).build();
         assert_eq!(mitr.next().unwrap().key(), b"k1");
         assert_eq!(mitr.next().unwrap().key(), b"k2");
         assert!(mitr.next().is_none());

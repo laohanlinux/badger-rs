@@ -1,13 +1,13 @@
 use crate::iterator::PreFetchStatus::Prefetched;
 use crate::kv::_BADGER_PREFIX;
 use crate::types::{ArcMx, ArcRW, Channel, Closer, TArcMx, TArcRW};
+use crate::ValueStruct;
 use crate::{
     kv::KV,
     types::XArc,
     value_log::{MetaBit, ValuePointer},
     ArcBlockBytes, BlockBytes, Chunk, Decode, MergeIterator, Result, Xiterator, EMPTY_SLICE,
 };
-use crate::{ValueStruct};
 use atom_box::AtomBox;
 use atomic::Atomic;
 use log::Metadata;
@@ -91,7 +91,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-            .await?;
+        .await?;
         Ok(ch.recv().await.unwrap())
     }
 
@@ -102,7 +102,7 @@ impl KVItemInner {
     // Note that the call to the consumer func happens synchronously.
     pub(crate) async fn value(
         &self,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
@@ -147,7 +147,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-            .await?;
+        .await?;
         Ok(())
     }
 
@@ -317,14 +317,14 @@ impl IteratorExt {
     async fn valid_for_prefix(&self, prefix: &[u8]) -> bool {
         self.item.read().is_some()
             && self
-            .item
-            .read()
-            .as_ref()
-            .unwrap()
-            .read()
-            .await
-            .key()
-            .starts_with(prefix)
+                .item
+                .read()
+                .as_ref()
+                .unwrap()
+                .read()
+                .await
+                .key()
+                .starts_with(prefix)
     }
 
     // Close the iterator, It is important to call this when you're done with iteration.

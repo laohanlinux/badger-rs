@@ -309,6 +309,7 @@ impl Xiterator for IteratorImpl {
 
     fn rewind(&self) -> Option<Self::Output> {
         if !self.reversed {
+            debug!("rewind at iteratorImpl, {}", self.id());
             self.seek_to_first()
         } else {
             self.seek_to_last()
@@ -334,6 +335,10 @@ impl Xiterator for IteratorImpl {
             None
         }
     }
+
+    fn id(&self) -> String {
+        format!("iteratorImpl_{}", self.table.id())
+    }
 }
 
 impl IteratorImpl {
@@ -350,6 +355,9 @@ impl IteratorImpl {
     }
 
     pub fn seek_to_first(&self) -> Option<IteratorItem> {
+        #[cfg(test)]
+        assert!(!self.table.block_index.is_empty());
+
         if self.table.block_index.is_empty() {
             return None;
         }
@@ -712,6 +720,19 @@ impl Xiterator for ConcatIterator {
             return None;
         }
         cur.as_ref().unwrap().peek()
+    }
+
+    fn id(&self) -> String {
+        let id = self
+            .iters
+            .iter()
+            .map(|itr| itr.id().clone())
+            .collect::<Vec<_>>()
+            .join(",");
+        if id.is_empty() {
+            return "iterator_impl_empty".to_owned();
+        }
+        id
     }
 }
 

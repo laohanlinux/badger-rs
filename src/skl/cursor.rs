@@ -8,6 +8,7 @@ use std::cell::RefCell;
 pub struct Cursor<'a> {
     pub(crate) list: &'a SkipList,
     item: RefCell<Option<&'a Node>>,
+    id: String,
 }
 
 impl<'a> Cursor<'a> {
@@ -15,6 +16,7 @@ impl<'a> Cursor<'a> {
         Cursor {
             list,
             item: RefCell::new(Some(list.get_head())),
+            id: format!("cursor"),
         }
     }
 
@@ -137,6 +139,10 @@ impl<'a> Xiterator for CursorReverse<'a> {
 
     fn peek(&self) -> Option<Self::Output> {
         self.iter._peek()
+    }
+
+    fn id(&self) -> String {
+        self.iter.id.clone()
     }
 }
 
