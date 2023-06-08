@@ -170,7 +170,7 @@ impl KVItemInner {
 
     // Returns the  CAS counter associated with the value.
     pub(crate) fn counter(&self) -> u64 {
-        self.cas_counter.load(atomic::Ordering::Relaxed)
+        self.cas_counter.load(atomic::Ordering::Acquire)
     }
 
     // Returns the user_meta set by the user. Typically, this byte, optionally set by the user
@@ -341,7 +341,7 @@ impl IteratorExt {
             let mut item = item.write().await;
             item.meta = vs.meta;
             item.user_meta = vs.user_meta;
-            item.cas_counter.store(vs.cas_counter, Ordering::Relaxed);
+            item.cas_counter.store(vs.cas_counter, Ordering::Release);
             item.key.extend(self.itr.peek().as_ref().unwrap().key());
             item.vptr.extend(&vs.value);
             item.value.lock().await.clear();

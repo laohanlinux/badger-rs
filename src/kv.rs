@@ -559,6 +559,7 @@ impl KV {
                 // No need to decode existing value. Just need old CAS counter.
                 if old_value.cas_counter != entry.cas_counter_check {
                     resp_ch.send(Err(Error::ValueCasMisMatch)).await.unwrap();
+                    debug!("<<<<< {}, old, {}, new {}", entry.hex_str(), old_value.cas_counter, entry.cas_counter_check);
                     continue;
                 }
             }

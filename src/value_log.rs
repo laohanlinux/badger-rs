@@ -168,6 +168,10 @@ impl Entry {
     pub fn set_cas_counter(&self, cas: u64) {
         self.cas_counter.store(cas, Ordering::Release)
     }
+
+    pub fn hex_str(&self) -> String {
+        String::from_utf8_lossy(&self.key).to_string()
+    }
 }
 
 impl Entry {

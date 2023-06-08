@@ -147,31 +147,36 @@ async fn t_cas() {
         let key = i.to_string().into_bytes();
         let value = i.to_string().into_bytes();
         let got = kv.get_with_ext(&key).await.unwrap();
+        let pair = got.read().await.clone(); 
         let got_value = got.read().await.get_value().await.unwrap();
         assert_eq!(got_value, value, "{}", String::from_utf8_lossy(&key));
         let counter = got.read().await.counter();
         assert_eq!(i + 1, counter as usize);
-        items.push(got);
+        items.push(pair);
     }
 
     debug!("change cas to 6 if it is equal 5, otherwise change to 5!!!, that should be all failed because comparse_and_set failed!!!");
     for i in 0..n {
         let key = i.to_string().into_bytes();
         let value = i.to_string().into_bytes();
-        let mut cc = items[i].read().await.counter();
+        let mut cc = items[i].counter();
         if cc == 5 {
             cc = 6;
         } else {
             cc = 5;
         }
+        tokio::time::sleep(Duration::from_millis(200)).await;
         let ret = kv.compare_and_set(key, value, cc).await.unwrap_err();
         debug!(
-            "last counter: {}",
-            kv.to_owned().get_last_used_cas_counter()
+            "<<<<<<<<last counter: {}, {}",
+            kv.to_owned().get_last_used_cas_counter(), ret,
         );
         assert_eq!(ret.to_string(), Error::ValueCasMisMatch.to_string());
     }
-    // only incr counter
+    for (cas, item) in items.iter().enumerate() {
+        assert_eq!(cas + 1, item.counter() as usize);
+    }
+    // Although there are new key-value pairs successfully updated, the CAS (comparse_and_swap) value will still increment.
     assert_eq!(kv.to_ref().get_last_used_cas_counter(), 2 * n as u64);
     debug!(
         "change value to zzz{n} and the operation should be succeed because counter is right!!!"
@@ -180,8 +185,9 @@ async fn t_cas() {
         let key = i.to_string().into_bytes();
         let value = format!("zzz{}", i).into_bytes();
         let ret = kv
-            .compare_and_set(key, value, items[i].read().await.counter())
+            .compare_and_set(key, value, items[i].counter())
             .await;
+        debug!("====> {:?}", ret);
         assert!(ret.is_ok());
     }
 
