@@ -1,5 +1,5 @@
-use log::info;
 use log::kv::ToValue;
+use log::{debug, info};
 use std::env::temp_dir;
 use std::io::Write;
 use std::process::id;
@@ -122,6 +122,7 @@ async fn t_concurrent_write() {
 
 #[tokio::test]
 async fn t_cas() {
+    crate::test_util::tracing_log();
     let n = 299;
     let kv = build_kv().await;
     // console_subscriber::init();
@@ -129,27 +130,31 @@ async fn t_cas() {
         .into_iter()
         .map(|i| {
             Entry::default()
-                .key(format!("{}", i).into_bytes())
-                .value(format!("{}", i).into_bytes())
+                .key(i.to_string().into_bytes())
+                .value(i.to_string().into_bytes())
         })
         .collect::<Vec<_>>();
+    // batch set kv pair
     for got in kv.batch_set(entries.clone()).await {
         assert!(got.is_ok());
     }
+    debug!("after batch set kv pair init");
     tokio::time::sleep(Duration::from_secs(3)).await;
+    // load expect output pairs
     let mut items = vec![];
     for i in 0..n {
-        let key = format!("{}", i).as_bytes().to_vec();
-        let value = format!("{}", i).as_bytes().to_vec();
+        let key = i.to_string().into_bytes();
+        let value = i.to_string().into_bytes();
         let got = kv.get_with_ext(&key).await.unwrap();
         let got_value = got.read().await.get_value().await.unwrap();
         assert_eq!(got_value, value, "{}", String::from_utf8_lossy(&key));
         items.push(got);
     }
 
+    debug!("change cas to 6 if it is equal 5, otherwise change to 5!!!, that should be all failed because comparse_and_set failed!!!");
     for i in 0..n {
-        let key = format!("{}", i).into_bytes();
-        let value = format!("{}", i).into_bytes();
+        let key = i.to_string().into_bytes();
+        let value = i.to_string().into_bytes();
         let mut cc = items[i].read().await.counter();
         if cc == 5 {
             cc = 6;
@@ -160,8 +165,11 @@ async fn t_cas() {
         assert_eq!(ret.to_string(), Error::ValueCasMisMatch.to_string());
     }
 
+    debug!(
+        "change value to zzz{n} and the operation should be succeed because counter is right!!!"
+    );
     for i in 0..n {
-        let key = format!("{}", i).into_bytes();
+        let key = i.to_string().into_bytes();
         let value = format!("zzz{}", i).into_bytes();
         let ret = kv
             .compare_and_set(key, value, items[i].read().await.counter())
@@ -171,10 +179,12 @@ async fn t_cas() {
 
     tokio::time::sleep(Duration::from_secs(3)).await;
     for i in 0..n {
-        let key = format!("{}", i).as_bytes().to_vec();
+        let key = i.to_string().into_bytes();
         let value = format!("zzz{}", i).as_bytes().to_vec();
-        let got = kv.get(&key).await.unwrap();
-        assert_eq!(got, value);
+        let got = kv.get_with_ext(&key).await.unwrap();
+        let got = got.read().await;
+        assert_eq!(got.get_value().await.unwrap(), value);
+        assert_eq!(n * 2 + i + 1, got.counter() as usize);
     }
 }
 
@@ -227,7 +237,7 @@ async fn t_kv_get() {
 }
 
 #[tokio::test]
-async fn t_exists() {
+async fn t_kv_exists() {
     let kv = build_kv().await;
     // populate with one entry
     kv.set(b"key1".to_vec(), b"val1".to_vec(), 0x00)
@@ -246,7 +256,7 @@ async fn t_exists() {
 // Put a lot of data to move some data to disk.
 // WARNING: This test might take a while but it should pass!
 #[tokio::test]
-async fn t_get_more() {
+async fn t_kv_get_more() {
     let kv = build_kv().await;
     let n = 10000;
     let m = 100;
