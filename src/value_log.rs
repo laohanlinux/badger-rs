@@ -162,7 +162,11 @@ impl Entry {
     }
 
     pub fn get_cas_counter(&self) -> u64 {
-        self.cas_counter.load(Ordering::Relaxed)
+        self.cas_counter.load(Ordering::Acquire)
+    }
+
+    pub fn set_cas_counter(&self, cas: u64) {
+        self.cas_counter.store(cas, Ordering::Release)
     }
 }
 

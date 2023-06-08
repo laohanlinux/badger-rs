@@ -220,8 +220,7 @@ impl KV {
         // written value log entry that we replay.  (Subsequent value log entries might be _less_
         // than lastUsedCasCounter, if there was value log gc so we have to max() values while
         // replaying.)
-        xout.last_used_cas_counter
-            .store(item.cas_counter, Ordering::Relaxed);
+        xout.update_last_used_cas_counter(item.cas_counter);
 
         let mut vptr = ValuePointer::default();
         if !item.value.is_empty() {
@@ -248,11 +247,9 @@ impl KV {
                         info!("First key={}", string::String::from_utf8_lossy(&entry.key));
                     }
                     first = false;
-                    if xout.last_used_cas_counter.load(Ordering::Relaxed)
-                        < entry.cas_counter.load(Ordering::Relaxed)
-                    {
-                        xout.last_used_cas_counter
-                            .store(entry.cas_counter.load(Ordering::Relaxed), Ordering::Relaxed);
+                    // TODO maybe use comparse set
+                    if xout.get_last_used_cas_counter() < entry.get_cas_counter() {
+                        xout.update_last_used_cas_counter(entry.get_cas_counter());
                     }
 
                     // TODO why?
@@ -454,7 +451,7 @@ impl KV {
                 let value = ValueStruct {
                     meta: 0,
                     user_meta: 0,
-                    cas_counter: self.last_used_cas_counter.load(Ordering::Acquire),
+                    cas_counter: self.get_last_used_cas_counter(),
                     value: offset,
                 };
                 task.must_mt().put(_HEAD, value);
@@ -738,6 +735,19 @@ impl KV {
             return ValuePointer::default();
         }
         unsafe { ptr.as_ref().unwrap().clone() }
+    }
+
+    pub(crate) fn get_last_used_cas_counter(&self) -> u64 {
+        self.last_used_cas_counter.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn update_last_used_cas_counter(&self, cas: u64) {
+        self.last_used_cas_counter.store(cas, Ordering::Release);
+    }
+
+    pub(crate) fn incr_last_userd_cas_counter(&self, incr: u64) {
+        self.last_used_cas_counter
+            .fetch_add(incr, Ordering::Release);
     }
 }
 

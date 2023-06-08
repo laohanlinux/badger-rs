@@ -134,11 +134,12 @@ async fn t_cas() {
                 .value(i.to_string().into_bytes())
         })
         .collect::<Vec<_>>();
-    // batch set kv pair
+    // batch set kv pair, cas update to n
     for got in kv.batch_set(entries.clone()).await {
         assert!(got.is_ok());
     }
     debug!("after batch set kv pair init");
+    assert_eq!(kv.to_ref().get_last_used_cas_counter(), n as u64);
     tokio::time::sleep(Duration::from_secs(3)).await;
     // load expect output pairs
     let mut items = vec![];
@@ -148,6 +149,8 @@ async fn t_cas() {
         let got = kv.get_with_ext(&key).await.unwrap();
         let got_value = got.read().await.get_value().await.unwrap();
         assert_eq!(got_value, value, "{}", String::from_utf8_lossy(&key));
+        let counter = got.read().await.counter();
+        assert_eq!(i + 1, counter as usize);
         items.push(got);
     }
 
@@ -162,9 +165,14 @@ async fn t_cas() {
             cc = 5;
         }
         let ret = kv.compare_and_set(key, value, cc).await.unwrap_err();
+        debug!(
+            "last counter: {}",
+            kv.to_owned().get_last_used_cas_counter()
+        );
         assert_eq!(ret.to_string(), Error::ValueCasMisMatch.to_string());
     }
-
+    // only incr counter
+    assert_eq!(kv.to_ref().get_last_used_cas_counter(), 2 * n as u64);
     debug!(
         "change value to zzz{n} and the operation should be succeed because counter is right!!!"
     );
@@ -177,6 +185,7 @@ async fn t_cas() {
         assert!(ret.is_ok());
     }
 
+    assert_eq!(kv.to_ref().get_last_used_cas_counter(), 2 * n as u64);
     tokio::time::sleep(Duration::from_secs(3)).await;
     for i in 0..n {
         let key = i.to_string().into_bytes();
