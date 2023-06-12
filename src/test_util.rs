@@ -85,12 +85,13 @@ pub(crate) fn tracing_log() {
 
     let _ = tracing_log::LogTracer::init();
     let format = tracing_subscriber::fmt::format()
+        .with_thread_names(true)
         .with_level(true)
         .with_target(true)
         .with_timer(LocalTimer);
 
     let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
+        .with_max_level(tracing::Level::WARN)
         .with_writer(io::stdout)
         .with_ansi(true)
         .event_format(format)

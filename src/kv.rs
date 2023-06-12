@@ -554,12 +554,19 @@ impl KV {
         defer! {info!("exit write to lsm")}
         for (i, pair) in req.entries.into_iter().enumerate() {
             let (entry, resp_ch) = pair.to_owned();
+
+            #[cfg(test)]
+                let debug_entry = entry.clone();
+
             if entry.cas_counter_check != 0 {
+                // TODO FIXME if not found the key，maybe push something to resp_ch
                 let old_value = self._get(&entry.key)?;
                 // No need to decode existing value. Just need old CAS counter.
                 if old_value.cas_counter != entry.cas_counter_check {
                     resp_ch.send(Err(Error::ValueCasMisMatch)).await.unwrap();
-                    debug!("<<<<< {}, old, {}, new {}", entry.hex_str(), old_value.cas_counter, entry.cas_counter_check);
+                    #[cfg(test)]
+                    warn!("abort cas check, {}, old, {}, new {}, {:?}", entry.hex_str(), old_value.cas_counter, entry.cas_counter_check, String::from_utf8_lossy(&entry.value));
+
                     continue;
                 }
             }
@@ -598,11 +605,14 @@ impl KV {
                 );
             }
             self.must_mt().put(&key, value);
-            debug!(
-                "key #{:?} value into SkipList!!!",
-                String::from_utf8_lossy(&key)
+
+            #[cfg(test)]
+            warn!(
+                "key #{:?}, cas:{}, check_cas:{}, value #{:?} into SkipList!!!",
+                String::from_utf8_lossy(&key), debug_entry.get_cas_counter(), debug_entry.cas_counter_check,
+                String::from_utf8_lossy(&debug_entry.value),
             );
-            info!("Lsm ok");
+
             resp_ch.send(Ok(())).await.unwrap();
         }
 
@@ -1003,7 +1013,7 @@ impl ArcKV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1090,7 +1100,7 @@ impl ArcKV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         info!("ready to yield item value from vlog!");
         // no value

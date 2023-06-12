@@ -1,5 +1,5 @@
 use log::kv::ToValue;
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::env::temp_dir;
 use std::io::Write;
 use std::process::id;
@@ -160,7 +160,7 @@ async fn t_cas() {
     debug!("It should be all failed because comparse_and_set failed!!!");
     for i in 0..n {
         let key = i.to_string().into_bytes();
-        let value = i.to_string().into_bytes();
+        let value = (i + 100).to_string().into_bytes();
         let mut cc = items[i].counter();
         let ret = kv.compare_and_set(key, value, cc + 1).await.unwrap_err();
         assert_eq!(ret.to_string(), Error::ValueCasMisMatch.to_string());
@@ -179,8 +179,21 @@ async fn t_cas() {
     for i in 0..n {
         let key = i.to_string().into_bytes();
         let value = format!("zzz{}", i).into_bytes();
+        {
+            let got = kv.get_with_ext(&key).await.unwrap();
+            let got = got.read().await;
+            debug!(
+                "got a value: {}, cas: {}",
+                String::from_utf8_lossy(&got.get_value().await.unwrap()),
+                got.counter(),
+            );
+        }
         let ret = kv.compare_and_set(key, value, items[i].counter()).await;
-        assert!(ret.is_ok());
+        if ret.is_err() {
+            warn!("fail to check compare and set");
+            return;
+        }
+        assert!(ret.is_ok(), "{}", i);
     }
     debug!("cas has update, try it again");
     //assert_eq!(kv.to_ref().get_last_used_cas_counter(), 2 * n as u64);
