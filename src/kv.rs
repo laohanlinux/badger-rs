@@ -339,7 +339,22 @@ impl KV {
         // TODO add metrics
         for tb in tables {
             let vs = unsafe { tb.as_ref().unwrap().get(key) };
-            debug!("vs: {:?}", vs);
+
+
+            #[cfg(test)]
+            let keys = vec![b"283".to_vec(), b"284".to_vec(), b"285".to_vec()];
+            if keys.contains(&key.to_vec()) {
+                unsafe  {
+                    let st = tb.as_ref().unwrap();
+                    let itr = st.new_cursor();
+                    for item in itr.next() {
+                        let arena = st.arena_ref();
+                        warn!("Hiiiii, {}", String::from_utf8_lossy(item.key(arena)));
+                    }
+                }
+                warn!("Hiiiiiiiiiiiiii");
+            }
+
             if vs.is_none() {
                 continue;
             }
@@ -556,7 +571,7 @@ impl KV {
             let (entry, resp_ch) = pair.to_owned();
 
             #[cfg(test)]
-                let debug_entry = entry.clone();
+            let debug_entry = entry.clone();
 
             if entry.cas_counter_check != 0 {
                 // TODO FIXME if not found the key，maybe push something to resp_ch
@@ -565,7 +580,13 @@ impl KV {
                 if old_value.cas_counter != entry.cas_counter_check {
                     resp_ch.send(Err(Error::ValueCasMisMatch)).await.unwrap();
                     #[cfg(test)]
-                    warn!("abort cas check, {}, old, {}, new {}, {:?}", entry.hex_str(), old_value.cas_counter, entry.cas_counter_check, String::from_utf8_lossy(&entry.value));
+                    warn!(
+                        "abort cas check, #{}, old, {}, new {}, {:?}",
+                        entry.hex_str(),
+                        old_value.pretty(),
+                        entry.cas_counter_check,
+                        String::from_utf8_lossy(&entry.value)
+                    );
 
                     continue;
                 }
@@ -609,7 +630,9 @@ impl KV {
             #[cfg(test)]
             warn!(
                 "key #{:?}, cas:{}, check_cas:{}, value #{:?} into SkipList!!!",
-                String::from_utf8_lossy(&key), debug_entry.get_cas_counter(), debug_entry.cas_counter_check,
+                String::from_utf8_lossy(&key),
+                debug_entry.get_cas_counter(),
+                debug_entry.cas_counter_check,
                 String::from_utf8_lossy(&debug_entry.value),
             );
 
@@ -1013,7 +1036,7 @@ impl ArcKV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1100,7 +1123,7 @@ impl ArcKV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         info!("ready to yield item value from vlog!");
         // no value

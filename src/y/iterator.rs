@@ -59,11 +59,16 @@ impl ValueStruct {
         self.cas_counter = cursor.read_u64::<BigEndian>().unwrap();
         self.value.extend_from_slice(&buffer[Self::header_size()..]);
     }
+
+    #[cfg(test)]
+    pub(crate) fn pretty(&self) -> String {
+        format!("meta: {}, user_meta: {}, cas: {}, value: {}", self.meta, self.user_meta, self.cas_counter, String::from_utf8_lossy(&self.value))
+    }
 }
 
 impl<T> From<T> for ValueStruct
-where
-    T: AsRef<[u8]>,
+    where
+        T: AsRef<[u8]>,
 {
     fn from(buffer: T) -> Self {
         let mut v = ValueStruct::default();

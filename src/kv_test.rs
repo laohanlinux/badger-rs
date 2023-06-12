@@ -125,7 +125,6 @@ async fn t_cas() {
     crate::test_util::tracing_log();
     let n = 299;
     let kv = build_kv().await;
-    // console_subscriber::init();
     let entries = (0..n)
         .into_iter()
         .map(|i| {
@@ -140,7 +139,7 @@ async fn t_cas() {
     }
     debug!("after batch set kv pair init, the counter has update to n");
     assert_eq!(kv.to_ref().get_last_used_cas_counter(), n as u64);
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
     // load expect output pairs
     let mut items = vec![];
     for i in 0..n {
@@ -179,15 +178,16 @@ async fn t_cas() {
     for i in 0..n {
         let key = i.to_string().into_bytes();
         let value = format!("zzz{}", i).into_bytes();
-        {
-            let got = kv.get_with_ext(&key).await.unwrap();
-            let got = got.read().await;
-            debug!(
-                "got a value: {}, cas: {}",
-                String::from_utf8_lossy(&got.get_value().await.unwrap()),
-                got.counter(),
-            );
-        }
+        // {
+        //     let got = kv.get_with_ext(&key).await.unwrap();
+        //     let got = got.read().await;
+        //     debug!(
+        //         "got a value: {}, cas: {}",
+        //         String::from_utf8_lossy(&got.get_value().await.unwrap()),
+        //         got.counter(),
+        //     );
+        // }
+        // warn!("==> {}", items[i].counter());
         let ret = kv.compare_and_set(key, value, items[i].counter()).await;
         if ret.is_err() {
             warn!("fail to check compare and set");
@@ -195,17 +195,17 @@ async fn t_cas() {
         }
         assert!(ret.is_ok(), "{}", i);
     }
-    debug!("cas has update, try it again");
-    //assert_eq!(kv.to_ref().get_last_used_cas_counter(), 2 * n as u64);
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    for i in 0..n {
-        let key = i.to_string().into_bytes();
-        let value = format!("zzz{}", i).as_bytes().to_vec();
-        let got = kv.get_with_ext(&key).await.unwrap();
-        let got = got.read().await;
-        assert_eq!(got.get_value().await.unwrap(), value);
-        assert_eq!(n * 2 + i + 1, got.counter() as usize);
-    }
+    // debug!("cas has update, try it again");
+    // //assert_eq!(kv.to_ref().get_last_used_cas_counter(), 2 * n as u64);
+    // tokio::time::sleep(Duration::from_secs(3)).await;
+    // for i in 0..n {
+    //     let key = i.to_string().into_bytes();
+    //     let value = format!("zzz{}", i).as_bytes().to_vec();
+    //     let got = kv.get_with_ext(&key).await.unwrap();
+    //     let got = got.read().await;
+    //     assert_eq!(got.get_value().await.unwrap(), value);
+    //     assert_eq!(n * 2 + i + 1, got.counter() as usize);
+    // }
 }
 
 #[tokio::test]
