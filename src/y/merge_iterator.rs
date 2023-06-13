@@ -1,13 +1,13 @@
 use crate::table::iterator::IteratorItem;
-use crate::types::TArcMx;
+
 use crate::y::iterator::Xiterator;
-use crate::y::{KeyValue, ValueStruct};
-use crate::{SkipIterator, SkipList, UniIterator};
-use log::{debug, info};
+use crate::y::{KeyValue};
+
+
 use std::cell::RefCell;
-use std::collections::HashSet;
-use std::fmt;
-use std::fmt::Formatter;
+
+
+
 
 /// Cursor of the iterator of merge.
 pub struct MergeIterCursor {
@@ -140,7 +140,7 @@ impl Xiterator for MergeIterator {
         self.peek()
     }
 
-    fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+    fn seek(&self, _key: &[u8]) -> Option<Self::Output> {
         todo!()
     }
 
@@ -164,7 +164,7 @@ impl MergeIterator {
         for itr in &self.itrs {
             itr.rewind();
         }
-        for (index, itr) in self.itrs.iter().enumerate() {
+        for (_index, itr) in self.itrs.iter().enumerate() {
             while itr.next().is_some() {
                 count += 1;
             }
@@ -236,7 +236,7 @@ impl MergeIterOverBuilder {
         self
     }
 
-    pub fn build(mut self) -> MergeIterator {
+    pub fn build(self) -> MergeIterator {
         MergeIterator {
             reverse: self.reverse,
             itrs: self.all,

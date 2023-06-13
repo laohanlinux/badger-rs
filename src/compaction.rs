@@ -1,6 +1,6 @@
 use crate::levels::CompactDef;
 use crate::table::table::Table;
-use log::info;
+
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::fmt::{Display, Formatter};

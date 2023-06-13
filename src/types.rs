@@ -1,23 +1,23 @@
-use parking_lot::*;
+
 use std::fmt::Debug;
-use std::mem::ManuallyDrop;
-use std::ops::{Deref, DerefMut, RangeBounds};
-use std::sync::atomic::{AtomicI32, AtomicIsize, AtomicPtr, AtomicUsize, Ordering};
+
+use std::ops::{Deref, RangeBounds};
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, TryLockResult, Weak};
 use std::time::Duration;
-use std::{hint, mem, thread};
+use std::{hint};
 
 use async_channel::{
-    bounded, unbounded, Receiver, Recv, RecvError, SendError, Sender, TryRecvError, TrySendError,
+    bounded, unbounded, Receiver, RecvError, SendError, Sender, TryRecvError, TrySendError,
 };
-use atomic::Atomic;
-use crossbeam_epoch::Owned;
-use libc::regoff_t;
-use log::{info, warn};
 
-use crate::value_log::ValuePointer;
+
+
+use log::{info};
+
+
 use range_lock::{VecRangeLock, VecRangeLockGuard};
-use tokio::sync::mpsc::{UnboundedSender, WeakUnboundedSender};
+
 use tokio::time::sleep;
 
 pub type TArcMx<T> = Arc<tokio::sync::Mutex<T>>;
@@ -158,7 +158,7 @@ impl Drop for Closer {
 impl Closer {
     /// create a Closer with *initial* cap Workers
     pub fn new(name: String) -> Self {
-        let mut close = Closer {
+        let close = Closer {
             name,
             closed: Channel::new(1),
             wait: Arc::from(AtomicIsize::new(0)),

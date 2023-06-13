@@ -3,15 +3,15 @@ use crate::pb::badgerpb3::manifest_change::Operation;
 use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet};
 use crate::y::{is_eof, open_existing_synced_file, sync_directory};
 use crate::Error::{BadMagic, Unexpected};
-use crate::{is_existing, Result};
+use crate::{Result};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::info;
-use parking_lot::RwLock;
+
 use protobuf::{Enum, EnumOrUnknown, Message};
 use std::collections::{HashMap, HashSet};
 use std::fs::{rename, File};
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
-use std::os::fd::AsRawFd;
+use std::io::{Read, Seek, SeekFrom, Write};
+
 use std::path::Path;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
@@ -262,7 +262,7 @@ impl Manifest {
         use tokio::io::AsyncWriteExt;
         let rewrite_path = Path::new(dir).join(MANIFEST_REWRITE_FILENAME);
         // We explicitly sync.
-        let mut fp = File::options()
+        let fp = File::options()
             .create(true)
             .write(true)
             .truncate(true)

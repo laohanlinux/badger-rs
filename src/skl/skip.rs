@@ -2,7 +2,7 @@ use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
 use crate::table::iterator::IteratorItem;
 use crate::y::ValueStruct;
 use crate::Xiterator;
-use libc::NOEXPR;
+
 use log::{info, warn};
 use rand::random;
 use std::fmt::{Debug, Display, Formatter};
@@ -666,10 +666,10 @@ impl SkipIterator {
     // Seeks position at the first entry in list.
     // Final state of iterator is valid() iff list is not empty.
     pub fn seek_to_first(&self) -> Option<IteratorItem> {
-        let first_key = unsafe {
+        let _first_key = unsafe {
             String::from_utf8_lossy(self.st.find_last().unwrap().key(self.st.arena_ref()))
         };
-        let last_key = String::from_utf8_lossy(
+        let _last_key = String::from_utf8_lossy(
             self.st
                 .get_next(self.st.get_head(), 0)
                 .unwrap()
@@ -704,16 +704,16 @@ impl SkipIterator {
 }
 
 mod tests {
-    use crate::skl::node::Node;
+    
     use crate::skl::skip::SkipList;
-    use crate::skl::{Arena, Cursor, MAX_HEIGHT};
+    
     use crate::y::ValueStruct;
     use rand::distributions::{Alphanumeric, DistString};
-    use std::fmt::format;
-    use std::ptr;
-    use std::ptr::NonNull;
-    use std::sync::atomic::{AtomicI32, Ordering};
-    use std::sync::Arc;
+    
+    
+    
+    
+    
     use std::thread::spawn;
 
     const ARENA_SIZE: usize = 1 << 20;
@@ -828,11 +828,11 @@ mod tests {
     }
 
     fn t_concurrent_basic2() {
-        use rand::{thread_rng, Rng};
+        
 
         let st = SkipList::new(ARENA_SIZE);
         let mut kv = vec![];
-        for i in 0..10000 {
+        for _i in 0..10000 {
             kv.push((
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 10),
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 20),
@@ -1140,8 +1140,8 @@ mod tests {
 }
 
 mod tests2 {
-    use crate::{SkipIterator, SkipList, UniIterator, ValueStruct, Xiterator};
-    use tracing::info;
+    
+    
 
     const ARENA_SIZE: usize = 1 << 20;
 

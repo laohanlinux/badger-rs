@@ -1,16 +1,16 @@
 use crate::options::Options;
 use crate::SkipList;
-use atomic::Atomic;
+
 use crossbeam_epoch::Shared;
 use drop_cell::defer;
 use log::info;
 use parking_lot::lock_api::RwLockWriteGuard;
 use parking_lot::RawRwLock;
-use std::borrow::Borrow;
-use std::borrow::Cow::Owned;
-use std::ops::Deref;
-use std::ptr;
-use std::ptr::NonNull;
+
+
+
+
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -90,7 +90,7 @@ impl SkipListManager {
         self.mt_seq.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn advance_imm(&self, mt: &SkipList) {
+    pub fn advance_imm(&self, _mt: &SkipList) {
         self.lock_exclusive();
         defer! {self.unlock_exclusive()};
         info!(

@@ -19,7 +19,7 @@
 #![feature(let_chains)]
 #![feature(stmt_expr_attributes)]
 
-use std::io;
+
 use std::mem::align_of;
 
 mod event;

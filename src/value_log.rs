@@ -1,50 +1,50 @@
-use async_channel::{Receiver, RecvError, Sender};
+use async_channel::{Receiver};
 use atomic::Atomic;
-use awaitgroup::{WaitGroup, Worker};
+
 use bitflags::bitflags;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use bytes::BufMut;
 use crc32fast::Hasher;
 use drop_cell::defer;
-use either::Either;
-use libc::{endgrent, memchr};
+
+
 use log::kv::Source;
-use log::{debug, info};
-use memmap::{Mmap, MmapMut};
-use parking_lot::*;
+use log::{info};
+use memmap::{Mmap};
+
 use rand::random;
-use serde_json::to_vec;
-use std::cell::{Ref, RefCell, RefMut, UnsafeCell};
+
+
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
-use std::fs::{read_dir, remove_file, File, OpenOptions};
+use std::fs::{read_dir, remove_file};
 use std::future::Future;
-use std::io::{BufRead, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
-use std::marker::PhantomData;
+use std::io::{BufRead, Cursor, Read, Seek, SeekFrom, Write};
+
 use std::mem::size_of;
 use std::ops::{Deref, Index};
 use std::path::Path;
 use std::pin::Pin;
-use std::process::{id, Output};
-use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+
+use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::task::{Context, Poll};
+
 use std::time::{Duration, SystemTime};
-use std::{fmt, fs, io, ptr, thread};
-use tabled::object::Entity::Cell;
+use std::{fmt, fs, io, ptr};
+
 use tokio::macros::support::thread_rng_n;
 
-use crate::kv::{ArcKV, BoxKV, WeakKV, KV};
+use crate::kv::{BoxKV, KV};
 use crate::log_file::LogFile;
 use crate::options::Options;
-use crate::skl::BlockBytes;
-use crate::table::iterator::BlockSlice;
-use crate::types::{ArcMx, ArcRW, Channel, Closer, TArcMx, TArcRW, XArc};
+
+
+use crate::types::{Channel, Closer, TArcRW};
 use crate::y::{
-    create_synced_file, is_eof, open_existing_synced_file, read_at, sync_directory, Decode, Encode,
+    create_synced_file, open_existing_synced_file, sync_directory, Decode, Encode,
 };
-use crate::Error::{Unexpected, ValueNoRewrite, ValueRejected};
-use crate::{Error, Result, EMPTY_SLICE, META_SIZE};
+use crate::Error::{Unexpected};
+use crate::{Error, Result, EMPTY_SLICE};
 
 // Values have their first byte being byteData or byteDelete. This helps us distinguish between
 // a key that has never been seen and a key that has been explicitly deleted.
@@ -197,7 +197,7 @@ impl Entry {
             .value
             .extend_from_slice(&m[start..start + h.v_len as usize]);
         start += h.v_len as usize;
-        let crc32 = Cursor::new(&m[start..start + 4]).read_u32::<BigEndian>()?;
+        let _crc32 = Cursor::new(&m[start..start + 4]).read_u32::<BigEndian>()?;
         Ok(entry)
     }
 
@@ -255,7 +255,7 @@ impl Decode for Entry {
         let sz = rd.read(&mut self.value)?;
         assert_eq!(sz, h.v_len as usize);
         // TODO check crc32
-        let crc32 = rd.read_u32::<BigEndian>()?;
+        let _crc32 = rd.read_u32::<BigEndian>()?;
         Ok(())
     }
 }
@@ -472,7 +472,7 @@ impl Default for ValueLogCore {
 
 impl ValueLogCore {
     fn vlog_file_path(dir_path: &str, fid: u32) -> String {
-        let mut path = Path::new(dir_path).join(format!("{:06}.vlog", fid));
+        let path = Path::new(dir_path).join(format!("{:06}.vlog", fid));
         path.to_str().unwrap().to_string()
     }
 
@@ -730,7 +730,7 @@ impl ValueLogCore {
         if self.opt.sync_writes {
             return Ok(());
         }
-        let cur_wt_vlog = self
+        let _cur_wt_vlog = self
             .pick_log_guard()
             .await
             .vlogs
@@ -850,7 +850,7 @@ impl ValueLogCore {
     }
 
     // rewrite the log_file
-    async fn rewrite(&self, lf: TArcRW<LogFile>, x: &KV) -> Result<()> {
+    async fn rewrite(&self, lf: TArcRW<LogFile>, _x: &KV) -> Result<()> {
         let max_fid = self.max_fid.load(Ordering::Relaxed);
         assert!(
             lf.read().await.fid < max_fid,

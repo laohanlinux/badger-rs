@@ -1,5 +1,5 @@
 use crate::compaction::{CompactStatus, KeyRange, LevelCompactStatus, INFO_RANGE};
-use crate::kv::{ArcKV, WeakKV, KV};
+
 use crate::level_handler::{LevelHandler, LevelHandlerInner};
 use crate::manifest::{Manifest, ManifestChangeBuilder, ManifestFile};
 use crate::options::Options;
@@ -8,7 +8,7 @@ use crate::pb::badgerpb3::ManifestChange;
 use crate::table::builder::Builder;
 use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
 use crate::table::table::{get_id_map, new_file_name, Table, TableCore};
-use crate::types::{Closer, XArc, XWeak};
+use crate::types::{Closer, XArc};
 use crate::y::{
     async_sync_directory, create_synced_file, open_existing_synced_file, sync_directory,
 };
@@ -18,16 +18,16 @@ use crate::{Result, ValueStruct};
 use atomic::Ordering;
 use awaitgroup::WaitGroup;
 use drop_cell::defer;
-use log::{debug, error, info};
+use log::{error, info};
 use parking_lot::lock_api::RawRwLock;
-use parking_lot::{Mutex, RwLock, RwLockReadGuard};
-use serde_json::ser::CharEscape::Tab;
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+
+
+
+use std::collections::{HashSet};
 use std::fmt::{Display, Formatter};
 use std::fs::remove_file;
 use std::io::Write;
-use std::sync::atomic::{AtomicI64, AtomicU64};
+use std::sync::atomic::{AtomicU64};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::vec;
@@ -176,7 +176,7 @@ impl LevelsController {
 
     // start compact
     pub(crate) fn start_compact(&self, lc: Closer) {
-        for i in 0..self.opt.num_compactors {
+        for _i in 0..self.opt.num_compactors {
             let lc = lc.spawn();
             let _self = self.clone();
             tokio::spawn(async move {

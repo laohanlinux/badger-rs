@@ -1,49 +1,49 @@
 use crate::iterator::{IteratorExt, IteratorOptions, KVItem, KVItemInner};
-use crate::levels::{LevelsController, XLevelsController};
-use crate::manifest::{open_or_create_manifest_file, Manifest, ManifestFile};
+use crate::levels::{LevelsController};
+use crate::manifest::{open_or_create_manifest_file, ManifestFile};
 use crate::options::Options;
 use crate::table::builder::Builder;
-use crate::table::iterator::{IteratorImpl, IteratorItem};
+use crate::table::iterator::{IteratorItem};
 use crate::table::table::{new_file_name, Table, TableCore};
-use crate::types::{ArcMx, Channel, Closer, TArcMx, TArcRW, XArc, XWeak};
+use crate::types::{ArcMx, Channel, Closer, TArcRW, XArc, XWeak};
 use crate::value_log::{
     Entry, EntryType, MetaBit, Request, ValueLogCore, ValuePointer, MAX_KEY_SIZE,
 };
 use crate::y::{
-    async_sync_directory, create_synced_file, sync_directory, Encode, Result, ValueStruct,
+    async_sync_directory, create_synced_file, Encode, Result, ValueStruct,
 };
 use crate::Error::{NotFound, Unexpected};
 use crate::{
     Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager, UniIterator, Xiterator,
 };
-use anyhow::__private::kind::TraitKind;
-use async_channel::RecvError;
+
+
 use atomic::Atomic;
-use bytes::{Buf, BufMut};
+use bytes::{BufMut};
 use crossbeam_epoch::{Owned, Shared};
 use drop_cell::defer;
 use fs2::FileExt;
-use libc::regex_t;
-use log::{debug, error, info, warn, Log};
-use parking_lot::lock_api::MutexGuard;
-use parking_lot::{Mutex, RawMutex};
-use rand::random;
-use std::cell::RefCell;
+
+use log::{debug, error, info, warn};
+
+use parking_lot::{Mutex};
+
+
 use std::fs::File;
-use std::fs::{try_exists, OpenOptions};
+use std::fs::{OpenOptions};
 use std::future::Future;
 use std::io::{Cursor, Write};
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
+
+use std::path::{Path};
 use std::pin::Pin;
-use std::ptr::NonNull;
-use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc};
 use std::time::Duration;
 use std::{string, vec};
 use tokio::fs::create_dir_all;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::io::{AsyncWriteExt};
+use tokio::sync::{RwLock, RwLockWriteGuard};
 
 pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
 // Prefix for internal keys used by badger.
@@ -573,7 +573,7 @@ impl KV {
         res
     }
 
-    async fn write_to_lsm(&self, mut req: Request) -> Result<()> {
+    async fn write_to_lsm(&self, req: Request) -> Result<()> {
         assert_eq!(req.entries.len(), req.ptrs.len());
         defer! {info!("exit write to lsm")}
 
@@ -842,9 +842,9 @@ impl ArcKV {
                 _ = tk.tick() => {
                     info!("ready to update size");
                     // If value directory is different from dir, we'd have to do another walk.
-                    let (lsm_sz, vlog_sz) = KV::walk_dir(dir.as_str()).await.unwrap();
+                    let (_lsm_sz, _vlog_sz) = KV::walk_dir(dir.as_str()).await.unwrap();
                     if dir != vdir {
-                         let (_, vlog_sz) = KV::walk_dir(dir.as_str()).await.unwrap();
+                         let (_, _vlog_sz) = KV::walk_dir(dir.as_str()).await.unwrap();
                     }
                 },
                 _ = c.recv() => {return;},
@@ -1101,7 +1101,7 @@ impl ArcKV {
         };
         loop {
             tokio::select! {
-                ret = has_been_close.recv() => {
+                _ret = has_been_close.recv() => {
                     break;
                 },
                 req = write_ch.recv() => {

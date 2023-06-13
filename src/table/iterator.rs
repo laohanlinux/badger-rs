@@ -1,19 +1,19 @@
 use crate::table::builder::Header;
-use crate::table::table::{Block, Table, TableCore};
+use crate::table::table::{Table};
 use crate::y::iterator::{KeyValue, Xiterator};
-use crate::y::{Result, ValueStruct};
-use crate::{y, Error};
+use crate::y::{ValueStruct};
+
 use log::debug;
 use std::borrow::{Borrow, BorrowMut};
-use std::cell::{Ref, RefCell, RefMut};
-use std::cmp::Ordering;
-use std::cmp::Ordering::{Equal, Less};
+use std::cell::{RefCell, RefMut};
+
+
 use std::fmt::Formatter;
-use std::ops::Deref;
-use std::process::id;
-use std::ptr::{slice_from_raw_parts, NonNull};
-use std::{cmp, fmt, io};
-use tracing::info;
+
+
+use std::ptr::{slice_from_raw_parts};
+use std::{fmt};
+
 
 pub enum IteratorSeek {
     Origin,
@@ -156,7 +156,7 @@ impl BlockIterator {
             return None;
         }
         //load header
-        let mut h = Header::from(&self.data[*pos as usize..*pos as usize + Header::size()]);
+        let h = Header::from(&self.data[*pos as usize..*pos as usize + Header::size()]);
         *self.last_header.borrow_mut() = Some(h.clone());
         //move pos cursor
         *pos += Header::size() as u32;
@@ -287,7 +287,7 @@ pub struct IteratorImpl {
 
 impl fmt::Display for IteratorImpl {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let bi = self.bi.borrow().as_ref().map(|b| format!("{}", b)).unwrap();
+        let _bi = self.bi.borrow().as_ref().map(|b| format!("{}", b)).unwrap();
         f.debug_struct("IteratorImpl")
             .field("bpos", &self.bpos.borrow())
             .field("bi", &self.bi.borrow().is_some())
@@ -344,7 +344,7 @@ impl Xiterator for IteratorImpl {
 impl IteratorImpl {
     pub fn new(table: Table, reversed: bool) -> IteratorImpl {
         table.incr_ref(); // Important
-        let mut itr = IteratorImpl {
+        let itr = IteratorImpl {
             table,
             bpos: RefCell::new(0),
             bi: RefCell::new(None),

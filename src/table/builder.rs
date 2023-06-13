@@ -1,19 +1,19 @@
-use crate::y::{hash, is_eof, AsyncEncDec, Decode, Encode, ValueStruct};
-use crate::Error;
-use async_trait::async_trait;
+use crate::y::{hash, is_eof, Decode, Encode, ValueStruct};
+
+
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use bytes::{Buf, BufMut, BytesMut};
+
 use growable_bloom_filter::GrowableBloom;
 use log::{debug, info};
 use serde_json;
-use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
-use std::fmt;
-use std::fmt::Formatter;
+
+
+
+
+
 use std::hash::Hasher;
-use std::io::{self, Cursor, Read, Write};
-use std::str::pattern::Searcher;
+use std::io::{Cursor, Read, Write};
+
 
 #[derive(Clone, Default, Debug)]
 pub(crate) struct Header {
@@ -109,7 +109,7 @@ impl Builder {
         self.key_count += 1;
 
         // diff_key stores the difference of key with base_key.
-        let mut diff_key;
+        let diff_key;
         if self.base_key.is_empty() {
             // Make a copy. Builder should not keep references. Otherwise, caller has to be very careful
             // and will have to make copies of keys every time they add to builder. which is even worse.

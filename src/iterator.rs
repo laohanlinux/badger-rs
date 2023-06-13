@@ -1,28 +1,27 @@
 use crate::iterator::PreFetchStatus::Prefetched;
 use crate::kv::_BADGER_PREFIX;
-use crate::types::{ArcMx, ArcRW, Channel, Closer, TArcMx, TArcRW};
+use crate::types::{ArcRW, Channel, Closer, TArcMx, TArcRW};
 use crate::ValueStruct;
 use crate::{
     kv::KV,
     types::XArc,
-    value_log::{MetaBit, ValuePointer},
-    ArcBlockBytes, BlockBytes, Chunk, Decode, MergeIterator, Result, Xiterator, EMPTY_SLICE,
+    value_log::{MetaBit, ValuePointer}, Decode, MergeIterator, Result, Xiterator, EMPTY_SLICE,
 };
-use atom_box::AtomBox;
+
 use atomic::Atomic;
-use log::Metadata;
-use parking_lot::RwLock;
+
+
 use std::fmt::{Display, Formatter};
 use std::future::Future;
-use std::ops::DerefMut;
+
 use std::pin::Pin;
-use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
-use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
+
+use std::sync::atomic::{Ordering};
 use std::sync::Arc;
-use std::{io::Cursor, ptr, sync::atomic::AtomicU64};
+use std::{io::Cursor, sync::atomic::AtomicU64};
 use tokio::io::AsyncWriteExt;
-use tokio::time::Sleep;
-use tracing::info;
+
+
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub(crate) enum PreFetchStatus {
@@ -283,7 +282,7 @@ impl IteratorExt {
             return None;
         }
         println!("peek key: {:?}", item);
-        let mut xitem = self.new_item();
+        let xitem = self.new_item();
         self.fill(xitem.clone()).await;
         self.data.write().push_back(xitem.clone());
         Some(xitem)

@@ -1,17 +1,17 @@
 use crate::skl::Chunk;
-use crate::table::iterator::IteratorItem;
-use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE, VALUE_SIZE};
+
+
 use byteorder::BigEndian;
 use byteorder::{ReadBytesExt, WriteBytesExt};
 use log::info;
-use std::borrow::{Borrow, Cow};
-use std::cell::{Cell, RefCell, RefMut};
-use std::cmp::Ordering;
-use std::fmt;
-use std::fmt::Formatter;
-use std::io::{Cursor, Read, Write};
-use std::iter::Iterator as stdIterator;
-use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
+
+
+
+
+
+use std::io::{Cursor, Write};
+
+
 
 /// ValueStruct represents the value info that can be associated with a key, but also the internal
 /// Meta field.
@@ -42,7 +42,7 @@ impl ValueStruct {
         Self::header_size() + self.value.len()
     }
 
-    pub(crate) fn write_data(&self, mut buffer: &mut [u8]) {
+    pub(crate) fn write_data(&self, buffer: &mut [u8]) {
         use std::io::Write;
         let mut cursor = Cursor::new(buffer);
         cursor.write_u8(self.meta).unwrap();
@@ -52,7 +52,7 @@ impl ValueStruct {
     }
 
     pub(crate) fn read_data(&mut self, buffer: &[u8]) {
-        use std::io::Read;
+        
         let mut cursor = Cursor::new(buffer);
         self.meta = cursor.read_u8().unwrap();
         self.user_meta = cursor.read_u8().unwrap();

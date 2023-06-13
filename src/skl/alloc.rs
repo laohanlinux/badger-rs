@@ -1,22 +1,22 @@
-use crate::skl::node::Node;
-use rand::random;
-use serde::de::IntoDeserializer;
-use std::fmt::{Debug, Display, Formatter};
-use std::marker::PhantomData;
-use std::mem::{align_of, size_of, ManuallyDrop};
 
-use atom_box::AtomBox;
-use atomic::Atomic;
-use either::Either;
-use libc::{difftime, off_t};
-use log::info;
-use std::alloc::alloc;
-use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+
+
+use std::fmt::{Debug};
+use std::marker::PhantomData;
+use std::mem::{size_of, ManuallyDrop};
+
+
+
+
+
+
+
+use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::thread::{sleep, spawn};
-use std::time::Duration;
-use std::{ptr, thread};
+
+
+use std::{ptr};
 
 pub trait Allocate: Send + Sync {
     type Block;
@@ -178,7 +178,7 @@ impl<T> OnlyLayoutAllocate<T> {
         let end = self.cursor.fetch_add(Self::size(), Ordering::Acquire);
         assert!(end < self.cap.load(Ordering::Relaxed));
         let ptr = self.borrow_slice(start, Self::size());
-        let (pre, mid, suf) = unsafe { ptr.align_to() };
+        let (pre, mid, _suf) = unsafe { ptr.align_to() };
         assert!(pre.is_empty());
         &mid[0]
     }
@@ -206,15 +206,15 @@ impl<T> OnlyLayoutAllocate<T> {
     #[inline]
     pub fn get(&self, start: usize) -> &T {
         let ptr = self.borrow_slice(start, Self::size());
-        let (pre, mid, suf) = unsafe { ptr.align_to() };
+        let (pre, mid, _suf) = unsafe { ptr.align_to() };
         assert!(pre.is_empty());
         &mid[0]
     }
 
     #[inline]
     pub fn get_mut(&self, start: usize) -> &mut T {
-        let mut ptr = self.borrow_mut_slice(start, Self::size());
-        let (pre, mid, suf) = unsafe { ptr.align_to_mut() };
+        let ptr = self.borrow_mut_slice(start, Self::size());
+        let (pre, mid, _suf) = unsafe { ptr.align_to_mut() };
         assert!(pre.is_empty());
         &mut mid[0]
     }

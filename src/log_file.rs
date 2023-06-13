@@ -1,27 +1,27 @@
-use crate::types::{Channel, Closer};
+use crate::types::{Closer};
 use crate::value_log::{Entry, Header, ValuePointer};
-use crate::y::{create_synced_file, Result};
-use crate::y::{is_eof, read_at, Decode};
-use crate::Error;
+use crate::y::{Result};
+use crate::y::{is_eof, Decode};
+
 use async_channel::Sender;
 use byteorder::{BigEndian, ReadBytesExt};
 use drop_cell::defer;
 use either::Either;
 use log::info;
 use memmap::{Mmap, MmapMut};
-use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
-use parking_lot::{RawRwLock, RwLock};
-use std::async_iter::AsyncIterator;
-use std::env::temp_dir;
-use std::f32::consts::E;
-use std::fmt::{Debug, Display, Formatter};
+
+
+
+
+
+use std::fmt::{Debug, Formatter};
 use std::fs::File;
 use std::future::Future;
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::atomic::AtomicU64;
-use std::time::SystemTime;
+
 use tokio::select;
 
 // MmapType is a Mmap and MmapMut tule
@@ -173,7 +173,7 @@ impl LogFile {
         let mut fd = self.fd.as_mut().unwrap();
         fd.seek(SeekFrom::Start(offset as u64))?;
         let mut entry = Entry::default();
-        let mut truncate = false; // because maybe abort before write
+        let _truncate = false; // because maybe abort before write
         let mut record_offset = offset;
         loop {
             let mut h = Header::default();
@@ -212,7 +212,7 @@ impl LogFile {
             if is_eof(&ok) {
                 break;
             }
-            let crc = ok?;
+            let _crc = ok?;
 
             let mut vp = ValuePointer::default();
             vp.len = Header::encoded_size() as u32 + h.k_len + h.v_len + 4;
