@@ -3,7 +3,7 @@ use crate::table::iterator::IteratorItem;
 use crate::y::ValueStruct;
 use crate::Xiterator;
 use libc::NOEXPR;
-use log::info;
+use log::{info, warn};
 use rand::random;
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
@@ -359,13 +359,28 @@ impl SkipList {
     // gets the value associated with the key.
     // FIXME: maybe return Option<&ValueStruct>
     pub(crate) fn get(&self, key: &[u8]) -> Option<ValueStruct> {
-        // info!("find a key: {:?}", key);
         let (node, found) = self.find_near(key, false, true);
         if !found {
             return None;
         }
-        let (value_offset, value_size) = node.unwrap().get_value_offset();
-        Some(self.arena_ref().get_val(value_offset, value_size))
+        warn!("--->>> {}", crate::y::hex_str(key));
+
+        if let Some(node) = node {
+            let (offset, size) = node.get_value_offset();
+            let value = self.arena.get_val(offset, size);
+
+            #[cfg(test)]
+            {
+                let got_key = node.key(&self.arena);
+                if &value.value == b"zzz29" {
+                    warn!("==>> node: {:?}", node);
+                }
+                assert_eq!(key, got_key);
+            }
+
+            return Some(value);
+        }
+        None
     }
 
     /// Returns a SkipList cursor. You have to close() the cursor.

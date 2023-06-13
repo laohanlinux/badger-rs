@@ -27,6 +27,7 @@ use libc::regex_t;
 use log::{debug, error, info, warn, Log};
 use parking_lot::lock_api::MutexGuard;
 use parking_lot::{Mutex, RawMutex};
+use rand::random;
 use std::cell::RefCell;
 use std::fs::File;
 use std::fs::{try_exists, OpenOptions};
@@ -339,28 +340,36 @@ impl KV {
         // TODO add metrics
         for tb in tables {
             let vs = unsafe { tb.as_ref().unwrap().get(key) };
-
-
-            #[cfg(test)]
-            let keys = vec![b"283".to_vec(), b"284".to_vec(), b"285".to_vec()];
-            if keys.contains(&key.to_vec()) {
-                unsafe  {
-                    let st = tb.as_ref().unwrap();
-                    let itr = st.new_cursor();
-                    for item in itr.next() {
-                        let arena = st.arena_ref();
-                        warn!("Hiiiii, {}", String::from_utf8_lossy(item.key(arena)));
-                    }
-                }
-                warn!("Hiiiiiiiiiiiiii");
-            }
-
+            warn!("------------------- {}", crate::y::hex_str(key));
             if vs.is_none() {
                 continue;
             }
             let vs = vs.unwrap();
             // TODO why
             if vs.meta != 0 || !vs.value.is_empty() {
+                #[cfg(test)]
+                {
+                    let st = unsafe { tb.as_ref().unwrap() };
+                    let itr = st.new_cursor();
+                    let mut found = false;
+                    let mut got_vs: Option<ValueStruct> = None;
+                    for item in itr.next() {
+                        let arena = st.arena_ref();
+                        let got = item.key(arena);
+                        if key == got {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        warn!("Not found {}", String::from_utf8_lossy(key));
+                    }
+                    let keys = vec![b"283".to_vec(), b"284".to_vec(), b"285".to_vec()];
+                    if keys.contains(&key.to_vec()) {
+                        warn!("the value is {}", String::from_utf8_lossy(&vs.value));
+                    }
+                }
+
                 return Ok(vs);
             }
         }
@@ -567,29 +576,50 @@ impl KV {
     async fn write_to_lsm(&self, mut req: Request) -> Result<()> {
         assert_eq!(req.entries.len(), req.ptrs.len());
         defer! {info!("exit write to lsm")}
+
+        #[cfg(test)]
+        let tid = random::<u32>();
+
         for (i, pair) in req.entries.into_iter().enumerate() {
             let (entry, resp_ch) = pair.to_owned();
 
             #[cfg(test)]
             let debug_entry = entry.clone();
 
+            let mut old_cas = 0;
+
             if entry.cas_counter_check != 0 {
                 // TODO FIXME if not found the key，maybe push something to resp_ch
-                let old_value = self._get(&entry.key)?;
+                let old_value = self._get(&entry.key);
+                if old_value.is_err() {
+                    resp_ch.send(Err(old_value.unwrap_err())).await.unwrap();
+                    continue;
+                }
+
+                let old_value = old_value.unwrap();
+
+                old_cas = old_value.cas_counter;
+
                 // No need to decode existing value. Just need old CAS counter.
                 if old_value.cas_counter != entry.cas_counter_check {
                     resp_ch.send(Err(Error::ValueCasMisMatch)).await.unwrap();
+
                     #[cfg(test)]
                     warn!(
-                        "abort cas check, #{}, old, {}, new {}, {:?}",
-                        entry.hex_str(),
-                        old_value.pretty(),
-                        entry.cas_counter_check,
-                        String::from_utf8_lossy(&entry.value)
-                    );
-
+                        "tid:{}, abort cas check, #{}, old_cas:{}, check_cas: {}, old_value:{}, new_val: {}",
+                        tid,
+                        crate::y::hex_str(&entry.key),
+                        old_cas, entry.cas_counter_check,
+                        crate::y::hex_str(&old_value.value),
+                        crate::y::hex_str(&entry.value));
+                    warn!(">>>>>>>>>>>");
                     continue;
                 }
+
+                warn!(
+                    "<<<<<<<<<<<, counter_check:{}, cas:{}",
+                    entry.cas_counter_check, old_cas
+                );
             }
 
             if entry.meta == MetaBit::BIT_SET_IF_ABSENT.bits() {
@@ -629,8 +659,10 @@ impl KV {
 
             #[cfg(test)]
             warn!(
-                "key #{:?}, cas:{}, check_cas:{}, value #{:?} into SkipList!!!",
+                "tid:{}, key #{:?}, old_cas:{}, new_cas:{}, check_cas:{}, value #{:?} has inserted into SkipList!!!",
+                tid,
                 String::from_utf8_lossy(&key),
+                old_cas,
                 debug_entry.get_cas_counter(),
                 debug_entry.cas_counter_check,
                 String::from_utf8_lossy(&debug_entry.value),

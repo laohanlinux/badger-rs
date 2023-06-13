@@ -324,6 +324,10 @@ pub(crate) async fn async_sync_directory(d: String) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn hex_str(buf: &[u8]) -> String {
+    String::from_utf8_lossy(buf).to_string()
+}
+
 #[test]
 fn it_cpu() {
     println!("{:?}", num_cpu());
