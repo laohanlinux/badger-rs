@@ -158,14 +158,22 @@ impl LevelsController {
         for h in self.levels.iter() {
             if let Some(item) = h.get(key) {
                 #[cfg(test)]
-                assert_eq!(
-                    key,
-                    item.key(),
-                    "{} not equal {}",
-                    crate::hex_str(key),
-                    crate::hex_str(item.key())
-                );
-
+                {
+                    if item.key() != key {
+                        error!(
+                            "{} not equal {}",
+                            crate::hex_str(key),
+                            crate::y::hex_str(item.key())
+                        );
+                    }
+                    assert_eq!(
+                        key,
+                        item.key(),
+                        "{} not equal {}",
+                        crate::hex_str(key),
+                        crate::hex_str(item.key())
+                    );
+                }
                 return Some(item.value().clone());
             }
         }

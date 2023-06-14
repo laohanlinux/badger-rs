@@ -4,13 +4,13 @@ use crate::table::iterator::{IteratorImpl, IteratorItem};
 use crate::table::table::Table;
 use crate::types::XArc;
 
-use crate::Result;
+use crate::{hex_str, Result};
 use core::slice::SlicePattern;
 
 use crate::options::Options;
 
 use drop_cell::defer;
-use log::info;
+use log::{info, warn};
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::collections::HashSet;
@@ -228,16 +228,27 @@ impl LevelHandler {
     // Acquires a read-lock to access s.tables. It returns a list of table_handlers.
     pub(crate) fn get_table_for_key(&self, key: &[u8]) -> Option<IteratorItem> {
         return if self.get_level() == 0 {
+            // For level 0, we need to check every table. Remember to make a copy as self.tables may change
+            // once we exit this function, and we don't want to lock the self.tables while seeking in tabbles.
+            // CAUTION: Reverse the tables.
             let tw = self.tables_rd();
             for tb in tw.iter().rev() {
                 tb.incr_ref();
+                // check it by bloom filter
+                if tb.does_not_have(key) {
+                    warn!("not contain it, key #{}", hex_str(key));
+                    tb.decr_ref();
+                    continue;
+                }
                 let it = IteratorImpl::new(tb.clone(), false);
                 let item = it.seek(key);
                 tb.decr_ref();
-                if item.is_none() {
-                    // todo add metrics
-                } else {
-                    return item;
+                if let Some(item) = item {
+                    if item.key() != key {
+                        warn!("try it again, key #{}", crate::y::hex_str(key));
+                        continue;
+                    }
+                    return Some(item);
                 }
             }
             None
@@ -250,13 +261,21 @@ impl LevelHandler {
             }
             let tb = tw.get(ok.unwrap()).unwrap();
             tb.incr_ref();
+            if tb.does_not_have(key) {
+                tb.decr_ref();
+                return None;
+            }
+
             let it = IteratorImpl::new(tb.clone(), false);
             let item = it.seek(key);
             tb.decr_ref();
-            if item.is_none() {
-                // todo add metrics
+
+            if let Some(item) = item {
+                if item.key() == key {
+                    return Some(item);
+                }
             }
-            item
+            return None;
         };
     }
 

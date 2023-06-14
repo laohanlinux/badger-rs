@@ -78,6 +78,12 @@ impl Table {
     pub fn smallest(&self) -> &[u8] {
         &self.smallest
     }
+
+    /// Return true if (but not "only if") the table does have the key. It does a
+    /// bloom filter lookup.
+    pub fn does_not_have(&self, key: &[u8]) -> bool {
+        !self.bf.contains(key)
+    }
 }
 
 pub struct TableCore {

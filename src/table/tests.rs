@@ -29,6 +29,14 @@ mod utils {
     use tokio_metrics::TaskMetrics;
 
     #[test]
+    fn table_bloom_filter() {
+        let (fp, path) = build_test_table("key", 10000);
+        let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
+        let got = table.does_not_have(b"");
+        assert!(got);
+    }
+
+    #[test]
     fn iterator_table() {
         let (fp, path) = build_test_table("key", 10000);
         let table = TableCore::open_table(fp, &path, FileLoadingMode::FileIO).unwrap();
