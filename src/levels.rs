@@ -21,13 +21,11 @@ use drop_cell::defer;
 use log::{error, info};
 use parking_lot::lock_api::RawRwLock;
 
-
-
-use std::collections::{HashSet};
+use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::fs::remove_file;
 use std::io::Write;
-use std::sync::atomic::{AtomicU64};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::vec;
@@ -158,9 +156,17 @@ impl LevelsController {
         // parallelize this, we will need to call the h.RLock() function by increasing order of level
         // number.)
         for h in self.levels.iter() {
-            let item = h.get(key);
-            if item.is_some() {
-                return Some(item.unwrap().value().clone());
+            if let Some(item) = h.get(key) {
+                #[cfg(test)]
+                assert_eq!(
+                    key,
+                    item.key(),
+                    "{} not equal {}",
+                    crate::hex_str(key),
+                    crate::hex_str(item.key())
+                );
+
+                return Some(item.value().clone());
             }
         }
         None

@@ -1,22 +1,13 @@
-
-
-
-use std::fmt::{Debug};
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::mem::{size_of, ManuallyDrop};
-
-
-
-
-
-
 
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-
-use std::{ptr};
+use crate::Node;
+use std::ptr;
 
 pub trait Allocate: Send + Sync {
     type Block;
@@ -343,63 +334,72 @@ impl SliceAllocate {
     }
 }
 
-#[test]
-fn t_onlylayoutalloc() {
-    let mut alloc: OnlyLayoutAllocate<Node> = OnlyLayoutAllocate::new(1 << 10);
-    for i in 0..10 {
-        let key = alloc.mut_alloc(i * Node::size());
-        key.value.fetch_add(1, Ordering::Relaxed);
-    }
+#[cfg(test)]
+mod tests {
+    use crate::skl::alloc::Chunk;
+    use crate::{BlockBytes, Node, OnlyLayoutAllocate, SliceAllocate};
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::thread::spawn;
 
-    for i in 0..10 {
-        let key = alloc.get(i * Node::size());
-        assert_eq!(key.value.load(Ordering::Relaxed), 1);
-    }
-}
+    #[test]
+    fn t_onlylayoutalloc() {
+        let mut alloc: OnlyLayoutAllocate<Node> = OnlyLayoutAllocate::new(1 << 10);
+        for i in 0..10 {
+            let key = alloc.mut_alloc(i * Node::size());
+            key.value.fetch_add(1, Ordering::Relaxed);
+        }
 
-#[test]
-fn t_onlylayoutalloc_currency() {
-    let alloc: Arc<OnlyLayoutAllocate<Node>> = Arc::new(OnlyLayoutAllocate::new(1 << 20));
-    let mut wait = vec![];
-    for i in 0..100 {
-        let alloc = alloc.clone();
-        wait.push(spawn(move || {
-            for i in 0..10 {
-                let key = alloc.mut_alloc(i * Node::size());
-                key.value.fetch_add(1, Ordering::Relaxed);
-            }
-        }));
-    }
-
-    for join in wait {
-        join.join().unwrap();
-    }
-    for i in 0..10 {
-        let key = alloc.get(i * Node::size());
-        assert_eq!(key.value.load(Ordering::Relaxed), 100);
-    }
-}
-
-#[test]
-fn t_onlylayoutalloc_slice() {
-    let mut alloc: SliceAllocate = SliceAllocate::new(1 << 10);
-    for i in 0..10 {
-        let key = alloc.alloc_mut(i * 10);
-        key.fill(20);
-    }
-}
-
-#[test]
-fn t_block_bytes() {
-    let mut buffer = vec![0u8; 1024];
-    let block = BlockBytes::new(buffer.as_mut_ptr(), 10);
-    {
-        let data = block.get_data_mut();
-        for datum in 0..data.len() {
-            data[datum] = datum as u8;
+        for i in 0..10 {
+            let key = alloc.get(i * Node::size());
+            assert_eq!(key.value.load(Ordering::Relaxed), 1);
         }
     }
-    for datum in 0..block.size() {
-        assert_eq!(buffer[datum], datum as u8);
+
+    #[test]
+    fn t_onlylayoutalloc_currency() {
+        let alloc: Arc<OnlyLayoutAllocate<Node>> = Arc::new(OnlyLayoutAllocate::new(1 << 20));
+        let mut wait = vec![];
+        for i in 0..100 {
+            let alloc = alloc.clone();
+            wait.push(spawn(move || {
+                for i in 0..10 {
+                    let key = alloc.mut_alloc(i * Node::size());
+                    key.value.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+
+        for join in wait {
+            join.join().unwrap();
+        }
+        for i in 0..10 {
+            let key = alloc.get(i * Node::size());
+            assert_eq!(key.value.load(Ordering::Relaxed), 100);
+        }
+    }
+
+    #[test]
+    fn t_onlylayoutalloc_slice() {
+        let mut alloc: SliceAllocate = SliceAllocate::new(1 << 10);
+        for i in 0..10 {
+            let key = alloc.alloc_mut(i * 10);
+            key.fill(20);
+        }
+    }
+
+    #[test]
+    fn t_block_bytes() {
+        let mut buffer = vec![0u8; 1024];
+        let block = BlockBytes::new(buffer.as_mut_ptr(), 10);
+        {
+            let data = block.get_data_mut();
+            for datum in 0..data.len() {
+                data[datum] = datum as u8;
+            }
+        }
+        for datum in 0..block.size() {
+            assert_eq!(buffer[datum], datum as u8);
+        }
     }
 }

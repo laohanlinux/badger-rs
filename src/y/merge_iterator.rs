@@ -1,13 +1,9 @@
 use crate::table::iterator::IteratorItem;
 
 use crate::y::iterator::Xiterator;
-use crate::y::{KeyValue};
-
+use crate::y::KeyValue;
 
 use std::cell::RefCell;
-
-
-
 
 /// Cursor of the iterator of merge.
 pub struct MergeIterCursor {
@@ -248,204 +244,214 @@ impl MergeIterOverBuilder {
     }
 }
 
-#[test]
-fn merge_iter_element() {
-    #[derive(Debug)]
-    struct TestIterator {
-        key: Vec<u8>,
-    }
+#[cfg(test)]
+mod tests {
+    use std::fmt;
 
-    impl fmt::Display for TestIterator {
-        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-            write!(f, "key: {}", String::from_utf8_lossy(&self.key))
-        }
-    }
+    use crate::{
+        table::iterator::IteratorItem, types::TArcMx, KeyValue, MergeIterOverBuilder, SkipList,
+        UniIterator, ValueStruct, Xiterator,
+    };
 
-    impl Xiterator for TestIterator {
-        type Output = IteratorItem;
-
-        fn next(&self) -> Option<Self::Output> {
-            self.peek()
+    #[test]
+    fn merge_iter_element() {
+        #[derive(Debug)]
+        struct TestIterator {
+            key: Vec<u8>,
         }
 
-        fn rewind(&self) -> Option<Self::Output> {
-            self.peek()
-        }
-
-        fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-            self.peek()
-        }
-
-        fn peek(&self) -> Option<Self::Output> {
-            Some(IteratorItem::new(self.key.clone(), ValueStruct::default()))
-        }
-    }
-
-    impl KeyValue<ValueStruct> for TestIterator {
-        fn key(&self) -> &[u8] {
-            &self.key
-        }
-
-        fn value(&self) -> ValueStruct {
-            todo!()
-        }
-    }
-
-    let t1 = Box::new(TestIterator {
-        key: b"abd".to_vec(),
-    });
-    let t2 = Box::new(TestIterator {
-        key: b"abc".to_vec(),
-    });
-    let t3 = Box::new(TestIterator {
-        key: b"abc".to_vec(),
-    });
-    let t4 = Box::new(TestIterator {
-        key: b"abc".to_vec(),
-    });
-
-    let builder = MergeIterOverBuilder::default().add_batch(vec![t3, t1, t4, t2]);
-    let miter = builder.build();
-    miter.next();
-    assert_eq!(miter.peek().unwrap().key(), b"abc");
-}
-
-#[tokio::test]
-async fn merge_iter_skip() {
-    crate::test_util::tracing_log();
-    let st1 = SkipList::new(1 << 20);
-    let st2 = SkipList::new(1 << 20);
-    let st3 = SkipList::new(1 << 20);
-    let mut wg = awaitgroup::WaitGroup::new();
-    let keys = TArcMx::new(tokio::sync::Mutex::new(vec![]));
-    let n = 300;
-    let m = 10;
-    for i in 0..n {
-        let wk = wg.worker();
-        let keys = keys.clone();
-        let st1 = st1.clone();
-        let st2 = st2.clone();
-        let st3 = st3.clone();
-        tokio::spawn(async move {
-            for j in 0..m {
-                let key = format!("k{:05}_{:08}", i, j).into_bytes().to_vec();
-                keys.lock().await.push(key.clone());
-                if j % 3 == 0 {
-                    st1.put(&key, ValueStruct::new(key.clone(), 0, 0, 0));
-                } else if j % 3 == 1 {
-                    st2.put(&key, ValueStruct::new(key.clone(), 0, 0, 0));
-                } else {
-                    st3.put(&key, ValueStruct::new(key.clone(), 0, 0, 0));
-                }
+        impl fmt::Display for TestIterator {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "key: {}", String::from_utf8_lossy(&self.key))
             }
-            wk.done();
+        }
+
+        impl Xiterator for TestIterator {
+            type Output = IteratorItem;
+
+            fn next(&self) -> Option<Self::Output> {
+                self.peek()
+            }
+
+            fn rewind(&self) -> Option<Self::Output> {
+                self.peek()
+            }
+
+            fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+                self.peek()
+            }
+
+            fn peek(&self) -> Option<Self::Output> {
+                Some(IteratorItem::new(self.key.clone(), ValueStruct::default()))
+            }
+        }
+
+        impl KeyValue<ValueStruct> for TestIterator {
+            fn key(&self) -> &[u8] {
+                &self.key
+            }
+
+            fn value(&self) -> ValueStruct {
+                todo!()
+            }
+        }
+
+        let t1 = Box::new(TestIterator {
+            key: b"abd".to_vec(),
         });
-    }
+        let t2 = Box::new(TestIterator {
+            key: b"abc".to_vec(),
+        });
+        let t3 = Box::new(TestIterator {
+            key: b"abc".to_vec(),
+        });
+        let t4 = Box::new(TestIterator {
+            key: b"abc".to_vec(),
+        });
 
-    wg.wait().await;
-    assert_eq!(
-        st1.node_count() + st2.node_count() + st3.node_count(),
-        m * n
-    );
-    keys.lock().await.sort();
-    // reverse = false
-    {
-        let builder = MergeIterOverBuilder::default()
-            .add(Box::new(UniIterator::new(st1.clone(), false)))
-            .add(Box::new(UniIterator::new(st2.clone(), false)))
-            .add(Box::new(UniIterator::new(st3.clone(), false)));
+        let builder = MergeIterOverBuilder::default().add_batch(vec![t3, t1, t4, t2]);
         let miter = builder.build();
-        assert!(miter.peek().is_none());
-        let mut count = 0;
-        while let Some(value) = miter.next() {
-            // info!("{}", String::from_utf8_lossy(value.key()));
-            let expect = keys.lock().await;
-            let expect = expect.get(count).unwrap();
-            assert_eq!(value.key(), expect);
-            count += 1;
-        }
-        assert_eq!(count as u32, m * n);
+        miter.next();
+        assert_eq!(miter.peek().unwrap().key(), b"abc");
     }
 
-    // reverse = true
-    {
-        let builder = MergeIterOverBuilder::default()
-            .reverse(true)
-            .add(Box::new(UniIterator::new(st1, true)))
-            .add(Box::new(UniIterator::new(st2, true)))
-            .add(Box::new(UniIterator::new(st3, true)));
-        let miter = builder.build();
-        assert!(miter.peek().is_none());
-        let mut count = 0;
-        keys.lock().await.sort_by(|a, b| b.cmp(a));
-        while let Some(value) = miter.next() {
-            // info!("{}", String::from_utf8_lossy(value.key()));
-            let expect = keys.lock().await;
-            let expect = expect.get(count).unwrap();
-            assert_eq!(value.key(), expect);
-            count += 1;
+    #[tokio::test]
+    async fn merge_iter_skip() {
+        crate::test_util::tracing_log();
+        let st1 = SkipList::new(1 << 20);
+        let st2 = SkipList::new(1 << 20);
+        let st3 = SkipList::new(1 << 20);
+        let mut wg = awaitgroup::WaitGroup::new();
+        let keys = TArcMx::new(tokio::sync::Mutex::new(vec![]));
+        let n = 300;
+        let m = 10;
+        for i in 0..n {
+            let wk = wg.worker();
+            let keys = keys.clone();
+            let st1 = st1.clone();
+            let st2 = st2.clone();
+            let st3 = st3.clone();
+            tokio::spawn(async move {
+                for j in 0..m {
+                    let key = format!("k{:05}_{:08}", i, j).into_bytes().to_vec();
+                    keys.lock().await.push(key.clone());
+                    if j % 3 == 0 {
+                        st1.put(&key, ValueStruct::new(key.clone(), 0, 0, 0));
+                    } else if j % 3 == 1 {
+                        st2.put(&key, ValueStruct::new(key.clone(), 0, 0, 0));
+                    } else {
+                        st3.put(&key, ValueStruct::new(key.clone(), 0, 0, 0));
+                    }
+                }
+                wk.done();
+            });
         }
-        assert_eq!(count as u32, m * n);
-    }
-}
 
-#[tokio::test]
-async fn merge_iter_random() {
-    use itertools::Itertools;
-    crate::test_util::tracing_log();
-    let st1 = SkipList::new(1 << 20);
-    let st2 = SkipList::new(1 << 20);
-    let st3 = SkipList::new(1 << 20);
-    let mut keys = vec![];
-    for i in 0..10000 {
-        let key = rand::random::<usize>() % 10000;
-        let key = format!("k{:05}", key).into_bytes().to_vec();
-        keys.push(key.clone());
-        if i % 3 == 0 {
-            st1.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
-        } else if i % 3 == 1 {
-            st2.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
-        } else {
-            st3.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
+        wg.wait().await;
+        assert_eq!(
+            st1.node_count() + st2.node_count() + st3.node_count(),
+            m * n
+        );
+        keys.lock().await.sort();
+        // reverse = false
+        {
+            let builder = MergeIterOverBuilder::default()
+                .add(Box::new(UniIterator::new(st1.clone(), false)))
+                .add(Box::new(UniIterator::new(st2.clone(), false)))
+                .add(Box::new(UniIterator::new(st3.clone(), false)));
+            let miter = builder.build();
+            assert!(miter.peek().is_none());
+            let mut count = 0;
+            while let Some(value) = miter.next() {
+                // info!("{}", String::from_utf8_lossy(value.key()));
+                let expect = keys.lock().await;
+                let expect = expect.get(count).unwrap();
+                assert_eq!(value.key(), expect);
+                count += 1;
+            }
+            assert_eq!(count as u32, m * n);
+        }
+
+        // reverse = true
+        {
+            let builder = MergeIterOverBuilder::default()
+                .reverse(true)
+                .add(Box::new(UniIterator::new(st1, true)))
+                .add(Box::new(UniIterator::new(st2, true)))
+                .add(Box::new(UniIterator::new(st3, true)));
+            let miter = builder.build();
+            assert!(miter.peek().is_none());
+            let mut count = 0;
+            keys.lock().await.sort_by(|a, b| b.cmp(a));
+            while let Some(value) = miter.next() {
+                // info!("{}", String::from_utf8_lossy(value.key()));
+                let expect = keys.lock().await;
+                let expect = expect.get(count).unwrap();
+                assert_eq!(value.key(), expect);
+                count += 1;
+            }
+            assert_eq!(count as u32, m * n);
         }
     }
 
-    {
-        let builder = MergeIterOverBuilder::default()
-            .add(Box::new(UniIterator::new(st1.clone(), false)))
-            .add(Box::new(UniIterator::new(st2.clone(), false)))
-            .add(Box::new(UniIterator::new(st3.clone(), false)));
-        keys.sort();
-        let keys = keys.clone().into_iter().unique().collect::<Vec<_>>();
-        let miter = builder.build();
-        assert!(miter.peek().is_none());
-        let mut count = 0;
-        while let Some(value) = miter.next() {
-            // info!("{}", String::from_utf8_lossy(value.key()));
-            let expect = keys.get(count).unwrap();
-            assert_eq!(value.key(), expect);
-            count += 1;
+    #[tokio::test]
+    async fn merge_iter_random() {
+        use itertools::Itertools;
+        crate::test_util::tracing_log();
+        let st1 = SkipList::new(1 << 20);
+        let st2 = SkipList::new(1 << 20);
+        let st3 = SkipList::new(1 << 20);
+        let mut keys = vec![];
+        for i in 0..10000 {
+            let key = rand::random::<usize>() % 10000;
+            let key = format!("k{:05}", key).into_bytes().to_vec();
+            keys.push(key.clone());
+            if i % 3 == 0 {
+                st1.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
+            } else if i % 3 == 1 {
+                st2.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
+            } else {
+                st3.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
+            }
         }
-        assert_eq!(count, keys.len());
-    }
 
-    {
-        let builder = MergeIterOverBuilder::default()
-            .reverse(true)
-            .add(Box::new(UniIterator::new(st1.clone(), true)))
-            .add(Box::new(UniIterator::new(st2.clone(), true)))
-            .add(Box::new(UniIterator::new(st3.clone(), true)));
-        keys.sort_by(|a, b| b.cmp(a));
-        let keys = keys.into_iter().unique().collect::<Vec<_>>();
-        let miter = builder.build();
-        assert!(miter.peek().is_none());
-        let mut count = 0;
-        while let Some(value) = miter.next() {
-            // info!("{}", String::from_utf8_lossy(value.key()));
-            let expect = keys.get(count).unwrap();
-            assert_eq!(value.key(), expect);
-            count += 1;
+        {
+            let builder = MergeIterOverBuilder::default()
+                .add(Box::new(UniIterator::new(st1.clone(), false)))
+                .add(Box::new(UniIterator::new(st2.clone(), false)))
+                .add(Box::new(UniIterator::new(st3.clone(), false)));
+            keys.sort();
+            let keys = keys.clone().into_iter().unique().collect::<Vec<_>>();
+            let miter = builder.build();
+            assert!(miter.peek().is_none());
+            let mut count = 0;
+            while let Some(value) = miter.next() {
+                // info!("{}", String::from_utf8_lossy(value.key()));
+                let expect = keys.get(count).unwrap();
+                assert_eq!(value.key(), expect);
+                count += 1;
+            }
+            assert_eq!(count, keys.len());
         }
-        assert_eq!(count, keys.len());
+
+        {
+            let builder = MergeIterOverBuilder::default()
+                .reverse(true)
+                .add(Box::new(UniIterator::new(st1.clone(), true)))
+                .add(Box::new(UniIterator::new(st2.clone(), true)))
+                .add(Box::new(UniIterator::new(st3.clone(), true)));
+            keys.sort_by(|a, b| b.cmp(a));
+            let keys = keys.into_iter().unique().collect::<Vec<_>>();
+            let miter = builder.build();
+            assert!(miter.peek().is_none());
+            let mut count = 0;
+            while let Some(value) = miter.next() {
+                // info!("{}", String::from_utf8_lossy(value.key()));
+                let expect = keys.get(count).unwrap();
+                assert_eq!(value.key(), expect);
+                count += 1;
+            }
+            assert_eq!(count, keys.len());
+        }
     }
 }

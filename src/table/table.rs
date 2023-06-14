@@ -2,11 +2,11 @@ use crate::options::FileLoadingMode;
 use crate::options::FileLoadingMode::MemoryMap;
 use crate::table::builder::Header;
 use crate::y::{hash, mmap, parallel_load_block_key, read_at, Result};
-use crate::{Error};
+use crate::Error;
 use byteorder::{BigEndian, ReadBytesExt};
 
 use growable_bloom_filter::GrowableBloom;
-use memmap::{MmapMut};
+use memmap::MmapMut;
 
 use std::collections::HashSet;
 
@@ -20,7 +20,6 @@ use std::{fmt, io};
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::FileExt;
 
-
 use crate::types::{XArc, XWeak};
 use crate::y::iterator::Xiterator;
 
@@ -30,7 +29,6 @@ use log::{debug, info};
 use std::os::windows::fs::FileExt;
 
 use std::str::pattern::Pattern;
-
 
 pub(crate) const FILE_SUFFIX: &str = ".sst";
 

@@ -1,17 +1,10 @@
 use crate::skl::Chunk;
 
-
 use byteorder::BigEndian;
 use byteorder::{ReadBytesExt, WriteBytesExt};
 use log::info;
 
-
-
-
-
 use std::io::{Cursor, Write};
-
-
 
 /// ValueStruct represents the value info that can be associated with a key, but also the internal
 /// Meta field.
@@ -52,7 +45,6 @@ impl ValueStruct {
     }
 
     pub(crate) fn read_data(&mut self, buffer: &[u8]) {
-        
         let mut cursor = Cursor::new(buffer);
         self.meta = cursor.read_u8().unwrap();
         self.user_meta = cursor.read_u8().unwrap();
@@ -62,13 +54,19 @@ impl ValueStruct {
 
     #[cfg(test)]
     pub(crate) fn pretty(&self) -> String {
-        format!("meta: {}, user_meta: {}, cas: {}, value: {}", self.meta, self.user_meta, self.cas_counter, String::from_utf8_lossy(&self.value))
+        format!(
+            "meta: {}, user_meta: {}, cas: {}, value: {}",
+            self.meta,
+            self.user_meta,
+            self.cas_counter,
+            String::from_utf8_lossy(&self.value)
+        )
     }
 }
 
 impl<T> From<T> for ValueStruct
-    where
-        T: AsRef<[u8]>,
+where
+    T: AsRef<[u8]>,
 {
     fn from(buffer: T) -> Self {
         let mut v = ValueStruct::default();

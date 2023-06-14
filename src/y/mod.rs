@@ -5,7 +5,7 @@ mod metrics;
 
 pub use codec::{AsyncEncDec, Decode, Encode};
 pub use iterator::*;
-use libc::{O_DSYNC};
+use libc::O_DSYNC;
 use log::error;
 use memmap::MmapMut;
 pub use merge_iterator::*;
@@ -14,7 +14,6 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{ErrorKind, Write};
-
 
 use std::{cmp, io};
 use thiserror::Error;

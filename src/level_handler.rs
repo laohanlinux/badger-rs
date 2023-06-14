@@ -1,12 +1,11 @@
 use crate::compaction::KeyRange;
 
 use crate::table::iterator::{IteratorImpl, IteratorItem};
-use crate::table::table::{Table};
-use crate::types::{XArc};
+use crate::table::table::Table;
+use crate::types::XArc;
 
-use crate::{Result};
+use crate::Result;
 use core::slice::SlicePattern;
-
 
 use crate::options::Options;
 
@@ -18,7 +17,6 @@ use std::collections::HashSet;
 
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
-
 
 pub(crate) type LevelHandler = XArc<LevelHandlerInner>;
 
@@ -229,7 +227,7 @@ impl LevelHandler {
 
     // Acquires a read-lock to access s.tables. It returns a list of table_handlers.
     pub(crate) fn get_table_for_key(&self, key: &[u8]) -> Option<IteratorItem> {
-        return if self.level.load(Ordering::Relaxed) == 0 {
+        return if self.get_level() == 0 {
             let tw = self.tables_rd();
             for tb in tw.iter().rev() {
                 tb.incr_ref();
@@ -300,6 +298,16 @@ impl LevelHandlerInner {
             max_total_size: Default::default(),
             opt,
         }
+    }
+
+    #[inline]
+    pub(crate) fn get_level(&self) -> i32 {
+        self.level.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    pub(crate) fn set_level(&self, level: i32) {
+        self.level.store(level, Ordering::Release);
     }
 
     #[inline]

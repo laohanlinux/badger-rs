@@ -1,20 +1,16 @@
-
 use std::fmt::Debug;
 
+use std::hint;
 use std::ops::{Deref, RangeBounds};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, TryLockResult, Weak};
 use std::time::Duration;
-use std::{hint};
 
 use async_channel::{
     bounded, unbounded, Receiver, RecvError, SendError, Sender, TryRecvError, TrySendError,
 };
 
-
-
-use log::{info};
-
+use log::info;
 
 use range_lock::{VecRangeLock, VecRangeLockGuard};
 
@@ -315,36 +311,46 @@ impl<T> Deref for XVec<T> {
     }
 }
 
-#[test]
-fn it_closer() {
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(async {
-        let closer = Closer::new("test".to_owned());
-        let count = Arc::new(AtomicUsize::new(100));
-        for i in 0..count.load(Ordering::Relaxed) {
-            let c = closer.spawn();
-            let n = count.clone();
-            tokio::spawn(async move {
-                n.fetch_sub(1, Ordering::Relaxed);
-                c.done();
-            });
-        }
-        closer.signal_and_wait().await;
-        assert_eq!(count.load(Ordering::Relaxed), 0);
-    });
-}
+#[cfg(test)]
+mod tests {
+    use std::sync::{atomic::AtomicUsize, Arc};
 
-#[tokio::test]
-async fn lck() {
-    use crossbeam_epoch::{self as epoch, Atomic, Shared};
-    use std::sync::atomic::Ordering::SeqCst;
+    use atomic::Ordering;
+    use crossbeam_epoch::Owned;
 
-    let a = Atomic::new(1234);
-    let guard = &epoch::pin();
-    // let p = a.swap(Shared::null(), SeqCst, guard);
-    // println!("{:?}", unsafe { p.as_ref().unwrap()});
-    let p = a.swap(Owned::new(200), SeqCst, guard);
-    let p = a.swap(Owned::new(200), SeqCst, guard);
+    use crate::types::Closer;
 
-    println!("{:?}", unsafe { p.as_ref().unwrap() });
+    #[test]
+    fn it_closer() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let closer = Closer::new("test".to_owned());
+            let count = Arc::new(AtomicUsize::new(100));
+            for i in 0..count.load(Ordering::Relaxed) {
+                let c = closer.spawn();
+                let n = count.clone();
+                tokio::spawn(async move {
+                    n.fetch_sub(1, Ordering::Relaxed);
+                    c.done();
+                });
+            }
+            closer.signal_and_wait().await;
+            assert_eq!(count.load(Ordering::Relaxed), 0);
+        });
+    }
+
+    #[tokio::test]
+    async fn lck() {
+        use crossbeam_epoch::{self as epoch, Atomic, Shared};
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let a = Atomic::new(1234);
+        let guard = &epoch::pin();
+        // let p = a.swap(Shared::null(), SeqCst, guard);
+        // println!("{:?}", unsafe { p.as_ref().unwrap()});
+        let p = a.swap(Owned::new(200), SeqCst, guard);
+        let p = a.swap(Owned::new(200), SeqCst, guard);
+
+        println!("{:?}", unsafe { p.as_ref().unwrap() });
+    }
 }

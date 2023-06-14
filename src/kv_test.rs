@@ -153,21 +153,25 @@ async fn t_cas() {
         // cas counter from 1
         assert_eq!(i + 1, counter as usize);
         // store kv pair
-        items.push(pair);
+        let entry = Entry::default()
+            .key(pair.key().to_vec())
+            .value(pair.get_value().await.unwrap())
+            .cas_counter(pair.counter());
+        items.push(entry);
     }
 
     debug!("It should be all failed because comparse_and_set failed!!!");
     for i in 0..n {
         let key = i.to_string().into_bytes();
         let value = (i + 100).to_string().into_bytes();
-        let mut cc = items[i].counter();
+        let mut cc = items[i].get_cas_counter();
         let ret = kv.compare_and_set(key, value, cc + 1).await.unwrap_err();
         assert_eq!(ret.to_string(), Error::ValueCasMisMatch.to_string());
         assert_eq!(kv.to_ref().get_last_used_cas_counter() as usize, n + i + 1);
         tokio::time::sleep(Duration::from_millis(3)).await;
     }
     for (cas, item) in items.iter().enumerate() {
-        assert_eq!(cas + 1, item.counter() as usize);
+        assert_eq!(cas + 1, item.get_cas_counter() as usize);
     }
 
     // Although there are new key-value pairs successfully updated, the CAS (comparse_and_swap) value will still increment.
@@ -178,34 +182,22 @@ async fn t_cas() {
     for i in 0..n {
         let key = i.to_string().into_bytes();
         let value = format!("zzz{}", i).into_bytes();
-        // {
-        //     let got = kv.get_with_ext(&key).await.unwrap();
-        //     let got = got.read().await;
-        //     debug!(
-        //         "got a value: {}, cas: {}",
-        //         String::from_utf8_lossy(&got.get_value().await.unwrap()),
-        //         got.counter(),
-        //     );
-        // }
-        // warn!("==> {}", items[i].counter());
-        let ret = kv.compare_and_set(key, value, items[i].counter()).await;
+        let ret = kv.compare_and_set(key, value, items[i].get_cas_counter()).await;
         if ret.is_err() {
             warn!("fail to check compare and set");
             return;
         }
         assert!(ret.is_ok(), "{}", i);
     }
-    // debug!("cas has update, try it again");
-    // //assert_eq!(kv.to_ref().get_last_used_cas_counter(), 2 * n as u64);
-    // tokio::time::sleep(Duration::from_secs(3)).await;
-    // for i in 0..n {
-    //     let key = i.to_string().into_bytes();
-    //     let value = format!("zzz{}", i).as_bytes().to_vec();
-    //     let got = kv.get_with_ext(&key).await.unwrap();
-    //     let got = got.read().await;
-    //     assert_eq!(got.get_value().await.unwrap(), value);
-    //     assert_eq!(n * 2 + i + 1, got.counter() as usize);
-    // }
+    debug!("cas has update, try it again");
+    for i in 0..n {
+        let key = i.to_string().into_bytes();
+        let value = format!("zzz{}", i).as_bytes().to_vec();
+        let got = kv.get_with_ext(&key).await.unwrap();
+        let got = got.read().await;
+        assert_eq!(got.get_value().await.unwrap(), value);
+        assert_eq!(n * 2 + i + 1, got.counter() as usize);
+    }
 }
 
 #[tokio::test]

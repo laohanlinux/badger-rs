@@ -1,48 +1,45 @@
 use crate::iterator::{IteratorExt, IteratorOptions, KVItem, KVItemInner};
-use crate::levels::{LevelsController};
+use crate::levels::LevelsController;
 use crate::manifest::{open_or_create_manifest_file, ManifestFile};
 use crate::options::Options;
 use crate::table::builder::Builder;
-use crate::table::iterator::{IteratorItem};
+use crate::table::iterator::IteratorItem;
 use crate::table::table::{new_file_name, Table, TableCore};
 use crate::types::{ArcMx, Channel, Closer, TArcRW, XArc, XWeak};
 use crate::value_log::{
     Entry, EntryType, MetaBit, Request, ValueLogCore, ValuePointer, MAX_KEY_SIZE,
 };
-use crate::y::{
-    async_sync_directory, create_synced_file, Encode, Result, ValueStruct,
-};
+use crate::y::{async_sync_directory, create_synced_file, Encode, Result, ValueStruct};
 use crate::Error::{NotFound, Unexpected};
 use crate::{
     Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager, UniIterator, Xiterator,
 };
 
-
 use atomic::Atomic;
-use bytes::{BufMut};
+use bytes::BufMut;
 use crossbeam_epoch::{Owned, Shared};
 use drop_cell::defer;
 use fs2::FileExt;
 
 use log::{debug, error, info, warn};
 
-use parking_lot::{Mutex};
-
+use parking_lot::Mutex;
 
 use std::fs::File;
-use std::fs::{OpenOptions};
+use std::fs::OpenOptions;
 use std::future::Future;
 use std::io::{Cursor, Write};
 
-use std::path::{Path};
+use std::path::Path;
 use std::pin::Pin;
 
+use rand::random;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc};
+use std::sync::Arc;
 use std::time::Duration;
 use std::{string, vec};
 use tokio::fs::create_dir_all;
-use tokio::io::{AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
 pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
@@ -339,8 +336,8 @@ impl KV {
         let tables = self.get_mem_tables(&p);
         // TODO add metrics
         for tb in tables {
-            let vs = unsafe { tb.as_ref().unwrap().get(key) };
-            warn!("------------------- {}", crate::y::hex_str(key));
+            let st = unsafe { tb.as_ref().unwrap() };
+            let vs = st.get(key);
             if vs.is_none() {
                 continue;
             }
@@ -362,18 +359,27 @@ impl KV {
                         }
                     }
                     if !found {
-                        warn!("Not found {}", String::from_utf8_lossy(key));
+                        warn!(
+                            "Not found, st:{}, key #{}",
+                            st.id(),
+                            String::from_utf8_lossy(key)
+                        );
                     }
                     let keys = vec![b"283".to_vec(), b"284".to_vec(), b"285".to_vec()];
                     if keys.contains(&key.to_vec()) {
                         warn!("the value is {}", String::from_utf8_lossy(&vs.value));
                     }
                 }
-
+                warn!(
+                    "fount from skiplist, st:{}, key #{}, value: {}",
+                    st.id(),
+                    crate::y::hex_str(key),
+                    crate::y::hex_str(&vs.value),
+                );
                 return Ok(vs);
             }
         }
-
+        warn!("found from disk table, key #{}", crate::y::hex_str(key));
         self.must_lc().get(key).ok_or(NotFound)
     }
 
@@ -493,7 +499,7 @@ impl KV {
 
             async_sync_directory(self.opt.dir.clone().to_string()).await?;
             let mut fp = tokio::fs::File::from_std(fp);
-            write_level0_table(&task.mt.as_ref().unwrap(), &mut fp).await?;
+            write_level0_table(&task.mt.as_ref().unwrap(), &f_name, &mut fp).await?;
 
             debug!("Ready to advance im");
             let fp = fp.into_std().await;
@@ -612,14 +618,9 @@ impl KV {
                         old_cas, entry.cas_counter_check,
                         crate::y::hex_str(&old_value.value),
                         crate::y::hex_str(&entry.value));
-                    warn!(">>>>>>>>>>>");
+
                     continue;
                 }
-
-                warn!(
-                    "<<<<<<<<<<<, counter_check:{}, cas:{}",
-                    entry.cas_counter_check, old_cas
-                );
             }
 
             if entry.meta == MetaBit::BIT_SET_IF_ABSENT.bits() {
@@ -659,8 +660,9 @@ impl KV {
 
             #[cfg(test)]
             warn!(
-                "tid:{}, key #{:?}, old_cas:{}, new_cas:{}, check_cas:{}, value #{:?} has inserted into SkipList!!!",
+                "tid:{}, st:{}, key #{:?}, old_cas:{}, new_cas:{}, check_cas:{}, value #{:?} has inserted into SkipList!!!",
                 tid,
+                self.must_mt().id(),
                 String::from_utf8_lossy(&key),
                 old_cas,
                 debug_entry.get_cas_counter(),
@@ -1176,8 +1178,25 @@ impl ArcKV {
 }
 
 // Write level zero table
-pub(crate) async fn write_level0_table(st: &SkipList, f: &mut tokio::fs::File) -> Result<()> {
+pub(crate) async fn write_level0_table(
+    st: &SkipList,
+    f_name: &String,
+    f: &mut tokio::fs::File,
+) -> Result<()> {
     defer! {info!("Finish write level zero table")}
+
+    #[cfg(test)]
+    warn!(
+        "write st into table, st: {}, fpath:{}, {:?}",
+        st.id(),
+        f_name,
+        st.key_values()
+            .iter()
+            .map(|(key, _)| crate::y::hex_str(key))
+            .collect::<Vec<_>>()
+            .join("#")
+    );
+
     let cur = st.new_cursor();
     let mut builder = Builder::default();
     while let Some(_) = cur.next() {

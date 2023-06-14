@@ -1,7 +1,8 @@
-use crate::types::{Closer};
+use crate::types::Closer;
 use crate::value_log::{Entry, Header, ValuePointer};
-use crate::y::{Result};
+use crate::y::{create_synced_file, Result};
 use crate::y::{is_eof, Decode};
+use std::env::temp_dir;
 
 use async_channel::Sender;
 use byteorder::{BigEndian, ReadBytesExt};
@@ -9,10 +10,6 @@ use drop_cell::defer;
 use either::Either;
 use log::info;
 use memmap::{Mmap, MmapMut};
-
-
-
-
 
 use std::fmt::{Debug, Formatter};
 use std::fs::File;
@@ -352,6 +349,7 @@ fn test_mmap() {
 fn test_write_file() {
     use crate::test_util;
     test_util::tracing_log();
+    use std::io::Write;
 
     let tmp_path = temp_dir().join("mmap_test.txt");
     let tmp_path = tmp_path.to_str().unwrap();

@@ -1,4 +1,4 @@
-use async_channel::{Receiver};
+use async_channel::Receiver;
 use atomic::Atomic;
 
 use bitflags::bitflags;
@@ -7,13 +7,11 @@ use bytes::BufMut;
 use crc32fast::Hasher;
 use drop_cell::defer;
 
-
 use log::kv::Source;
-use log::{info};
-use memmap::{Mmap};
+use log::{debug, info};
+use memmap::Mmap;
 
 use rand::random;
-
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
@@ -38,12 +36,9 @@ use crate::kv::{BoxKV, KV};
 use crate::log_file::LogFile;
 use crate::options::Options;
 
-
 use crate::types::{Channel, Closer, TArcRW};
-use crate::y::{
-    create_synced_file, open_existing_synced_file, sync_directory, Decode, Encode,
-};
-use crate::Error::{Unexpected};
+use crate::y::{create_synced_file, open_existing_synced_file, sync_directory, Decode, Encode};
+use crate::Error::Unexpected;
 use crate::{Error, Result, EMPTY_SLICE};
 
 // Values have their first byte being byteData or byteDelete. This helps us distinguish between
@@ -165,8 +160,9 @@ impl Entry {
         self.cas_counter.load(Ordering::Acquire)
     }
 
-    pub fn set_cas_counter(&self, cas: u64) {
-        self.cas_counter.store(cas, Ordering::Release)
+    pub fn cas_counter(mut self, cas: u64) -> Self {
+        self.cas_counter.store(cas, Ordering::Release);
+        self
     }
 
     pub fn hex_str(&self) -> String {

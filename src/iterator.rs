@@ -5,23 +5,21 @@ use crate::ValueStruct;
 use crate::{
     kv::KV,
     types::XArc,
-    value_log::{MetaBit, ValuePointer}, Decode, MergeIterator, Result, Xiterator, EMPTY_SLICE,
+    value_log::{MetaBit, ValuePointer},
+    Decode, MergeIterator, Result, Xiterator, EMPTY_SLICE,
 };
 
 use atomic::Atomic;
-
 
 use std::fmt::{Display, Formatter};
 use std::future::Future;
 
 use std::pin::Pin;
 
-use std::sync::atomic::{Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
 use tokio::io::AsyncWriteExt;
-
-
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub(crate) enum PreFetchStatus {

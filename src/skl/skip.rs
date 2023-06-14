@@ -60,6 +60,11 @@ impl SkipList {
         }
     }
 
+    /// Return SkipList's id
+    pub fn id(&self) -> u32 {
+        self.id.load(Ordering::Relaxed)
+    }
+
     /// Increases the reference count
     pub fn incr_ref(&self) {
         self._ref.fetch_add(1, Ordering::Relaxed);
@@ -704,17 +709,19 @@ impl SkipIterator {
 }
 
 mod tests {
-    
-    use crate::skl::skip::SkipList;
-    
+
+    use crate::skl::MAX_HEIGHT;
+    use crate::{skl::skip::SkipList, Node};
+
     use crate::y::ValueStruct;
+    use atomic::Ordering;
     use rand::distributions::{Alphanumeric, DistString};
-    
-    
-    
-    
-    
-    use std::thread::spawn;
+
+    use std::{
+        ptr,
+        sync::{atomic::AtomicI32, Arc},
+        thread::spawn,
+    };
 
     const ARENA_SIZE: usize = 1 << 20;
 
@@ -828,8 +835,6 @@ mod tests {
     }
 
     fn t_concurrent_basic2() {
-        
-
         let st = SkipList::new(ARENA_SIZE);
         let mut kv = vec![];
         for _i in 0..10000 {
@@ -1140,8 +1145,9 @@ mod tests {
 }
 
 mod tests2 {
-    
-    
+    use crate::y::iterator::Xiterator;
+    use crate::{SkipIterator, SkipList, UniIterator, ValueStruct};
+    use log::info;
 
     const ARENA_SIZE: usize = 1 << 20;
 

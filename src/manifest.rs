@@ -3,7 +3,7 @@ use crate::pb::badgerpb3::manifest_change::Operation;
 use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet};
 use crate::y::{is_eof, open_existing_synced_file, sync_directory};
 use crate::Error::{BadMagic, Unexpected};
-use crate::{Result};
+use crate::Result;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::info;
 

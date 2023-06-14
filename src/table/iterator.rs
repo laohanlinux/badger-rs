@@ -1,19 +1,16 @@
 use crate::table::builder::Header;
-use crate::table::table::{Table};
+use crate::table::table::Table;
 use crate::y::iterator::{KeyValue, Xiterator};
-use crate::y::{ValueStruct};
+use crate::y::ValueStruct;
 
 use log::debug;
 use std::borrow::{Borrow, BorrowMut};
 use std::cell::{RefCell, RefMut};
 
-
 use std::fmt::Formatter;
 
-
-use std::ptr::{slice_from_raw_parts};
-use std::{fmt};
-
+use std::fmt;
+use std::ptr::slice_from_raw_parts;
 
 pub enum IteratorSeek {
     Origin,
@@ -758,19 +755,4 @@ impl fmt::Display for ConcatIterator {
             cur
         ))
     }
-}
-
-#[test]
-fn it() {
-    let n = vec![2, 19, 30, 31, 33, 34, 35, 37];
-    println!(
-        "{:?}",
-        n.binary_search_by(|a| {
-            match a.cmp(&1) {
-                Ordering::Equal => Ordering::Equal,
-                Ordering::Greater => Ordering::Equal,
-                Ordering::Less => Ordering::Less,
-            }
-        })
-    );
 }
