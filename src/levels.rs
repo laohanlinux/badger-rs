@@ -12,8 +12,8 @@ use crate::types::{Closer, XArc};
 use crate::y::{
     async_sync_directory, create_synced_file, open_existing_synced_file, sync_directory,
 };
-use crate::MergeIterOverBuilder;
 use crate::Xiterator;
+use crate::{hex_str, MergeIterOverBuilder};
 use crate::{Result, ValueStruct};
 use atomic::Ordering;
 use awaitgroup::WaitGroup;
@@ -160,18 +160,14 @@ impl LevelsController {
                 #[cfg(test)]
                 {
                     if item.key() != key {
-                        error!(
-                            "{} not equal {}",
-                            crate::hex_str(key),
-                            crate::y::hex_str(item.key())
-                        );
+                        error!("{} not equal {}", hex_str(key), hex_str(item.key()));
                     }
                     assert_eq!(
                         key,
                         item.key(),
                         "{} not equal {}",
-                        crate::hex_str(key),
-                        crate::hex_str(item.key())
+                        hex_str(key),
+                        hex_str(item.key())
                     );
                 }
                 return Some(item.value().clone());
@@ -201,11 +197,11 @@ impl LevelsController {
 
     // compact worker
     async fn run_worker(&self, lc: Closer) {
+        defer! {lc.done()};
         if self.opt.do_not_compact {
-            lc.done();
             return;
         }
-        defer! {lc.done()};
+
         // random sleep avoid all worker compact at same time
         {
             let duration = thread_rng_n(1000);
@@ -220,6 +216,9 @@ impl LevelsController {
                 _ = interval.tick() => {
                     let pick: Vec<CompactionPriority> = self.pick_compact_levels();
                     info!("Try to compact levels, {:?}", pick);
+                    if !pick.is_empty () {
+                        info!("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
+                    }
                     for p in pick {
                         match self.do_compact(p).await {
                             Ok(true) => {
@@ -240,6 +239,7 @@ impl LevelsController {
                     return;
                 }
             }
+            drop(done);
         }
     }
 
