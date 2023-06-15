@@ -368,8 +368,6 @@ impl SkipList {
         if !found {
             return None;
         }
-        warn!("--->>> {}", crate::y::hex_str(key));
-
         if let Some(node) = node {
             let (offset, size) = node.get_value_offset();
             let value = self.arena.get_val(offset, size);
@@ -377,9 +375,6 @@ impl SkipList {
             #[cfg(test)]
             {
                 let got_key = node.key(&self.arena);
-                if &value.value == b"zzz29" {
-                    warn!("==>> node: {:?}", node);
-                }
                 assert_eq!(key, got_key);
             }
 

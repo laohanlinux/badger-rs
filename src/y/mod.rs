@@ -324,18 +324,7 @@ pub(crate) async fn async_sync_directory(d: String) -> Result<()> {
 }
 
 pub(crate) fn hex_str(buf: &[u8]) -> String {
-    String::from_utf8_lossy(buf).to_string()
-}
-
-#[test]
-fn it_cpu() {
-    println!("{:?}", num_cpu());
-}
-
-#[test]
-fn sync_dir() {
-    let ok = sync_directory(&"/tmp".to_string());
-    println!("{:?}", ok);
+    String::from_utf8(buf.to_vec()).unwrap_or_else(|_| "Sorry, Hex String Failed!!!".to_string())
 }
 
 #[test]

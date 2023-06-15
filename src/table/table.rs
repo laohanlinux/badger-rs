@@ -2,7 +2,7 @@ use crate::options::FileLoadingMode;
 use crate::options::FileLoadingMode::MemoryMap;
 use crate::table::builder::Header;
 use crate::y::{hash, mmap, parallel_load_block_key, read_at, Result};
-use crate::Error;
+use crate::{hex_str, Error};
 use byteorder::{BigEndian, ReadBytesExt};
 
 use growable_bloom_filter::GrowableBloom;
@@ -23,7 +23,7 @@ use std::os::unix::fs::FileExt;
 use crate::types::{XArc, XWeak};
 use crate::y::iterator::Xiterator;
 
-use log::{debug, info};
+use log::{debug, info, warn};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::FileExt;
@@ -78,12 +78,6 @@ impl Table {
     pub fn smallest(&self) -> &[u8] {
         &self.smallest
     }
-
-    /// Return true if (but not "only if") the table does have the key. It does a
-    /// bloom filter lookup.
-    pub fn does_not_have(&self, key: &[u8]) -> bool {
-        !self.bf.contains(key)
-    }
 }
 
 pub struct TableCore {
@@ -133,7 +127,10 @@ impl TableCore {
         }
 
         #[cfg(any(target_os = "windows"))]
-        table.load_to_ram()?;
+        {
+            warn!("Windows OS only support load file to RAW!!!");
+            table.load_to_ram()?;
+        }
 
         table.read_index()?;
         let table_ref = Table::new(table);
@@ -168,10 +165,6 @@ impl TableCore {
     // decrements the refcount and possibly deletes the table
     pub(crate) fn decr_ref(&self) {
         self._ref.fetch_sub(1, Ordering::Relaxed);
-    }
-
-    fn close(&mut self) {
-        todo!()
     }
 }
 
@@ -353,10 +346,10 @@ impl Display for TableCore {
             .iter()
             .map(|x| format!("{}", x))
             .collect::<Vec<_>>();
-        let smallest = String::from_utf8_lossy(self.smallest());
-        let biggest = String::from_utf8_lossy(self.biggest());
+        let smallest = hex_str(self.smallest());
+        let biggest = hex_str(self.biggest());
         f.debug_struct("Table")
-            .field("block_index", &index_str)
+            //.field("block_index", &index_str)
             .field("_ref", &self._ref.load(Ordering::Relaxed))
             .field("fname", &self.file_name)
             .field("size", &self.table_size)
@@ -398,7 +391,11 @@ pub fn get_id_map(dir: &str) -> HashSet<u64> {
             debug!("Skip file, {:?}", fid.unwrap_err());
             continue;
         }
-        debug!("What dir : {:?} {:?}", fid, dir_el.file_name());
+        debug!(
+            "Find a id table, fid: {:?}, fname: {:?}",
+            fid,
+            dir_el.file_name()
+        );
         ids.insert(fid.unwrap());
     }
     ids

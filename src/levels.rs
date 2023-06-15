@@ -73,7 +73,7 @@ impl LevelsController {
                     Ordering::Relaxed,
                 );
             }
-            cstatus.levels.write().push(LevelCompactStatus::default());
+            cstatus.wl().push(LevelCompactStatus::default());
         }
         // Compare manifest against directory, check for existent/non-existent files, and remove.
         let mf = manifest.read().await.manifest.clone();
@@ -384,7 +384,7 @@ impl LevelsController {
                         .as_millis()
                 );
                 info!("{:?}, {}", self.opt, self.levels[0].num_tables());
-                let c_status = self.c_status.levels.write();
+                let c_status = self.c_status.rl();
                 for i in 0..self.opt.max_levels {
                     info!(
                         "level={}, status={}, size={}",
@@ -408,7 +408,9 @@ impl LevelsController {
                 }
                 // sleep millis, try it again
                 sleep(Duration::from_millis(10000)).await;
-                info!("Try again to check level0 compactable");
+                info!(
+                    "Try again to check level0 compactable, Waitting gc job compact level zero SST"
+                );
             }
 
             info!(
@@ -726,7 +728,15 @@ impl LevelsController {
     // Return true if level zero may be compacted, without accounting for compactions that already
     // might be happening.
     fn is_level0_compactable(&self) -> bool {
-        self.levels[0].num_tables() >= self.opt.num_level_zero_tables
+        let compactable = self.levels[0].num_tables() >= self.opt.num_level_zero_tables;
+        #[cfg(test)]
+        info!(
+            "level compactable, num_tables: {}, config_tables: {}",
+            self.levels[0].num_tables(),
+            self.opt.num_level_zero_tables
+        );
+
+        compactable
     }
 
     pub(crate) fn reserve_file_id(&self) -> u64 {

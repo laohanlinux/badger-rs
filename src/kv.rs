@@ -21,7 +21,7 @@ use crossbeam_epoch::{Owned, Shared};
 use drop_cell::defer;
 use fs2::FileExt;
 
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 
 use parking_lot::Mutex;
 
@@ -344,33 +344,7 @@ impl KV {
             let vs = vs.unwrap();
             // TODO why
             if vs.meta != 0 || !vs.value.is_empty() {
-                #[cfg(test)]
-                {
-                    let st = unsafe { tb.as_ref().unwrap() };
-                    let itr = st.new_cursor();
-                    let mut found = false;
-                    let mut got_vs: Option<ValueStruct> = None;
-                    for item in itr.next() {
-                        let arena = st.arena_ref();
-                        let got = item.key(arena);
-                        if key == got {
-                            found = true;
-                            break;
-                        }
-                    }
-                    if !found {
-                        warn!(
-                            "Not found, st:{}, key #{}",
-                            st.id(),
-                            String::from_utf8_lossy(key)
-                        );
-                    }
-                    let keys = vec![b"283".to_vec(), b"284".to_vec(), b"285".to_vec()];
-                    if keys.contains(&key.to_vec()) {
-                        warn!("the value is {}", String::from_utf8_lossy(&vs.value));
-                    }
-                }
-                warn!(
+                debug!(
                     "fount from skiplist, st:{}, key #{}, value: {}",
                     st.id(),
                     crate::y::hex_str(key),
@@ -444,6 +418,9 @@ impl KV {
             while let Err(err) = self.ensure_room_for_write().await {
                 debug!("failed to ensure room for write!, err:{}", err);
                 tokio::time::sleep(Duration::from_millis(10)).await;
+
+                #[cfg(test)]
+                tokio::time::sleep(Duration::from_secs(10)).await;
             }
             info!("Waiting for write lsm, count {}", count);
             self.update_offset(&mut req.ptrs).await;
@@ -1202,11 +1179,6 @@ pub(crate) async fn write_level0_table(
     while let Some(_) = cur.next() {
         let key = cur.key();
         let value = cur.value();
-        debug!(
-            "write level zero table: {}, {}",
-            String::from_utf8_lossy(key),
-            String::from_utf8_lossy(&value.value)
-        );
         builder.add(key, &value)?;
     }
     f.write_all(&builder.finish()).await?;

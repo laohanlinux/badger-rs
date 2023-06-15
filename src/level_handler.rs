@@ -10,7 +10,7 @@ use core::slice::SlicePattern;
 use crate::options::Options;
 
 use drop_cell::defer;
-use log::{info, warn};
+use log::{debug, info, warn};
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::collections::HashSet;
@@ -202,9 +202,10 @@ impl LevelHandler {
 
     // Return true if ok and no stalling that will hold a new table reference
     pub(crate) async fn try_add_level0_table(&self, t: Table) -> bool {
-        assert_eq!(self.level.load(Ordering::Relaxed), 0);
+        assert_eq!(self.get_level(), 0);
         let mut tw = self.tables_wl();
         if tw.len() >= self.opt.num_level_zero_tables_stall {
+            // Too many tables at zero level need compact
             return false;
         }
         t.incr_ref();
@@ -236,7 +237,7 @@ impl LevelHandler {
                 tb.incr_ref();
                 // check it by bloom filter
                 if tb.does_not_have(key) {
-                    warn!("not contain it, key #{}", hex_str(key));
+                    debug!("not contain it, key #{}, st: {}", hex_str(key), tb.id());
                     tb.decr_ref();
                     continue;
                 }
@@ -245,7 +246,7 @@ impl LevelHandler {
                 tb.decr_ref();
                 if let Some(item) = item {
                     if item.key() != key {
-                        warn!("try it again, key #{}", crate::y::hex_str(key));
+                        //warn!("try it again, key #{}", crate::y::hex_str(key));
                         continue;
                     }
                     return Some(item);

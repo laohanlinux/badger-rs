@@ -49,9 +49,6 @@ async fn t_batch_write() {
         let res = kv
             .set(format!("{}", i).as_bytes().to_vec(), b"word".to_vec(), 10)
             .await;
-        // if n == 3720 {
-        //     tokio::time::sleep(Duration::from_secs(100)).await;
-        // }
         assert!(res.is_ok());
     }
 
@@ -182,11 +179,9 @@ async fn t_cas() {
     for i in 0..n {
         let key = i.to_string().into_bytes();
         let value = format!("zzz{}", i).into_bytes();
-        let ret = kv.compare_and_set(key, value, items[i].get_cas_counter()).await;
-        if ret.is_err() {
-            warn!("fail to check compare and set");
-            return;
-        }
+        let ret = kv
+            .compare_and_set(key, value, items[i].get_cas_counter())
+            .await;
         assert!(ret.is_ok(), "{}", i);
     }
     debug!("cas has update, try it again");

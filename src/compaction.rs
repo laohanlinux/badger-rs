@@ -28,7 +28,7 @@ impl CompactStatus {
     pub(crate) fn compare_and_add(&self, cd: &CompactDef) -> bool {
         let level = cd.this_level.level();
         assert!(
-            level < self.rl().len() - 1,
+            level + 1 < self.rl().len(),
             "Got level {}, max level {}",
             level,
             self.rl().len()
@@ -70,7 +70,7 @@ impl CompactStatus {
     }
 
     pub(crate) fn overlaps_with(&self, level: usize, this: &KeyRange) -> bool {
-        let compact_status = self.wl();
+        let compact_status = self.rl();
         compact_status[level].overlaps_with(this)
     }
 
@@ -81,12 +81,12 @@ impl CompactStatus {
     }
 
     // Return Level's compaction status with *WriteLockGuard*
-    fn wl(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<LevelCompactStatus>> {
+    pub(crate) fn wl(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<LevelCompactStatus>> {
         self.levels.write()
     }
 
     // Return Level's compaction status with *ReadLockGuard*
-    fn rl(&self) -> RwLockReadGuard<'_, RawRwLock, Vec<LevelCompactStatus>> {
+    pub(crate) fn rl(&self) -> RwLockReadGuard<'_, RawRwLock, Vec<LevelCompactStatus>> {
         self.levels.read()
     }
 }
@@ -126,6 +126,12 @@ impl Display for LevelCompactStatus {
 impl LevelCompactStatus {
     // returns true if self.ranges and dst has overlap, otherwise returns false
     fn overlaps_with(&self, dst: &KeyRange) -> bool {
+        #[cfg(test)]
+        log::info!(
+            "level compact status compare, {:?}, dst: {:?}",
+            self.rl(),
+            dst
+        );
         self.rl().iter().any(|kr| kr.overlaps_with(dst))
     }
 
@@ -228,9 +234,11 @@ impl KeyRange {
             return true;
         }
 
+        // ---[other_left, other_right]--[]
         if self.left > other.right {
             return false;
         }
+        // ---[]--[other-left, other-right]
         if self.right < other.left {
             return false;
         }
