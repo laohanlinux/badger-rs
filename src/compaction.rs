@@ -50,6 +50,12 @@ impl CompactStatus {
         if cd.this_level.get_total_size() - this_level.get_del_size()
             < cd.this_level.get_max_total_size()
         {
+            log::info!(
+                "skip the compaction, top_size:{}, bot_size:{}, max_size:{}",
+                cd.this_level.get_total_size(),
+                cd.next_level.get_total_size(),
+                cd.this_level.get_max_total_size()
+            );
             return false;
         }
         this_level.add(cd.this_range.clone());
@@ -88,6 +94,15 @@ impl CompactStatus {
     // Return Level's compaction status with *ReadLockGuard*
     pub(crate) fn rl(&self) -> RwLockReadGuard<'_, RawRwLock, Vec<LevelCompactStatus>> {
         self.levels.read()
+    }
+
+    pub(crate) fn to_log(&self) {
+        let status = self.rl();
+
+        log::info!("Compact levels, count:{}", status.len());
+        for level in status.iter().enumerate() {
+            log::info!("[{}] [{:?}]", level.0, level.1.to_string())
+        }
     }
 }
 

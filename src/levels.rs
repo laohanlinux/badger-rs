@@ -247,6 +247,8 @@ impl LevelsController {
     async fn do_compact(&self, p: CompactionPriority) -> Result<bool> {
         let l = p.level;
         assert!(l + 1 < self.opt.max_levels); //  Sanity check.
+
+        // merge l'level to (l+1)'s level by p' CompactionPriority
         let mut cd = CompactDef::new(self.levels[l].clone(), self.levels[l + 1].clone());
         info!("Got compaction priority: {:?}", p);
         // While picking tables to be compacted, both level's tables are expected to
@@ -264,7 +266,7 @@ impl LevelsController {
         }
         let level = cd.this_level.level();
         info!("Running for level: {}", level);
-        info!("{:?}", self.c_status);
+        self.c_status.to_log();
         let compacted_res = self.run_compact_def(l, cd).await;
         if compacted_res.is_err() {
             error!(
@@ -587,27 +589,34 @@ impl LevelsController {
         changes
     }
 
+    // Find the KeyRange that should be merge between cd.this and cd.next
     fn fill_tables_l0(&self, cd: &mut CompactDef) -> bool {
+        // lock the this, next levels avoid other GC worker
         cd.lock_shared_levels();
         let top = cd.this_level.to_ref().tables.read();
         // TODO here maybe have some issue that i don't understand
         let tables = top.to_vec();
+        // all tables at zero table will be merge level1
         cd.top.extend(tables);
         if cd.top.is_empty() {
             cd.unlock_shared_levels();
             return false;
         }
         cd.this_range = INFO_RANGE;
+
         let kr = KeyRange::get_range(cd.top.as_ref());
         let (left, right) = cd.next_level.overlapping_tables(&kr);
         let bot = cd.next_level.to_ref().tables.read();
         let tables = bot.to_vec();
+        // fill bottom (next level) tables
         cd.bot.extend(tables[left..right].to_vec());
         if cd.bot.is_empty() {
+            // not found any tables. Just fill top tables is ok !
             cd.next_range = kr;
         } else {
             cd.next_range = KeyRange::get_range(cd.bot.as_ref());
         }
+        // Add compact status avoid other gcc operate the `RangeKeys`
         if !self.c_status.compare_and_add(cd) {
             cd.unlock_shared_levels();
             return false;
