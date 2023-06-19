@@ -15,7 +15,7 @@ use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::collections::HashSet;
 
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 pub(crate) type LevelHandler = XArc<LevelHandlerInner>;
@@ -109,7 +109,7 @@ impl LevelHandler {
         self.total_size.store(total_size as u64, Ordering::Relaxed);
         let mut tb_wl = self.tables_wl();
         (*tb_wl) = tables;
-        if self.level.load(Ordering::Relaxed) == 0 {
+        if self.level() == 0 {
             // key range will overlap. Just sort by file_id in ascending order
             // because newer tables are at the end of level 0.
             tb_wl.sort_by_key(|tb| tb.id());
@@ -160,6 +160,7 @@ impl LevelHandler {
         // be changing it as well. (They can't touch our tables, but if they add/remove other tables,
         // the indices get shifted around.)
         if new_tables.is_empty() {
+            info!("No tables need to replace");
             return Ok(());
         }
         // TODO Add lock (think of level's sharing lock)
@@ -178,7 +179,9 @@ impl LevelHandler {
 
         // TODO Opz code
         {
+            let level_id = self.level();
             let mut tables_lck = self.tables_wl();
+            let old_ids = tables_lck.iter().map(|tb| tb.id()).collect::<Vec<_>>();
             tables_lck.retain_mut(|tb| {
                 let left = tb.biggest() <= key_range.left.as_slice();
                 let right = tb.smallest() > key_range.right.as_slice();
@@ -196,6 +199,12 @@ impl LevelHandler {
             tables_lck.extend(new_tables);
             // TODO avoid resort
             tables_lck.sort_by(|a, b| a.smallest().cmp(b.smallest()));
+
+            let new_ids = tables_lck.iter().map(|tb| tb.id()).collect::<Vec<_>>();
+            info!(
+                "after replace tables, level:{}, {:?} => {:?}",
+                level_id, old_ids, new_ids
+            );
         }
         Ok(())
     }
@@ -301,7 +310,7 @@ pub(crate) struct LevelHandlerInner {
     pub(crate) tables: Arc<RwLock<Vec<Table>>>,
     pub(crate) total_size: AtomicU64,
     // The following are initialized once and const.
-    pub(crate) level: AtomicI32,
+    pub(crate) level: AtomicUsize,
     str_level: Arc<String>,
     pub(crate) max_total_size: AtomicU64,
     opt: Options,
@@ -313,7 +322,7 @@ impl LevelHandlerInner {
             self_lock: Arc::new(Default::default()),
             tables: Arc::new(Default::default()),
             total_size: Default::default(),
-            level: Default::default(),
+            level: AtomicUsize::new(level),
             str_level: Arc::new(format!("L{}", level)),
             max_total_size: Default::default(),
             opt,
@@ -321,13 +330,8 @@ impl LevelHandlerInner {
     }
 
     #[inline]
-    pub(crate) fn get_level(&self) -> i32 {
+    pub(crate) fn get_level(&self) -> usize {
         self.level.load(Ordering::Acquire)
-    }
-
-    #[inline]
-    pub(crate) fn set_level(&self, level: i32) {
-        self.level.store(level, Ordering::Release);
     }
 
     #[inline]

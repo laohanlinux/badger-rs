@@ -33,7 +33,7 @@ impl CompactStatus {
             level,
             self.rl().len()
         );
-        let lc = self.levels.read();
+        let lc = self.rl();
         let this_level = lc.get(level).unwrap();
         let next_level = lc.get(level + 1).unwrap();
         if this_level.overlaps_with(&cd.this_range) {
