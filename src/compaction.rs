@@ -59,7 +59,7 @@ impl CompactStatus {
             return false;
         }
         this_level.add(cd.this_range.clone());
-        this_level.add(cd.next_range.clone());
+        next_level.add(cd.next_range.clone());
         this_level.incr_del_size(cd.this_size.load(Ordering::Relaxed));
         true
     }

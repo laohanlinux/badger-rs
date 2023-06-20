@@ -451,6 +451,8 @@ impl LevelsController {
         l: usize,
         cd: Arc<tokio::sync::RwLock<CompactDef>>,
     ) -> Result<Vec<Table>> {
+        info!("Start compact build tables");
+        defer! {info!("Finish compact build tables")}
         // Start generating new tables.
         let (tx, mut rv) = tokio::sync::mpsc::unbounded_channel::<Result<Table>>();
         let mut g = WaitGroup::new();
@@ -597,11 +599,14 @@ impl LevelsController {
         // TODO here maybe have some issue that i don't understand
         let tables = top.to_vec();
         // all tables at zero table will be merge level1
+        #[cfg(test)]
+        assert!(cd.top.is_empty(), "Sanity check!");
         cd.top.extend(tables);
         if cd.top.is_empty() {
             cd.unlock_shared_levels();
             return false;
         }
+        // all kv paire has included.
         cd.this_range = INFO_RANGE;
 
         let kr = KeyRange::get_range(cd.top.as_ref());
