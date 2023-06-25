@@ -193,6 +193,7 @@ async fn t_cas() {
         assert_eq!(got.get_value().await.unwrap(), value);
         assert_eq!(n * 2 + i + 1, got.counter() as usize);
     }
+    info!("store path: {}", kv.opt.dir)
 }
 
 #[tokio::test]

@@ -1,3 +1,5 @@
+use log::info;
+
 use crate::table::iterator::IteratorItem;
 
 use crate::y::iterator::Xiterator;
@@ -133,6 +135,8 @@ impl Xiterator for MergeIterator {
                 itr.next();
             }
         }
+        #[cfg(test)]
+        info!("after merge rewind iterator, {:?}", self.peek());
         self.peek()
     }
 

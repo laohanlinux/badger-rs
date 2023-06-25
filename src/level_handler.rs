@@ -6,6 +6,7 @@ use crate::types::XArc;
 
 use crate::{hex_str, Result};
 use core::slice::SlicePattern;
+use std::fmt::Display;
 
 use crate::options::Options;
 
@@ -297,8 +298,28 @@ impl LevelHandler {
     pub(crate) fn level(&self) -> usize {
         self.level.load(Ordering::Relaxed) as usize
     }
+
+    pub(crate) fn to_log(&self) -> String {
+        format!("{}", self)
+    }
 }
 
+impl Display for LevelHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LevelHandler")
+            .field("level", &self.get_level())
+            .field("max", &self.max_total_size.load(Ordering::Relaxed))
+            .field(
+                "tables",
+                &self
+                    .tables_rd()
+                    .iter()
+                    .map(|tb| tb.id())
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
 pub(crate) struct LevelHandlerInner {
     // TODO this lock maybe global, not only for compacted
     pub(crate) self_lock: Arc<RwLock<()>>,

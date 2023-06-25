@@ -18,7 +18,7 @@ use crate::{Result, ValueStruct};
 use atomic::Ordering;
 use awaitgroup::WaitGroup;
 use drop_cell::defer;
-use log::{error, info};
+use log::{error, info, warn};
 use parking_lot::lock_api::RawRwLock;
 
 use std::collections::HashSet;
@@ -340,7 +340,8 @@ impl LevelsController {
         // See comment earlier in this function about the ordering of these ops, and the order in which
         // we access levels whe reading.
         next_level.replace_tables(new_tables.clone())?;
-        this_level.replace_tables(cd.top.clone())?;
+        let top_ids = cd.top.iter().map(|tb| tb.id()).collect::<Vec<_>>();
+        this_level.delete_tables(top_ids);
 
         // Note: For level 0, while do_compact is running, it is possible that new tables are added.
         // However, the tables are added only to the end, so it is ok to just delete the first table.
@@ -352,7 +353,8 @@ impl LevelsController {
             new_tables.len(),
             time_start.elapsed().unwrap().as_millis()
         );
-
+        info!("this level: {:?}", this_level.to_log());
+        info!("next level: {:?}", next_level.to_log());
         Ok(())
     }
 
@@ -458,11 +460,13 @@ impl LevelsController {
         let mut g = WaitGroup::new();
         {
             let cd = cd.read().await;
-            let top_tables = cd.top.clone();
+            let mut top_tables = cd.top.clone();
             let bot_tables = cd.bot.clone();
             // Create iterators across all the tables involved first.
             let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
-            if l != 0 {
+            if l == 0 {
+                top_tables.reverse();
+            } else {
                 assert_eq!(1, top_tables.len());
             }
             for tb in top_tables {
@@ -476,22 +480,26 @@ impl LevelsController {
             // Important to close the iterator to do ref counting.
             defer! {mitr.close()};
             mitr.rewind();
+            let mut count = 0;
             loop {
                 let start_time = SystemTime::now();
                 let mut builder = Builder::default();
-                while let Some(value) = mitr.next() {
+                while let Some(value) = mitr.peek() {
+                    count += 1;
+                    mitr.next();
                     if builder.reached_capacity(self.opt.max_table_size) {
                         break;
                     }
                     assert!(builder.add(value.key(), value.value()).is_ok());
                 }
-                if builder.empty() {
+                if builder.is_zero_bytes() {
+                    warn!("builder is empty");
                     break;
                 }
                 // It was true that it.Valid() at least once in the loop above, which means we
                 // called Add() at least once, and builder is not Empty().
                 info!(
-                    "LOG Compacted: Iteration to generate one table took: {}",
+                    "LOG Compacted: Iteration to generate one table took: {}ms",
                     start_time.elapsed().unwrap().as_millis()
                 );
 
@@ -501,6 +509,7 @@ impl LevelsController {
                 let worker = g.worker();
                 let tx = tx.clone();
                 let loading_mode = self.opt.table_loading_mode;
+                info!("start to write a new table file {}", file_name);
                 tokio::spawn(async move {
                     defer! {worker.done();}
                     let fd = create_synced_file(&file_name, true);
@@ -522,6 +531,8 @@ impl LevelsController {
                     }
                 });
             }
+
+            info!("total keys compacted {}", count);
         }
         g.wait().await;
         drop(tx);
@@ -535,6 +546,7 @@ impl LevelsController {
             }
             match tb.unwrap() {
                 Ok(tb) => {
+                    info!("create a new table {}", tb.id());
                     new_tables.push(tb);
                 }
                 Err(err) => {

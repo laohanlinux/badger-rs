@@ -1,7 +1,7 @@
 use async_channel::Receiver;
 use atomic::Atomic;
 
-use bitflags::bitflags;
+use bitflags::{bitflags, Flags};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use bytes::BufMut;
 use crc32fast::Hasher;
@@ -758,7 +758,7 @@ impl ValueLogCore {
         let buffer = buffer.read(&vp)?;
         let mut h = Header::default();
         h.dec(&mut Cursor::new(&buffer[0..Header::encoded_size()]))?;
-        if (h.meta & MetaBit::BIT_DELETE.bits) != 0 {
+        if (h.meta & MetaBit::BIT_DELETE.bits()) != 0 {
             // Tombstone key
             consumer(&EMPTY_SLICE).await
         } else {

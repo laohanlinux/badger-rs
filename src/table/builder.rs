@@ -78,8 +78,8 @@ pub struct Builder {
 impl Builder {
     // the max keys number of every block.
     pub(crate) const RESTART_INTERVAL: usize = 100;
-    pub(crate) fn empty(&self) -> bool {
-        self.buf.is_empty()
+    pub(crate) fn is_zero_bytes(&self) -> bool {
+        self.buf.position() == 0
     }
 
     /// Returns a suffix of new_key that is different from b.base_key.
