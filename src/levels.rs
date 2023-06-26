@@ -95,7 +95,7 @@ impl LevelsController {
                         file_name,
                         fd.unwrap_err()
                     )
-                    .into());
+                        .into());
                 }
 
                 let tb = TableCore::open_table(fd.unwrap(), &file_name, opt.table_loading_mode);
@@ -197,7 +197,8 @@ impl LevelsController {
 
     // compact worker
     async fn run_worker(&self, lc: Closer) {
-        defer! {lc.done()};
+        defer! {lc.done()}
+        ;
         if self.opt.do_not_compact {
             return;
         }
@@ -208,7 +209,7 @@ impl LevelsController {
             tokio::time::sleep(Duration::from_millis(duration as u64)).await;
         }
         // 1 seconds to check compact
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let mut interval = tokio::time::interval(Duration::from_secs(3));
         loop {
             // why interval can life long
             let done = lc.has_been_closed();
@@ -275,7 +276,6 @@ impl LevelsController {
             );
         }
         // Done with compaction. So, remove the ranges from compaction status.
-        self.c_status.del_size(level);
         info!("Compaction for level: {} DONE", level);
         Ok(true)
     }
@@ -328,6 +328,7 @@ impl LevelsController {
         let deref_tables = || new_tables.iter().for_each(|tb| tb.decr_ref());
         defer! {deref_tables();}
 
+        // TODO add a change commit
         let cd = cd.write().await;
         let change_set = Self::build_change_set(&cd, &new_tables);
 
@@ -346,7 +347,7 @@ impl LevelsController {
         // Note: For level 0, while do_compact is running, it is possible that new tables are added.
         // However, the tables are added only to the end, so it is ok to just delete the first table.
         info!(
-            "LOG Compact {}->{}, del {} tables, add {} tables, took {}",
+            "LOG Compact {}->{}, del {} tables, add {} tables, took {}ms",
             l,
             l + 1,
             cd.top.len() + cd.bot.len(),
@@ -355,6 +356,8 @@ impl LevelsController {
         );
         info!("this level: {:?}", this_level.to_log());
         info!("next level: {:?}", next_level.to_log());
+
+        self.c_status.delete(&cd);
         Ok(())
     }
 
@@ -429,8 +432,8 @@ impl LevelsController {
     pub(crate) fn as_iterator(
         &self,
         reverse: bool,
-    ) -> Vec<Box<dyn Xiterator<Output = IteratorItem>>> {
-        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+    ) -> Vec<Box<dyn Xiterator<Output=IteratorItem>>> {
+        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
         for level in self.levels.iter() {
             if level.level() == 0 {
                 for table in level.tables.read().iter().rev() {
@@ -458,12 +461,14 @@ impl LevelsController {
         // Start generating new tables.
         let (tx, mut rv) = tokio::sync::mpsc::unbounded_channel::<Result<Table>>();
         let mut g = WaitGroup::new();
+        let execute_time = SystemTime::now();
+
         {
             let cd = cd.read().await;
             let mut top_tables = cd.top.clone();
             let bot_tables = cd.bot.clone();
             // Create iterators across all the tables involved first.
-            let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+            let mut itr: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
             if l == 0 {
                 top_tables.reverse();
             } else {
@@ -478,7 +483,8 @@ impl LevelsController {
             itr.push(Box::new(citr));
             let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
             // Important to close the iterator to do ref counting.
-            defer! {mitr.close()};
+            defer! {mitr.close()}
+            ;
             mitr.rewind();
             let mut count = 0;
             loop {
@@ -531,11 +537,14 @@ impl LevelsController {
                     }
                 });
             }
-
-            info!("total keys compacted {}", count);
         }
         g.wait().await;
         drop(tx);
+        info!(
+            "Compacted cost: {}ms",
+            execute_time.elapsed().unwrap().as_millis()
+        );
+
         let mut new_tables = Vec::with_capacity(20);
         let mut first_err: Result<()> = Ok(());
         // Wait for all table builders to finished.

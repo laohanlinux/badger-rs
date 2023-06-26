@@ -1,6 +1,8 @@
+use crate::hex_str;
 use crate::levels::CompactDef;
 use crate::table::table::Table;
 
+use log::{error, info};
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::fmt::{Display, Formatter};
@@ -65,14 +67,42 @@ impl CompactStatus {
     }
 
     pub(crate) fn delete(&self, cd: &CompactDef) {
-        let level = cd.this_level.level();
         let levels = self.wl();
+        let level = cd.this_level.level();
         assert!(
             level < levels.len() - 1,
             "Got level {}, Max levels {}",
             level,
             levels.len()
         );
+
+        let this_level = levels.get(level).unwrap();
+        let next_level = levels.get(level + 1).unwrap();
+        this_level.decr_del_size(cd.this_size.load(Ordering::Relaxed));
+        let mut found = this_level.remove(&cd.this_range);
+        //assert!(found);
+        found = next_level.remove(&cd.next_range) && found;
+        if !found {
+            let this_kr = &cd.this_range;
+            let next_kr = &cd.next_range;
+            error!(
+                "Looking for: [{}, {}, {}] in this level.",
+                hex_str(&this_kr.left),
+                hex_str(&this_kr.right),
+                this_kr.inf,
+            );
+            error!("This Level: {}", level);
+            error!(
+                "Looking for: [{}, {}, {}] in next level.",
+                hex_str(&next_kr.left),
+                hex_str(&next_kr.right),
+                next_kr.inf,
+            );
+            error!("Next Level: {}", level + 1);
+            error!("KeyRange not found");
+            error!("Looking for seek k range");
+            error!("{:?}, {:?}", cd.this_range, cd.next_range);
+        }
     }
 
     pub(crate) fn overlaps_with(&self, level: usize, this: &KeyRange) -> bool {
@@ -151,10 +181,11 @@ impl LevelCompactStatus {
     }
 
     // remove dst from self.ranges
-    fn remove(&mut self, dst: &KeyRange) -> bool {
+    pub(crate) fn remove(&self, dst: &KeyRange) -> bool {
         let mut rlock = self.wl();
         let len = rlock.len();
-        rlock.retain(|r| r == dst);
+        //  rlock.retain(|r| r == dst);
+        rlock.retain(|r| r.equals(dst));
         len > rlock.len()
     }
 

@@ -93,15 +93,24 @@ impl LevelHandler {
     // delete current level's tables of to_del
     pub(crate) fn delete_tables(&self, to_del: Vec<u64>) {
         let to_del = to_del.iter().map(|id| *id).collect::<HashSet<_>>();
+        let level = self.level();
         let mut tb_wl = self.tables_wl();
-        tb_wl.retain_mut(|tb| {
-            if to_del.contains(&tb.id()) {
-                // delete table reference
-                tb.decr_ref();
-                return false;
-            }
-            true
-        });
+        let before_tids = tb_wl.iter().map(|tb| tb.id()).collect::<Vec<_>>();
+        {
+            tb_wl.retain_mut(|tb| {
+                if to_del.contains(&tb.id()) {
+                    // delete table reference
+                    tb.decr_ref();
+                    return false;
+                }
+                true
+            });
+        }
+        let after_tids = tb_wl.iter().map(|tb| tb.id()).collect::<Vec<_>>();
+        info!(
+            "after delete tables level:{},  {:?} => {:?}",
+            level, before_tids, after_tids,
+        );
     }
 
     // init with tables
