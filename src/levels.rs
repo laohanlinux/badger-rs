@@ -88,22 +88,11 @@ impl LevelsController {
             let mf = mf.write().await;
             for (file_id, table_manifest) in &mf.tables {
                 let file_name = new_file_name(*file_id, opt.dir.as_str());
-                let fd = open_existing_synced_file(&file_name, true);
-                if fd.is_err() {
-                    return Err(format!(
-                        "Openfile file: {}, err: {:?}",
-                        file_name,
-                        fd.unwrap_err()
-                    )
-                        .into());
-                }
-
-                let tb = TableCore::open_table(fd.unwrap(), &file_name, opt.table_loading_mode);
-                if let Err(err) = tb {
-                    return Err(format!("Openfile file: {}, err: {:?}", file_name, err).into());
-                }
-                let table = Table::new(tb.unwrap());
-                tables[table_manifest.level as usize].push(table);
+                let fd = open_existing_synced_file(&file_name, true)
+                    .map_err(|err| format!("Openfile file: {}, err: {}", file_name, err))?;
+                let tb = TableCore::open_table(fd, &file_name, opt.table_loading_mode)
+                    .map_err(|err| format!("Open file: {}, err :{}", file_name, err))?;
+                tables[table_manifest.level as usize].push(Table::new(tb));
                 if *file_id > max_file_id {
                     max_file_id = *file_id;
                 }
@@ -197,8 +186,7 @@ impl LevelsController {
 
     // compact worker
     async fn run_worker(&self, lc: Closer) {
-        defer! {lc.done()}
-        ;
+        defer! {lc.done()};
         if self.opt.do_not_compact {
             return;
         }
@@ -217,20 +205,17 @@ impl LevelsController {
                 _ = interval.tick() => {
                     let pick: Vec<CompactionPriority> = self.pick_compact_levels();
                     info!("Try to compact levels, {:?}", pick);
-                    if !pick.is_empty () {
-                        info!("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
-                    }
                     for p in pick {
                         match self.do_compact(p).await {
                             Ok(true) => {
-                                info!("succeed to compacted")
+                                info!("Succeed to compacted")
                             },
                             Ok(false) => {
-                                info!("skip to do compacted");
+                                info!("Skip to do compacted");
                                 break;
                             },
                             Err(err) => { // TODO handle error
-                                error!("failed to do compacted, {:?}", err);
+                                error!("Failed to do compacted, {:?}", err);
                             },
                         }
                     }
@@ -432,8 +417,8 @@ impl LevelsController {
     pub(crate) fn as_iterator(
         &self,
         reverse: bool,
-    ) -> Vec<Box<dyn Xiterator<Output=IteratorItem>>> {
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+    ) -> Vec<Box<dyn Xiterator<Output = IteratorItem>>> {
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for level in self.levels.iter() {
             if level.level() == 0 {
                 for table in level.tables.read().iter().rev() {
@@ -468,7 +453,7 @@ impl LevelsController {
             let mut top_tables = cd.top.clone();
             let bot_tables = cd.bot.clone();
             // Create iterators across all the tables involved first.
-            let mut itr: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+            let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
             if l == 0 {
                 top_tables.reverse();
             } else {
@@ -483,8 +468,7 @@ impl LevelsController {
             itr.push(Box::new(citr));
             let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
             // Important to close the iterator to do ref counting.
-            defer! {mitr.close()}
-            ;
+            defer! {mitr.close()};
             mitr.rewind();
             let mut count = 0;
             loop {
@@ -572,6 +556,7 @@ impl LevelsController {
             // background operation
             first_err = sync_directory(&self.opt.dir);
         }
+        // sort asc by table's biggest
         new_tables.sort_by(|a, b| a.to_ref().biggest().cmp(b.to_ref().biggest()));
         if first_err.is_err() {
             // An error happened. Delete all the newly created table files (by calling Decref

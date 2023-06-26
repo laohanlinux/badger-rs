@@ -85,23 +85,13 @@ impl CompactStatus {
         if !found {
             let this_kr = &cd.this_range;
             let next_kr = &cd.next_range;
-            error!(
-                "Looking for: [{}, {}, {}] in this level.",
-                hex_str(&this_kr.left),
-                hex_str(&this_kr.right),
-                this_kr.inf,
-            );
+            error!("Looking for: [{}] in this level.", this_kr,);
             error!("This Level: {}", level);
-            error!(
-                "Looking for: [{}, {}, {}] in next level.",
-                hex_str(&next_kr.left),
-                hex_str(&next_kr.right),
-                next_kr.inf,
-            );
+            error!("Looking for: [{}] in next level.", next_kr);
             error!("Next Level: {}", level + 1);
             error!("KeyRange not found");
             error!("Looking for seek k range");
-            error!("{:?}, {:?}", cd.this_range, cd.next_range);
+            error!("{}, {}", cd.this_range, cd.next_range);
         }
     }
 
@@ -235,8 +225,10 @@ impl Display for KeyRange {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "[left={:?}, right={:?}, inf={}]",
-            self.left, self.right, self.inf
+            "[left={}, right={}, inf={}]",
+            hex_str(&self.left),
+            hex_str(&self.right),
+            self.inf
         )
     }
 }
