@@ -574,7 +574,7 @@ impl<'a> From<BlockIteratorItem<'a>> for IteratorItem {
     }
 }
 
-/// Concatenates the sequences defined by several iterators withdout any overlaps tables between same level Except zero level  (It only works with
+/// Concatenates the sequences defined by several iterators without any overlaps tables between same level Except zero level  (It only works with
 /// TableIterators, probably just because it's faster to not be so generic.)
 pub struct ConcatIterator {
     // Index < 0, indicate uninit

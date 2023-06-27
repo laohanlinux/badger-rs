@@ -80,7 +80,7 @@ impl CompactStatus {
         let next_level = levels.get(level + 1).unwrap();
         this_level.decr_del_size(cd.this_size.load(Ordering::Relaxed));
         let mut found = this_level.remove(&cd.this_range);
-        //assert!(found);
+        assert!(found, "{}", this_level);
         found = next_level.remove(&cd.next_range) && found;
         if !found {
             let this_kr = &cd.this_range;
@@ -175,7 +175,7 @@ impl LevelCompactStatus {
         let mut rlock = self.wl();
         let len = rlock.len();
         //  rlock.retain(|r| r == dst);
-        rlock.retain(|r| r.equals(dst));
+        rlock.retain(|r| !r.equals(dst));
         len > rlock.len()
     }
 
@@ -281,5 +281,37 @@ impl KeyRange {
             return false;
         }
         true
+    }
+}
+
+mod tests {
+    use crate::compaction::{INFO_RANGE, KeyRange};
+
+    #[test]
+    fn key_range() {
+        let mut v = vec![KeyRange {
+            left: vec![],
+            right: vec![],
+            inf: true,
+        }];
+        let cd = INFO_RANGE;
+        v.retain(|kr| !kr.equals(&cd));
+        println!("{:?}, {}", v, cd);
+
+
+        let tests = vec![
+            vec![2, 20], vec![30, 50], vec![70, 80],
+        ];
+
+        let inputs = vec![vec![0, 1], vec![81, 100], vec![21, 25],
+                          vec![29, 40], vec![40, 60], vec![21, 51], vec![21, 100], vec![0, 200], vec![0, 70], vec![70, 80]];
+
+        for (i, arg) in inputs.iter().enumerate() {
+            let left = tests.binary_search_by(|probe| probe[1].cmp(&arg[0]));
+            let left = left.unwrap_or_else(|n| n);
+            let right = tests.binary_search_by(|probe| probe[0].cmp(&arg[1]));
+            let right = right.map(|n| n + 1).unwrap_or_else(|n| n);
+            println!("{}, {:?}, {:?}", i, left, right);
+        }
     }
 }

@@ -8,7 +8,7 @@ use crate::pb::badgerpb3::ManifestChange;
 use crate::table::builder::Builder;
 use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
 use crate::table::table::{get_id_map, new_file_name, Table, TableCore};
-use crate::types::{Closer, XArc};
+use crate::types::{Closer, TArcMx, TArcRW, XArc};
 use crate::y::{
     async_sync_directory, create_synced_file, open_existing_synced_file, sync_directory,
 };
@@ -307,7 +307,7 @@ impl LevelsController {
             return Ok(());
         }
 
-        let cd = Arc::new(tokio::sync::RwLock::new(cd));
+        let cd = TArcRW::new(tokio::sync::RwLock::new(cd));
         // NOTE: table deref
         let new_tables = self.compact_build_tables(l, cd.clone()).await?;
         let deref_tables = || new_tables.iter().for_each(|tb| tb.decr_ref());
@@ -439,7 +439,7 @@ impl LevelsController {
     pub(crate) async fn compact_build_tables(
         &self,
         l: usize,
-        cd: Arc<tokio::sync::RwLock<CompactDef>>,
+        cd: TArcRW<CompactDef>,
     ) -> Result<Vec<Table>> {
         info!("Start compact build tables");
         defer! {info!("Finish compact build tables")}
@@ -447,7 +447,6 @@ impl LevelsController {
         let (tx, mut rv) = tokio::sync::mpsc::unbounded_channel::<Result<Table>>();
         let mut g = WaitGroup::new();
         let execute_time = SystemTime::now();
-
         {
             let cd = cd.read().await;
             let mut top_tables = cd.top.clone();
@@ -463,7 +462,7 @@ impl LevelsController {
                 let iter = Box::new(IteratorImpl::new(tb, false));
                 itr.push(iter);
             }
-            // Next level has level>=1 and we can use ConcatIterator as key ranges do not overlap.
+            // Next level has level>=1, so we can use ConcatIterator as key ranges do not overlap.
             let citr = ConcatIterator::new(bot_tables, false);
             itr.push(Box::new(citr));
             let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
@@ -499,7 +498,6 @@ impl LevelsController {
                 let worker = g.worker();
                 let tx = tx.clone();
                 let loading_mode = self.opt.table_loading_mode;
-                info!("start to write a new table file {}", file_name);
                 tokio::spawn(async move {
                     defer! {worker.done();}
                     let fd = create_synced_file(&file_name, true);
@@ -525,7 +523,7 @@ impl LevelsController {
         g.wait().await;
         drop(tx);
         info!(
-            "Compacted cost: {}ms",
+            "Compacted took {}ms",
             execute_time.elapsed().unwrap().as_millis()
         );
 
@@ -535,11 +533,12 @@ impl LevelsController {
         loop {
             let tb = rv.recv().await;
             if tb.is_none() {
+                info!("All files have been handle");
                 break;
             }
             match tb.unwrap() {
                 Ok(tb) => {
-                    info!("create a new table {}", tb.id());
+                    info!("Create a new table, fid: {}", tb.id());
                     new_tables.push(tb);
                 }
                 Err(err) => {
@@ -551,7 +550,7 @@ impl LevelsController {
             }
         }
         if first_err.is_ok() {
-            // Ensure created files's directory entries are visible, We don't mind the extra latency
+            // Ensure created files' directory entries are visible, We don't mind the extra latency
             // from not doing this ASAP after all file creation has finished because this is a
             // background operation
             first_err = sync_directory(&self.opt.dir);
@@ -759,6 +758,7 @@ impl LevelsController {
         compactable
     }
 
+    // calc next file id
     pub(crate) fn reserve_file_id(&self) -> u64 {
         let id = self.next_file_id.fetch_add(1, Ordering::Relaxed);
         id

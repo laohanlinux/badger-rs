@@ -139,23 +139,28 @@ impl LevelHandler {
         self.tables.read()
     }
 
-    // Returns the tables that intersect with key range. Returns a half-interval [left, right].
+    // Returns the tables that intersect with key range. Returns a half-interval [left, right).
     // This function should already have acquired a read lock, and this is so important the caller must
     // pass an empty parameter declaring such.
     pub(crate) fn overlapping_tables(&self, key_range: &KeyRange) -> (usize, usize) {
+        // probe.biggest() >= left
         let left = self
             .tables_rd()
-            .binary_search_by(|tb| key_range.left.as_slice().cmp(tb.biggest()));
-
+            .binary_search_by(|probe| probe.biggest().cmp(&key_range.left));
         let right = self
             .tables_rd()
-            .binary_search_by(|tb| key_range.right.as_slice().cmp(tb.smallest()));
+            .binary_search_by(|probe| probe.smallest().cmp(&key_range.right));
+
         info!(
-            "overlapping tables, range: {}, {:?}, {:?}",
+            "overlapping tables, range: {}, left: {:?}, right: {:?}",
             key_range, left, right
         );
         let left = left.unwrap_or_else(|n| n);
-        let right = right.unwrap_or_else(|n| n);
+        let right = right.map(|n| n + 1).unwrap_or_else(|n| n);
+        if left == right {
+            // simple handle
+            return (0, 0);
+        }
         (left, right)
     }
 
@@ -329,6 +334,7 @@ impl Display for LevelHandler {
             .finish()
     }
 }
+
 pub(crate) struct LevelHandlerInner {
     // TODO this lock maybe global, not only for compacted
     pub(crate) self_lock: Arc<RwLock<()>>,
