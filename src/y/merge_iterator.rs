@@ -135,8 +135,8 @@ impl Xiterator for MergeIterator {
                 itr.next();
             }
         }
-        #[cfg(test)]
-        info!("after merge rewind iterator, {:?}", self.peek());
+        // #[cfg(test)]
+        // info!("after merge rewind iterator, {:?}", self.peek());
         self.peek()
     }
 

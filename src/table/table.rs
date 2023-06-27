@@ -154,7 +154,7 @@ impl TableCore {
         let mut tc = table_ref.to_inner().unwrap();
         tc.biggest = biggest;
         tc.smallest = smallest;
-        info!("open table ==> {}", tc);
+        // info!("open table ==> {}", tc);
         Ok(tc)
     }
 

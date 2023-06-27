@@ -193,7 +193,7 @@ impl Builder {
         wt.write_u32::<BigEndian>(self.restarts.len() as u32)
             .unwrap();
         let out = wt.into_inner();
-        info!("write restart: {:?}", self.restarts);
+        debug!("write restart: {:?}", self.restarts);
         assert_eq!(out.len(), sz);
         out
     }

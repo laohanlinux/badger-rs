@@ -1,7 +1,8 @@
 // use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet, ManifestChange_Operation};
 use crate::pb::badgerpb3::manifest_change::Operation;
 use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet};
-use crate::y::{is_eof, open_existing_synced_file, sync_directory};
+use crate::types::TArcRW;
+use crate::y::{hex_str, is_eof, open_existing_synced_file, sync_directory};
 use crate::Error::{BadMagic, Unexpected};
 use crate::Result;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -9,6 +10,7 @@ use log::info;
 
 use protobuf::{Enum, EnumOrUnknown, Message};
 use std::collections::{HashMap, HashSet};
+use std::fmt::{Display, Formatter};
 use std::fs::{rename, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -16,6 +18,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::RwLock;
 
 // Manifest file
 const MANIFEST_FILENAME: &str = "MANIFEST";
@@ -52,7 +55,7 @@ pub struct ManifestFile {
 
     // Access must be with a lock.
     // Used to track the current state of the manifest, used when rewriting.
-    pub(crate) manifest: Arc<tokio::sync::RwLock<Manifest>>,
+    pub(crate) manifest: TArcRW<Manifest>,
 }
 
 impl ManifestFile {
@@ -102,10 +105,7 @@ impl ManifestFile {
         Ok(())
     }
 
-    async fn help_rewrite(
-        dir: &str,
-        m: &Arc<tokio::sync::RwLock<Manifest>>,
-    ) -> Result<(File, usize)> {
+    async fn help_rewrite(dir: &str, m: &TArcRW<Manifest>) -> Result<(File, usize)> {
         let rewrite_path = Path::new(dir).join(MANIFEST_REWRITE_FILENAME);
         // We explicitly sync.
         let mut fp = File::options()
@@ -161,11 +161,11 @@ impl ManifestFile {
                     fp: Some(fp),
                     directory: dir.to_string(),
                     deletions_rewrite_threshold: AtomicU32::new(deletions_threshold),
-                    manifest: Arc::new(tokio::sync::RwLock::new(manifest)),
+                    manifest: Arc::new(RwLock::new(manifest)),
                 })
             }
             Err(err) if err.is_io_notfound() => {
-                let mf = Arc::new(tokio::sync::RwLock::new(Manifest::new()));
+                let mf = Arc::new(RwLock::new(Manifest::new()));
                 let (fp, n) = Self::help_rewrite(dir, &mf).await?;
                 assert_eq!(n, 0);
                 info!("create a new manifest");
@@ -203,6 +203,30 @@ pub struct Manifest {
     deletions: usize,
 }
 
+impl Display for Manifest {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        use std::io::Write;
+        let mut buffer = std::io::Cursor::new(vec![]);
+        Write::write_all(&mut buffer, b"Manifest").unwrap();
+        Write::write_all(&mut buffer, b"Levels\n").unwrap();
+        for (level, mf) in self.levels.iter().enumerate() {
+            let tables = mf
+                .tables
+                .iter()
+                .map(|tb| tb.to_string())
+                .collect::<Vec<_>>();
+            Write::write_all(&mut buffer, format!("{}=>", level).as_bytes()).unwrap();
+            Write::write_all(&mut buffer, tables.join(",").as_bytes()).unwrap();
+        }
+        Write::write_all(&mut buffer, b"\n").unwrap();
+        for (tb, mf) in self.tables.iter() {
+            Write::write_all(&mut buffer, format!("{}=>{}", tb, mf.level).as_bytes()).unwrap();
+        }
+        let str = buffer.into_inner();
+        write!(f, "{}", hex_str(&str))
+    }
+}
+
 impl Manifest {
     pub fn new() -> Self {
         Manifest {
@@ -230,7 +254,7 @@ impl Manifest {
             return Err(BadMagic);
         }
 
-        let build = Arc::new(tokio::sync::RwLock::new(Manifest::new()));
+        let build = Arc::new(RwLock::new(Manifest::new()));
         let mut offset = 8;
         loop {
             let sz = fp.read_u32::<BigEndian>();
@@ -315,7 +339,7 @@ impl Manifest {
 // this is not a "recoverable" error -- opening the KV store fails because the MANIFEST file
 // is just plain broken.
 async fn apply_manifest_change_set(
-    build: Arc<tokio::sync::RwLock<Manifest>>,
+    build: TArcRW<Manifest>,
     mf_set: &ManifestChangeSet,
 ) -> Result<()> {
     for change in mf_set.changes.iter() {
@@ -324,10 +348,7 @@ async fn apply_manifest_change_set(
     Ok(())
 }
 
-async fn apply_manifest_change(
-    build: Arc<tokio::sync::RwLock<Manifest>>,
-    tc: &ManifestChange,
-) -> Result<()> {
+async fn apply_manifest_change(build: TArcRW<Manifest>, tc: &ManifestChange) -> Result<()> {
     let op = Operation::from_i32(tc.Op.value()).unwrap();
     let mut build = build.write().await;
     match op {
@@ -389,7 +410,7 @@ pub(crate) async fn help_open_or_create_manifest_file(
             return Err(err);
         }
         // open exist Manifest
-        let mt = Arc::new(tokio::sync::RwLock::new(Manifest::new()));
+        let mt = TArcRW::new(RwLock::new(Manifest::new()));
         let (fp, net_creations) = mt.read().await.help_rewrite(dir).await?;
         assert_eq!(net_creations, 0);
         let mf = ManifestFile {
@@ -410,7 +431,7 @@ pub(crate) async fn help_open_or_create_manifest_file(
         fp: Some(fp),
         directory: dir.to_string(),
         deletions_rewrite_threshold: AtomicU32::new(deletions_threshold),
-        manifest: Arc::new(tokio::sync::RwLock::new(mf)),
+        manifest: Arc::new(RwLock::new(mf)),
     })
 }
 
@@ -429,11 +450,6 @@ impl ManifestChangeBuilder {
             op: Operation::CREATE,
         }
     }
-
-    // fn id(mut self, id: u64) -> Self {
-    //     self.id = id;
-    //     self
-    // }
 
     pub(crate) fn with_level(mut self, level: u32) -> Self {
         self.level = level;

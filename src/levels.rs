@@ -41,16 +41,16 @@ pub(crate) struct LevelsController {
     compact_worker_wg: Arc<WaitGroup>,
     // Store compact status that will be run or has running
     c_status: Arc<CompactStatus>,
-    manifest: Arc<tokio::sync::RwLock<ManifestFile>>,
+    manifest: TArcRW<ManifestFile>,
     opt: Options,
-    last_unstalled: Arc<tokio::sync::RwLock<SystemTime>>,
+    last_unstalled: TArcRW<SystemTime>,
 }
 
 pub(crate) type XLevelsController = XArc<LevelHandler>;
 
 impl LevelsController {
     pub(crate) async fn new(
-        manifest: Arc<tokio::sync::RwLock<ManifestFile>>,
+        manifest: TArcRW<ManifestFile>,
         opt: Options,
     ) -> Result<LevelsController> {
         assert!(opt.num_level_zero_tables_stall > opt.num_level_zero_tables);
@@ -482,17 +482,18 @@ impl LevelsController {
                     assert!(builder.add(value.key(), value.value()).is_ok());
                 }
                 if builder.is_zero_bytes() {
-                    warn!("builder is empty");
+                    warn!("Builder is empty");
                     break;
                 }
+
+                let file_id = self.reserve_file_id();
                 // It was true that it.Valid() at least once in the loop above, which means we
                 // called Add() at least once, and builder is not Empty().
                 info!(
-                    "LOG Compacted: Iteration to generate one table took: {}ms",
+                    "LOG Compacted: Iteration to generate one table [{}] took: {}ms",
+                    file_id,
                     start_time.elapsed().unwrap().as_millis()
                 );
-
-                let file_id = self.reserve_file_id();
                 let dir = self.opt.dir.clone();
                 let file_name = new_file_name(file_id, &dir);
                 let worker = g.worker();
@@ -533,7 +534,6 @@ impl LevelsController {
         loop {
             let tb = rv.recv().await;
             if tb.is_none() {
-                info!("All files have been handle");
                 break;
             }
             match tb.unwrap() {
@@ -721,11 +721,6 @@ impl LevelsController {
                     / (self.opt.num_level_zero_tables as f64),
             })
         }
-        info!(
-            "=====> {:?}, prios: {:?}",
-            self.c_status.levels.read()[0],
-            prios
-        );
         // stats level 1..n
         for (i, level) in self.levels[1..].iter().enumerate() {
             // Don't consider those tables that are already being compacted right now.
@@ -738,7 +733,6 @@ impl LevelsController {
                 });
             }
         }
-        info!("prios =====>>>>>>>, {:?}", prios);
         // sort from big to small.
         prios.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
         prios
@@ -832,28 +826,12 @@ impl CompactDef {
         self.next_level.unlock_shared();
         self.this_level.unlock_shared();
     }
-
-    // #[inline]
-    // fn lock_exclusive_levels(&self) {
-    //     self.this_level.lock_exclusive();
-    //     self.next_level.lock_exclusive();
-    // }
-    //
-    // #[inline]
-    // fn unlock_exclusive_levels(&self) {
-    //     self.next_level.unlock_exclusive();
-    //     self.this_level.unlock_exclusive();
-    // }
 }
 
 // Checks that all necessary table files exist and removes all table files not
 // referenced by the manifest. id_map is a set of table file id's that were read from the directory
 // listing.
-async fn revert_to_manifest(
-    dir: &str,
-    mf: &Arc<tokio::sync::RwLock<Manifest>>,
-    id_map: HashSet<u64>,
-) -> Result<()> {
+async fn revert_to_manifest(dir: &str, mf: &TArcRW<Manifest>, id_map: HashSet<u64>) -> Result<()> {
     let tables = mf.write().await;
     // 1. Check all files in manifest exist.
     for id in &tables.tables {
