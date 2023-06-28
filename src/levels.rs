@@ -234,7 +234,7 @@ impl LevelsController {
         let l = p.level;
         assert!(l + 1 < self.opt.max_levels); //  Sanity check.
 
-        // merge l'level to (l+1)'s level by p' CompactionPriority
+        // merge l's level to (l+1)'s level by p's CompactionPriority
         let mut cd = CompactDef::new(self.levels[l].clone(), self.levels[l + 1].clone());
         info!("Got compaction priority: {:?}", p);
         // While picking tables to be compacted, both level's tables are expected to
@@ -567,38 +567,35 @@ impl LevelsController {
     }
 
     fn build_change_set(cd: &CompactDef, new_tables: &Vec<Table>) -> Vec<ManifestChange> {
-        let mut changes = vec![];
-        for table in new_tables {
-            changes.push(
-                ManifestChangeBuilder::new(table.id())
+        // new tables to CREATE
+        let mut changes = new_tables
+            .iter()
+            .map(|tb| {
+                ManifestChangeBuilder::new(tb.id())
                     .with_level(cd.next_level.level() as u32)
                     .with_op(CREATE)
-                    .build(),
-            );
-        }
-
-        for table in cd.top.iter() {
-            changes.push(
-                ManifestChangeBuilder::new(table.id())
-                    .with_op(DELETE)
-                    .build(),
-            );
-        }
-
-        for table in cd.bot.iter() {
-            changes.push(
-                ManifestChangeBuilder::new(table.id())
-                    .with_op(DELETE)
-                    .build(),
-            );
-        }
+                    .build()
+            })
+            .collect::<Vec<_>>();
+        // top compact to DELETE
+        changes.extend(
+            cd.top
+                .iter()
+                .map(|tb| ManifestChangeBuilder::new(tb.id()).with_op(DELETE).build()),
+        );
+        // bot compact to DELETE
+        changes.extend(
+            cd.bot
+                .iter()
+                .map(|tb| ManifestChangeBuilder::new(tb.id()).with_op(DELETE).build()),
+        );
 
         changes
     }
 
     // Find the KeyRange that should be merge between cd.this and cd.next
     fn fill_tables_l0(&self, cd: &mut CompactDef) -> bool {
-        // lock the this, next levels avoid other GC worker
+        // lock this, next levels avoid other GC worker
         cd.lock_shared_levels();
         let top = cd.this_level.to_ref().tables.read();
         // TODO here maybe have some issue that i don't understand
@@ -647,19 +644,19 @@ impl LevelsController {
         // TODO: Try other table picking strategies.
         tables.sort_by(|a, b| b.size().cmp(&a.size()));
         for t in tables {
-            cd.this_size.store(t.size() as u64, Ordering::Relaxed);
-            cd.this_range = KeyRange {
+            let this_range = KeyRange {
                 left: t.smallest().to_vec(),
                 right: t.biggest().to_vec(),
                 inf: false,
             };
             if self
                 .c_status
-                .overlaps_with(cd.this_level.level(), &cd.this_range)
+                .overlaps_with(cd.this_level.level(), &this_range)
             {
                 continue;
             }
-
+            cd.this_size.store(t.size() as u64, Ordering::Relaxed);
+            cd.this_range = this_range;
             {
                 cd.top.clear();
                 cd.top.push(t);
@@ -692,10 +689,12 @@ impl LevelsController {
                 .c_status
                 .overlaps_with(cd.next_level.level(), &cd.next_range)
             {
+                info!("find a conflict compacted: {}", cd);
                 continue;
             }
 
             if !self.c_status.compare_and_add(&cd) {
+                info!("failed to compactDef to c_status, {}", cd);
                 continue;
             }
             cd.unlock_shared_levels();
@@ -775,7 +774,7 @@ pub(crate) struct CompactDef {
     // may be empty tables set
     pub(crate) this_range: KeyRange,
     pub(crate) next_range: KeyRange,
-    pub(crate) this_size: AtomicU64, // the compacted table's size(NOTE: this level compacted table is only one, not zero level)
+    pub(crate) this_size: AtomicU64, // the compacted table's size(NOTE: this level compacted table is only one, exclude zero level)
 }
 
 impl Display for CompactDef {

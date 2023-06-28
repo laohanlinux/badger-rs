@@ -48,11 +48,12 @@ impl LevelHandler {
                 .into());
             }
 
+            // overlap occurs
             if tables[j - 1].biggest() >= tables[j].smallest() {
                 return Err(format!(
                     "Inter: {} vs {}: level={} j={} numTables={}",
-                    String::from_utf8_lossy(tables[j - 1].biggest()),
-                    String::from_utf8_lossy(tables[j].smallest()),
+                    hex_str(tables[j - 1].biggest()),
+                    hex_str(tables[j].smallest()),
                     self.level(),
                     j,
                     num_tables
@@ -62,8 +63,8 @@ impl LevelHandler {
             if tables[j].smallest() > tables[j].biggest() {
                 return Err(format!(
                     "Intra: {} vs {}: level={} j={} numTables={}",
-                    String::from_utf8_lossy(tables[j].smallest()),
-                    String::from_utf8_lossy(tables[j].biggest()),
+                    hex_str(tables[j].smallest()),
+                    hex_str(tables[j].biggest()),
                     self.level(),
                     j,
                     num_tables

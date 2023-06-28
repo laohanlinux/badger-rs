@@ -2,13 +2,12 @@ use crate::hex_str;
 use crate::levels::CompactDef;
 use crate::table::table::Table;
 
-use log::{error, info};
+use log::{error, info, warn};
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::fmt::{Display, Formatter};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tracing::debug;
 
 #[derive(Debug)]
 pub(crate) struct CompactStatus {
@@ -66,6 +65,7 @@ impl CompactStatus {
         true
     }
 
+    // Delete CompactDef.
     pub(crate) fn delete(&self, cd: &CompactDef) {
         let levels = self.wl();
         let level = cd.this_level.level();
@@ -78,32 +78,33 @@ impl CompactStatus {
 
         let this_level = levels.get(level).unwrap();
         let next_level = levels.get(level + 1).unwrap();
+        // Decr delete size after compacted.
         this_level.decr_del_size(cd.this_size.load(Ordering::Relaxed));
         let mut found = this_level.remove(&cd.this_range);
+        // top level must have KeyRange because it is compact's base condition
         assert!(found, "{}", this_level);
         found = next_level.remove(&cd.next_range) && found;
         if !found {
             let this_kr = &cd.this_range;
             let next_kr = &cd.next_range;
-            error!("Looking for: [{}] in this level.", this_kr,);
-            error!("This Level: {}", level);
-            error!("Looking for: [{}] in next level.", next_kr);
-            error!("Next Level: {}", level + 1);
-            error!("KeyRange not found");
-            error!("Looking for seek k range");
-            error!("{}, {}", cd.this_range, cd.next_range);
+            warn!("Looking for: [{}] in this level.", this_kr,);
+            warn!("This Level: {}", level);
+            warn!("Looking for: [{}] in next level.", next_kr);
+            warn!("Next Level: {}", level + 1);
+            warn!("KeyRange not found");
+            warn!("Looking for seek k range");
+            warn!("{}, {}", cd.this_range, cd.next_range);
         }
     }
 
+    // Return trur if the level overlap with this, otherwise false
     pub(crate) fn overlaps_with(&self, level: usize, this: &KeyRange) -> bool {
-        let compact_status = self.rl();
-        compact_status[level].overlaps_with(this)
+        self.rl()[level].overlaps_with(this)
     }
 
     // Return level's deleted data count
     pub(crate) fn del_size(&self, level: usize) -> u64 {
-        let compact_status = self.rl();
-        compact_status[level].get_del_size()
+        self.rl()[level].get_del_size()
     }
 
     // Return Level's compaction status with *WriteLockGuard*
@@ -118,10 +119,9 @@ impl CompactStatus {
 
     pub(crate) fn to_log(&self) {
         let status = self.rl();
-
-        log::info!("Compact levels, count:{}", status.len());
+        info!("Compact levels, count:{}", status.len());
         for level in status.iter().enumerate() {
-            log::info!("[{}] [{:?}]", level.0, level.1.to_string())
+            info!("[{}] {}", level.0, level.1.to_string())
         }
     }
 }
@@ -130,8 +130,7 @@ impl CompactStatus {
 #[derive(Clone, Debug)]
 pub(crate) struct LevelCompactStatus {
     ranges: Arc<RwLock<Vec<KeyRange>>>,
-    // not any overlaps
-    del_size: Arc<AtomicU64>, // all KeyRange size
+    del_size: Arc<AtomicU64>, // all KeyRange size at the level (NOTE: equal LevelCompactStatus.ranges delete size)
 }
 
 impl Default for LevelCompactStatus {
@@ -149,10 +148,11 @@ impl Display for LevelCompactStatus {
             .rl()
             .iter()
             .map(|kr| kr.to_string())
-            .collect::<Vec<_>>();
-        let del_size = self.del_size.load(Ordering::Relaxed);
+            .collect::<Vec<_>>()
+            .join(",");
+        let del_size = self.get_del_size();
         f.debug_struct("LevelCompactStatus")
-            .field("ranges", &format!("{:?}", ranges))
+            .field("ranges", &ranges)
             .field("del_size", &del_size)
             .finish()
     }
@@ -175,13 +175,12 @@ impl LevelCompactStatus {
         let mut rlock = self.wl();
         let len = rlock.len();
         //  rlock.retain(|r| r == dst);
-        rlock.retain(|r| !r.equals(dst));
+        rlock.retain(|r| r != dst);
         len > rlock.len()
     }
 
     // add dst range
     fn add(&self, dst: KeyRange) {
-        debug!("add a KeyRange {:?}", dst);
         self.wl().push(dst);
     }
 
@@ -225,7 +224,7 @@ impl Display for KeyRange {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "[left={}, right={}, inf={}]",
+            "<left={}, right={}, inf={}>",
             hex_str(&self.left),
             hex_str(&self.right),
             self.inf
@@ -285,7 +284,7 @@ impl KeyRange {
 }
 
 mod tests {
-    use crate::compaction::{INFO_RANGE, KeyRange};
+    use crate::compaction::{KeyRange, INFO_RANGE};
 
     #[test]
     fn key_range() {
@@ -295,16 +294,23 @@ mod tests {
             inf: true,
         }];
         let cd = INFO_RANGE;
-        v.retain(|kr| !kr.equals(&cd));
+        v.retain(|kr| kr != &cd);
         println!("{:?}, {}", v, cd);
 
+        let tests = vec![vec![2, 20], vec![30, 50], vec![70, 80]];
 
-        let tests = vec![
-            vec![2, 20], vec![30, 50], vec![70, 80],
+        let inputs = vec![
+            vec![0, 1],
+            vec![81, 100],
+            vec![21, 25],
+            vec![29, 40],
+            vec![40, 60],
+            vec![21, 51],
+            vec![21, 100],
+            vec![0, 200],
+            vec![0, 70],
+            vec![70, 80],
         ];
-
-        let inputs = vec![vec![0, 1], vec![81, 100], vec![21, 25],
-                          vec![29, 40], vec![40, 60], vec![21, 51], vec![21, 100], vec![0, 200], vec![0, 70], vec![70, 80]];
 
         for (i, arg) in inputs.iter().enumerate() {
             let left = tests.binary_search_by(|probe| probe[1].cmp(&arg[0]));

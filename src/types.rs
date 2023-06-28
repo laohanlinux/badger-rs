@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use std::hint;
-use std::ops::{Deref, RangeBounds};
+use std::ops::{Deref, DerefMut, RangeBounds};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, TryLockResult, Weak};
 use std::time::Duration;
@@ -171,7 +171,7 @@ impl Closer {
     /// Spawn a worker
     pub fn spawn(&self) -> Self {
         info!(
-            "spawn a new closer: Worker-{}-{}",
+            "spawn a new closer: {}.{}.Worker",
             self.name,
             self.wait.load(Ordering::Relaxed)
         );
