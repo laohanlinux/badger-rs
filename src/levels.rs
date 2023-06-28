@@ -3,7 +3,8 @@ use crate::compaction::{CompactStatus, KeyRange, LevelCompactStatus, INFO_RANGE}
 use crate::level_handler::{LevelHandler, LevelHandlerInner};
 use crate::manifest::{Manifest, ManifestChangeBuilder, ManifestFile};
 use crate::options::Options;
-use crate::pb::badgerpb3::manifest_change::Operation::{CREATE, DELETE};
+use crate::pb::badgerpb3::ManifestChange_Operation::CREATE;
+use crate::pb::badgerpb3::ManifestChange_Operation::DELETE;
 use crate::pb::badgerpb3::ManifestChange;
 use crate::table::builder::Builder;
 use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};

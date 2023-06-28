@@ -19,8 +19,6 @@ syntax = "proto3";
 
 package badgerpb3;
 
-option go_package = "github.com/dgraph-io/badger/v3/pb";
-
 message ManifestChangeSet {
   // A set of changes that are applied atomically.
   repeated ManifestChange changes = 1;

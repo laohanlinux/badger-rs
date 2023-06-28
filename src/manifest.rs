@@ -1,6 +1,6 @@
 // use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet, ManifestChange_Operation};
-use crate::pb::badgerpb3::manifest_change::Operation;
-use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet};
+use crate::pb::badgerpb3::ManifestChange_Operation::{CREATE, DELETE};
+use crate::pb::badgerpb3::{ManifestChange, ManifestChange_Operation, ManifestChangeSet};
 use crate::types::TArcRW;
 use crate::y::{hex_str, is_eof, open_existing_synced_file, sync_directory};
 use crate::Error::{BadMagic, Unexpected};
@@ -328,7 +328,7 @@ impl Manifest {
             .iter()
             .map(|(id, tb)| {
                 ManifestChangeBuilder::new(*id)
-                    .with_op(Operation::CREATE)
+                    .with_op(CREATE)
                     .with_level(tb.level as u32)
                     .build()
             })
@@ -349,10 +349,9 @@ async fn apply_manifest_change_set(
 }
 
 async fn apply_manifest_change(build: TArcRW<Manifest>, tc: &ManifestChange) -> Result<()> {
-    let op = Operation::from_i32(tc.Op.value()).unwrap();
     let mut build = build.write().await;
-    match op {
-        Operation::CREATE => {
+    match tc.op {
+        CREATE => {
             if build.tables.contains_key(&tc.Id) {
                 return Err(Unexpected(format!(
                     "MANIFEST invalid, table {} exists",
@@ -370,7 +369,7 @@ async fn apply_manifest_change(build: TArcRW<Manifest>, tc: &ManifestChange) -> 
             build.creations += 1;
         }
 
-        Operation::DELETE => {
+        DELETE => {
             let has = build.tables.remove(&tc.Id);
             if has.is_none() {
                 return Err(Unexpected(format!(
@@ -447,7 +446,7 @@ impl ManifestChangeBuilder {
         ManifestChangeBuilder {
             id,
             level: 0,
-            op: Operation::CREATE,
+            op: ManifestChange_Operation::CREATE,
         }
     }
 
@@ -466,6 +465,7 @@ impl ManifestChangeBuilder {
         mf.Id = self.id;
         mf.Level = self.level;
         mf.Op = EnumOrUnknown::new(self.op);
+        mf.op = self.op;
         mf
     }
 }
