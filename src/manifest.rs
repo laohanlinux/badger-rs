@@ -5,6 +5,7 @@ use crate::types::TArcRW;
 use crate::y::{hex_str, is_eof, open_existing_synced_file, sync_directory};
 use crate::Error::{BadMagic, Unexpected};
 use crate::Result;
+use drop_cell::defer;
 use log::info;
 
 use tokio::io::AsyncReadExt;
@@ -17,6 +18,7 @@ use std::fs::{rename, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use crate::pb::{convert_manifest_set_to_vec, parse_manifest_set_from_vec};
+use itertools::Itertools;
 use quick_protobuf::MessageRead;
 use quick_protobuf::{BytesReader, MessageWrite};
 use std::path::Path;
@@ -77,10 +79,10 @@ impl ManifestFile {
             let mf_lck = self.manifest.read().await;
             mf_lck.deletions
                 > self
-                .deletions_rewrite_threshold
-                .load(atomic::Ordering::Relaxed) as usize
+                    .deletions_rewrite_threshold
+                    .load(atomic::Ordering::Relaxed) as usize
                 && mf_lck.deletions
-                > MANIFEST_DELETIONS_RATIO * (mf_lck.creations - mf_lck.deletions)
+                    > MANIFEST_DELETIONS_RATIO * (mf_lck.creations - mf_lck.deletions)
         };
         if rewrite {
             self.rewrite().await?;
@@ -107,9 +109,11 @@ impl ManifestFile {
         let mut m_lck = self.manifest.write().await;
         m_lck.creations = n;
         m_lck.deletions = 0;
+        info!("Finished rewrite manifest file, tables count: {}", n);
         Ok(())
     }
 
+    // A helper for rewrite manifest file.
     async fn help_rewrite(dir: &str, m: &TArcRW<Manifest>) -> Result<(tokio::fs::File, usize)> {
         let rewrite_path = Path::new(dir).join(MANIFEST_REWRITE_FILENAME);
         // We explicitly sync.
@@ -189,6 +193,23 @@ impl ManifestFile {
 
     pub(crate) fn close(&mut self) {
         self.fp.take();
+    }
+
+    pub(crate) async fn to_string(&self) -> String {
+        let mf = self.manifest.read().await;
+        let mut buffer = std::io::Cursor::new(vec![]);
+        std::io::Write::write_all(
+            &mut buffer,
+            format!("create: {}, delete: {}", mf.creations, mf.deletions).as_bytes(),
+        )
+        .unwrap();
+        let tids = mf
+            .tables
+            .iter()
+            .map(|(tid, _)| format!(", tids: {}", tid))
+            .join(",");
+        std::io::Write::write_all(&mut buffer, tids.as_bytes()).unwrap();
+        hex_str(&buffer.into_inner())
     }
 }
 
@@ -280,8 +301,7 @@ impl Manifest {
                 break;
             }
 
-            let mf_set = parse_manifest_set_from_vec(&buffer)
-                .map_err(|_| BadMagic)?;
+            let mf_set = parse_manifest_set_from_vec(&buffer).map_err(|_| BadMagic)?;
             apply_manifest_change_set(build.clone(), &mf_set).await?;
             offset = offset + 8 + sz as usize;
         }
@@ -303,14 +323,17 @@ impl Manifest {
             .open(&rewrite_path)?;
         let mut fp = tokio::fs::File::from_std(fp);
         let mut wt = tokio::io::BufWriter::new(vec![]);
-        // let mut wt = Cursor::new(vec![]);
-        wt.write_all(MAGIC_TEXT).await?;
-        wt.write_u32(MAGIC_VERSION).await?;
-
+        // write meta flags
+        {
+            wt.write_all(MAGIC_TEXT).await?;
+            wt.write_u32(MAGIC_VERSION).await?;
+        }
         let net_creations = self.tables.len();
         let mut mf_set = ManifestChangeSet::default();
         mf_set.changes = self.as_changes();
         let mf_buffer = convert_manifest_set_to_vec(&mf_set);
+        assert_eq!(mf_buffer.len(), mf_set.get_size());
+
         wt.write_u32(mf_buffer.len() as u32).await?;
         let crc32 = crc32fast::hash(&*mf_buffer);
         wt.write_u32(crc32).await?;
@@ -323,13 +346,10 @@ impl Manifest {
         let manifest_path = Path::new(dir).join(MANIFEST_FILENAME);
         tokio::fs::rename(&rewrite_path, &manifest_path).await?;
         sync_directory(dir)?;
-        let fp = File::options()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .read(true)
-            .open(manifest_path)?;
-        Ok((tokio::fs::File::from_std(fp), net_creations))
+        let fp = open_existing_synced_file(manifest_path.as_os_str().to_str().unwrap(), false)?;
+        let mut fp = tokio::fs::File::from_std(fp);
+        fp.seek(SeekFrom::End(0)).await?;
+        Ok((fp, net_creations))
     }
 
     fn as_changes(&self) -> Vec<ManifestChange> {
@@ -367,19 +387,21 @@ async fn apply_manifest_change(build: TArcRW<Manifest>, tc: &ManifestChange) -> 
                     tc.id
                 )));
             }
-            let table_mf = TableManifest {
+            let tid_level = TableManifest {
                 level: tc.level as u8,
             };
             // expend levels numbers
             for _ in build.levels.len()..=tc.level as usize {
                 build.levels.push(LevelManifest::default());
             }
-            build.tables.insert(tc.id, table_mf);
+            build.tables.insert(tc.id, tid_level);
+
             build.levels[tc.level as usize].tables.insert(tc.id);
             build.creations += 1;
         }
 
         DELETE => {
+            // If the level is zero merge to level1 at first, it should be not include it ...
             let has = build.tables.remove(&tc.id);
             if has.is_none() {
                 return Err(Unexpected(format!(
@@ -477,5 +499,20 @@ impl ManifestChangeBuilder {
         mf.level = self.level;
         mf.op = self.op;
         mf
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn test_tokio_buffer() {
+        crate::test_util::tracing_log();
+
+        let mut fp = tokio::io::BufWriter::new(vec![]);
+        fp.write_all(b"hello!, beauty").await;
+        let buffer = fp.buffer();
+        log::info!("{:?}", buffer);
     }
 }
