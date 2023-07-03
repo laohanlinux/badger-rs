@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::fs::{rename, File};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::time::SystemTime;
 
 use crate::pb::{convert_manifest_set_to_vec, parse_manifest_set_from_vec};
 use quick_protobuf::MessageRead;
@@ -69,19 +70,26 @@ impl ManifestFile {
     /// we replay the *MANIFEST* file, we'll either replay all the changes or none of them. (The truth of
     /// this depends on the filesystem)
     pub async fn add_changes(&mut self, changes: Vec<ManifestChange>) -> Result<()> {
+        let start = SystemTime::now();
+        defer! {
+            let took = SystemTime::now().duration_since(start).unwrap();
+            info!("cost time at manifest add changes, {}ms", took.as_millis());
+        }
         let mut mf_changes = ManifestChangeSet::default();
         mf_changes.changes.extend(changes);
+        // info!("{:?}", self.manifest.read().await.tables.keys());
         // Maybe we could user O_APPEND instead (on certain file systems)
         apply_manifest_change_set(self.manifest.clone(), &mf_changes).await?;
         // Rewrite manifest if it'd shrink by 1/10, and it's big enough to care
         let rewrite = {
             let mf_lck = self.manifest.read().await;
+            info!("{}, {}", mf_lck.creations, mf_lck.deletions);
             mf_lck.deletions
                 > self
-                .deletions_rewrite_threshold
-                .load(atomic::Ordering::Relaxed) as usize
+                    .deletions_rewrite_threshold
+                    .load(atomic::Ordering::Relaxed) as usize
                 && mf_lck.deletions
-                > MANIFEST_DELETIONS_RATIO * (mf_lck.creations - mf_lck.deletions)
+                    > MANIFEST_DELETIONS_RATIO * (mf_lck.creations - mf_lck.deletions)
         };
         if rewrite {
             info!("need to rewrite manifest file");
@@ -94,9 +102,8 @@ impl ManifestFile {
             buffer.write_u32(crc32).await?;
             tokio::io::AsyncWriteExt::write_all(&mut buffer, &mf_set_content).await?;
             self.fp.as_mut().unwrap().write_all(&buffer).await?;
-            info!("buffer => {:?}", mf_set_content);
         }
-        self.fp.as_mut().unwrap().sync_all().await?;
+        self.fp.as_mut().unwrap().sync_data().await?;
         Ok(())
     }
 
@@ -153,10 +160,7 @@ impl ManifestFile {
         rename(&rewrite_path, &manifest_path)?;
         // TODO add directory sync
 
-        let fp = File::options()
-            .write(true)
-            .read(true)
-            .open(manifest_path)?;
+        let fp = File::options().write(true).read(true).open(manifest_path)?;
         Ok((tokio::fs::File::from_std(fp), net_creations))
     }
 
@@ -208,7 +212,7 @@ impl ManifestFile {
             &mut buffer,
             format!("create: {}, delete: {}", mf.creations, mf.deletions).as_bytes(),
         )
-            .unwrap();
+        .unwrap();
         let tids = mf
             .tables
             .iter()
@@ -415,13 +419,15 @@ async fn apply_manifest_change(build: TArcRW<Manifest>, tc: &ManifestChange) -> 
                     tc.id
                 )));
             }
+
             let has = build
                 .levels
-                .get_mut(tc.level as usize)
+                .get_mut(has.as_ref().unwrap().level as usize)
                 .unwrap()
                 .tables
                 .remove(&tc.id);
             assert!(has);
+            build.deletions += 1;
         }
     }
 
@@ -510,18 +516,37 @@ impl ManifestChangeBuilder {
 
 #[cfg(test)]
 mod tests {
+    use crate::manifest::ManifestChangeBuilder;
+    use crate::pb::badgerpb3::mod_ManifestChange::Operation::{CREATE, DELETE};
+    use crate::pb::badgerpb3::ManifestChange;
+    use crate::test_util::{create_random_tmp_dir, random_tmp_dir};
     use tokio::io::AsyncWriteExt;
     use tracing::info;
-    use crate::manifest::ManifestChangeBuilder;
-    use crate::pb::badgerpb3::mod_ManifestChange::Operation::CREATE;
-    use crate::test_util::{create_random_tmp_dir, random_tmp_dir};
 
     #[tokio::test]
     async fn t_manifest_file() {
         crate::test_util::tracing_log();
         let fpath = create_random_tmp_dir();
         info!("fpath => {}", fpath);
-        let mut mf = super::ManifestFile::open_or_create_manifest_file(&fpath, 200).await.unwrap();
-        mf.add_changes(vec![ManifestChangeBuilder::new(1).with_op(CREATE).with_level(1).build()]).await.unwrap();
+        let mut mf = super::ManifestFile::open_or_create_manifest_file(&fpath, 10)
+            .await
+            .unwrap();
+
+        for i in 0..101 {
+            mf.add_changes(vec![ManifestChangeBuilder::new(i + 1)
+                .with_op(CREATE)
+                .with_level(1)
+                .build()])
+                .await
+                .unwrap();
+        }
+
+        for i in 0..100 {
+            mf.add_changes(vec![ManifestChangeBuilder::new(i + 1)
+                .with_op(DELETE)
+                .build()])
+                .await
+                .unwrap();
+        }
     }
 }

@@ -96,7 +96,7 @@ pub(crate) fn tracing_log() {
         .with_ansi(true)
         .event_format(format)
         .try_init();
-    tracing::info!("log setting done");
+    info!("log setting done");
 }
 
 pub fn random_tmp_dir() -> String {
@@ -107,7 +107,7 @@ pub fn random_tmp_dir() -> String {
 
 pub fn create_random_tmp_dir() -> String {
     let fpath = random_tmp_dir();
-    std::fs::create_dir_all(&fpath).unwrap();
+    create_dir_all(&fpath).unwrap();
     fpath
 }
 
