@@ -314,6 +314,7 @@ impl LevelsController {
         defer! {deref_tables();}
 
         // TODO add a change commit
+        info!("manifest file {:?}", self.opt);
         let cd = cd.write().await;
         let change_set = Self::build_change_set(&cd, &new_tables);
 

@@ -5,6 +5,7 @@ use std::io::Write;
 use std::process::id;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use drop_cell::defer;
 use tokio::io::AsyncWriteExt;
 use tracing_subscriber::fmt::format;
 
@@ -122,6 +123,10 @@ async fn t_cas() {
     crate::test_util::tracing_log();
     let n = 299;
     let kv = build_kv().await;
+    let opt = kv.opt.clone();
+    defer! {
+        info!("opt=> {:?}", opt);
+    }
     let entries = (0..n)
         .into_iter()
         .map(|i| {

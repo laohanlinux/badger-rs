@@ -105,6 +105,12 @@ pub fn random_tmp_dir() -> String {
     path.to_str().unwrap().to_string()
 }
 
+pub fn create_random_tmp_dir() -> String {
+    let fpath = random_tmp_dir();
+    std::fs::create_dir_all(&fpath).unwrap();
+    fpath
+}
+
 #[test]
 fn it_work() {
     #[tracing::instrument(skip_all)]

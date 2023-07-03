@@ -18,7 +18,6 @@ use std::fs::{rename, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use crate::pb::{convert_manifest_set_to_vec, parse_manifest_set_from_vec};
-use itertools::Itertools;
 use quick_protobuf::MessageRead;
 use quick_protobuf::{BytesReader, MessageWrite};
 use std::path::Path;
@@ -79,12 +78,13 @@ impl ManifestFile {
             let mf_lck = self.manifest.read().await;
             mf_lck.deletions
                 > self
-                    .deletions_rewrite_threshold
-                    .load(atomic::Ordering::Relaxed) as usize
+                .deletions_rewrite_threshold
+                .load(atomic::Ordering::Relaxed) as usize
                 && mf_lck.deletions
-                    > MANIFEST_DELETIONS_RATIO * (mf_lck.creations - mf_lck.deletions)
+                > MANIFEST_DELETIONS_RATIO * (mf_lck.creations - mf_lck.deletions)
         };
         if rewrite {
+            info!("need to rewrite manifest file");
             self.rewrite().await?;
         } else {
             let mf_set_content = convert_manifest_set_to_vec(&mf_changes);
@@ -94,6 +94,7 @@ impl ManifestFile {
             buffer.write_u32(crc32).await?;
             tokio::io::AsyncWriteExt::write_all(&mut buffer, &mf_set_content).await?;
             self.fp.as_mut().unwrap().write_all(&buffer).await?;
+            info!("buffer => {:?}", mf_set_content);
         }
         self.fp.as_mut().unwrap().sync_all().await?;
         Ok(())
@@ -117,7 +118,7 @@ impl ManifestFile {
     async fn help_rewrite(dir: &str, m: &TArcRW<Manifest>) -> Result<(tokio::fs::File, usize)> {
         let rewrite_path = Path::new(dir).join(MANIFEST_REWRITE_FILENAME);
         // We explicitly sync.
-        let mut fp = File::options()
+        let fp = File::options()
             .create(true)
             .write(true)
             .truncate(true)
@@ -125,18 +126,25 @@ impl ManifestFile {
             .open(&rewrite_path)?;
         let mut fp = tokio::fs::File::from_std(fp);
         let mut wt = tokio::io::BufWriter::new(vec![]);
-        wt.write_all(MAGIC_TEXT).await?;
-        wt.write_u32(MAGIC_VERSION).await?;
+        {
+            wt.write_all(MAGIC_TEXT).await?;
+            wt.write_u32(MAGIC_VERSION).await?;
+        }
 
         let m_lck = m.read().await;
         let net_creations = m_lck.tables.len();
-        let mut mf_set = ManifestChangeSet::default();
-        mf_set.changes = m_lck.as_changes();
-        let mf_buffer = convert_manifest_set_to_vec(&mf_set);
-        wt.write_u32(mf_buffer.len() as u32).await?;
-        let crc32 = crc32fast::hash(&*mf_buffer);
-        wt.write_u32(crc32).await?;
-        wt.write_all(&*mf_buffer).await?;
+
+        {
+            let mut mf_set = ManifestChangeSet::default();
+            mf_set.changes = m_lck.as_changes();
+            let mf_buffer = convert_manifest_set_to_vec(&mf_set);
+            wt.write_u32(mf_buffer.len() as u32).await?;
+            let crc32 = crc32fast::hash(&*mf_buffer);
+            wt.write_u32(crc32).await?;
+            wt.write_all(&*mf_buffer).await?;
+        }
+
+        // persistent
         fp.write_all(&*wt.into_inner()).await?;
         fp.sync_all().await?;
         drop(fp);
@@ -146,9 +154,7 @@ impl ManifestFile {
         // TODO add directory sync
 
         let fp = File::options()
-            .create(true)
             .write(true)
-            .truncate(true)
             .read(true)
             .open(manifest_path)?;
         Ok((tokio::fs::File::from_std(fp), net_creations))
@@ -202,11 +208,12 @@ impl ManifestFile {
             &mut buffer,
             format!("create: {}, delete: {}", mf.creations, mf.deletions).as_bytes(),
         )
-        .unwrap();
+            .unwrap();
         let tids = mf
             .tables
             .iter()
-            .map(|(tid, _)| format!(", tids: {}", tid))
+            .map(|(tid, _)| tid.to_string())
+            .collect::<Vec<_>>()
             .join(",");
         std::io::Write::write_all(&mut buffer, tids.as_bytes()).unwrap();
         hex_str(&buffer.into_inner())
@@ -332,7 +339,6 @@ impl Manifest {
         let mut mf_set = ManifestChangeSet::default();
         mf_set.changes = self.as_changes();
         let mf_buffer = convert_manifest_set_to_vec(&mf_set);
-        assert_eq!(mf_buffer.len(), mf_set.get_size());
 
         wt.write_u32(mf_buffer.len() as u32).await?;
         let crc32 = crc32fast::hash(&*mf_buffer);
@@ -505,14 +511,17 @@ impl ManifestChangeBuilder {
 #[cfg(test)]
 mod tests {
     use tokio::io::AsyncWriteExt;
+    use tracing::info;
+    use crate::manifest::ManifestChangeBuilder;
+    use crate::pb::badgerpb3::mod_ManifestChange::Operation::CREATE;
+    use crate::test_util::{create_random_tmp_dir, random_tmp_dir};
 
     #[tokio::test]
-    async fn test_tokio_buffer() {
+    async fn t_manifest_file() {
         crate::test_util::tracing_log();
-
-        let mut fp = tokio::io::BufWriter::new(vec![]);
-        fp.write_all(b"hello!, beauty").await;
-        let buffer = fp.buffer();
-        log::info!("{:?}", buffer);
+        let fpath = create_random_tmp_dir();
+        info!("fpath => {}", fpath);
+        let mut mf = super::ManifestFile::open_or_create_manifest_file(&fpath, 200).await.unwrap();
+        mf.add_changes(vec![ManifestChangeBuilder::new(1).with_op(CREATE).with_level(1).build()]).await.unwrap();
     }
 }
