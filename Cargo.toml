@@ -50,6 +50,7 @@ atom_box = "0.1.2"
 console-subscriber = "0.1.9"
 uuid = { version = "1.4.0", features = ["v5", "v4"] }
 quick-protobuf = "0.8.1"
+winapi = "0.3.9"
 [dev-dependencies]
 tracing-subscriber = "0.3.17"
 tracing-log = "0.1.3"

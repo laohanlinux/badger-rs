@@ -5,6 +5,7 @@ mod metrics;
 
 pub use codec::{AsyncEncDec, Decode, Encode};
 pub use iterator::*;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use libc::O_DSYNC;
 use log::error;
 use memmap::MmapMut;
@@ -17,6 +18,8 @@ use std::io::{ErrorKind, Write};
 
 use std::{cmp, io};
 use thiserror::Error;
+use tracing::info;
+use winapi::um::winbase;
 
 pub const EMPTY_SLICE: Vec<u8> = vec![];
 
@@ -252,7 +255,7 @@ pub(crate) fn parallel_load_block_key(fp: File, offsets: Vec<u64>) -> Vec<Vec<u8
             read_at(&fp, &mut buffer, offset + Header::size() as u64).unwrap();
             tx.send((i, out)).unwrap();
         })
-        .unwrap();
+            .unwrap();
     }
     pool.close();
 
@@ -273,6 +276,7 @@ pub(crate) fn slice_cmp_gte(a: &[u8], b: &[u8]) -> cmp::Ordering {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn open_existing_synced_file(file_name: &str, synced: bool) -> Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     if synced {
@@ -291,13 +295,28 @@ pub(crate) fn open_existing_synced_file(file_name: &str, synced: bool) -> Result
     }
 }
 
+#[cfg(any(target_os = "windows"))]
+pub(crate) fn open_existing_synced_file(file_name: &str, synced: bool) -> Result<File> {
+    use std::fs::OpenOptions;
+    use std::os::windows::prelude::*;
+    use winapi::um::winbase;
+    if synced {
+        File::options()
+            .write(true)
+            .read(true)
+            // .custom_flags(winbase::FILE_FLAG_WRITE_THROUGH)
+            .open(file_name)
+            .map_err(|err| err.into())
+    } else {
+        File::options()
+            .write(true)
+            .read(true)
+            .open(file_name)
+            .map_err(|err| err.into())
+    }
+}
+
 pub(crate) fn create_synced_file(file_name: &str, _synce: bool) -> Result<File> {
-    // use std::os::unix::fs::OpenOptionsExt;
-    // let mut flags = libc::O_RDWR | libc::O_CREAT | libc::O_EXCL;
-    // if synce {
-    //     // flags |= datasyncFileFlag;
-    // }
-    // File::options().custom_flags(flags).open(file_name).map_err(|err| err.into())
     OpenOptions::new()
         .write(true)
         .read(true)
@@ -327,6 +346,7 @@ pub(crate) fn hex_str(buf: &[u8]) -> String {
     String::from_utf8(buf.to_vec()).unwrap_or_else(|_| "Sorry, Hex String Failed!!!".to_string())
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn dsync() {
     use std::fs::OpenOptions;
@@ -334,28 +354,8 @@ fn dsync() {
 
     let mut options = OpenOptions::new();
     options.write(true);
-    // if cfg!(unix) {
+
     options.custom_flags(libc::O_WRONLY);
-    // }
     let file = options.open("foo.txt");
     println!("{:?}", file.err());
-}
-
-#[test]
-fn clone_error() {
-    #[derive(Debug, Error, Clone)]
-    pub enum Error {
-        #[error(transparent)]
-        StdIO(#[from] eieio::Error),
-        #[error("Hello")]
-        Hello,
-    }
-    let err = Error::StdIO(eieio::Error::from(io::ErrorKind::AlreadyExists));
-    match err {
-        Error::StdIO(err) => {
-            let ioerr = io::Error::from(err.kind());
-            println!("{}", ioerr);
-        }
-        _ => {}
-    }
 }

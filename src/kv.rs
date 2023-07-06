@@ -129,7 +129,10 @@ impl KV {
         if !(opt.value_log_file_size <= 2 << 30 && opt.value_log_file_size >= 1 << 20) {
             return Err(Error::ValueLogSize);
         }
+        info!(">>>>");
         let manifest_file = open_or_create_manifest_file(opt.dir.as_str()).await?;
+        info!(">>>>");
+
         let dir_lock_guard = OpenOptions::new()
             .write(true)
             .append(true)
