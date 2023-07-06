@@ -103,7 +103,7 @@ impl ManifestFile {
             tokio::io::AsyncWriteExt::write_all(&mut buffer, &mf_set_content).await?;
             self.fp.as_mut().unwrap().write_all(&buffer).await?;
         }
-        self.fp.as_mut().unwrap().sync_data().await?;
+        self.fp.as_mut().unwrap().flush().await?;
         Ok(())
     }
 

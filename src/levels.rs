@@ -265,6 +265,7 @@ impl LevelsController {
         Ok(true)
     }
 
+    /// Handle compact deference
     async fn run_compact_def(&self, l: usize, cd: CompactDef) -> Result<()> {
         let time_start = SystemTime::now();
         let this_level = cd.this_level.clone();
