@@ -267,7 +267,7 @@ async fn t_kv_exists() {
 }
 
 // Put a lot of data to move some data to disk.
-// WARNING: This test might take a while but it should pass!
+// WARNING: This test might take a while, but it should pass!
 #[tokio::test]
 async fn t_kv_get_more() {
     let kv = build_kv().await;

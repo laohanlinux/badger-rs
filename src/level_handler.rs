@@ -198,6 +198,7 @@ impl LevelHandler {
             let level_id = self.level();
             let mut tables_lck = self.tables_wl();
             let old_ids = tables_lck.iter().map(|tb| tb.id()).collect::<Vec<_>>();
+            // TODO FIXME may be it is error.
             tables_lck.retain_mut(|tb| {
                 let left = tb.biggest() <= key_range.left.as_slice();
                 let right = tb.smallest() > key_range.right.as_slice();

@@ -186,7 +186,8 @@ impl LevelsController {
 
     // compact worker
     async fn run_worker(&self, lc: Closer) {
-        defer! {lc.done()};
+        defer! {lc.done()}
+        ;
         if self.opt.do_not_compact {
             return;
         }
@@ -419,8 +420,8 @@ impl LevelsController {
     pub(crate) fn as_iterator(
         &self,
         reverse: bool,
-    ) -> Vec<Box<dyn Xiterator<Output = IteratorItem>>> {
-        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+    ) -> Vec<Box<dyn Xiterator<Output=IteratorItem>>> {
+        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
         for level in self.levels.iter() {
             if level.level() == 0 {
                 for table in level.tables.read().iter().rev() {
@@ -454,7 +455,7 @@ impl LevelsController {
             let mut top_tables = cd.top.clone();
             let bot_tables = cd.bot.clone();
             // Create iterators across all the tables involved first.
-            let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+            let mut itr: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
             if l == 0 {
                 top_tables.reverse();
             } else {
@@ -469,7 +470,8 @@ impl LevelsController {
             itr.push(Box::new(citr));
             let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
             // Important to close the iterator to do ref counting.
-            defer! {mitr.close()};
+            defer! {mitr.close()}
+            ;
             mitr.rewind();
             let mut count = 0;
             loop {
