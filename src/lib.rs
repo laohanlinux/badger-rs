@@ -16,13 +16,15 @@
 #![feature(arc_into_inner)]
 #![feature(async_closure)]
 #![feature(async_iterator)]
+#![feature(let_chains)]
+#![feature(stmt_expr_attributes)]
 
-use std::io;
 use std::mem::align_of;
 
 mod event;
 mod iterator;
 mod kv;
+mod level_handler;
 mod log_file;
 mod manifest;
 mod options;
@@ -35,17 +37,15 @@ mod value_log_tests;
 mod y;
 
 mod compaction;
-mod level_handler;
+// #[cfg(test)]
+// mod kv_test;
+#[cfg(test)]
+mod kv_test;
 mod levels;
-mod mmap;
 mod pb;
 mod st_manager;
 #[cfg(test)]
 mod test_util;
-#[cfg(test)]
-mod kv_test;
-
-mod db;
 
 pub use skl::*;
 pub use st_manager::*;

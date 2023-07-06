@@ -1,24 +1,23 @@
 use crate::compaction::KeyRange;
-use crate::kv::{WeakKV, KV};
-use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
-use crate::table::table::{Table, TableCore};
-use crate::types::{Channel, XArc, XWeak};
-use crate::y::merge_iterator::MergeIterOverBuilder;
-use crate::{Result, ValueStruct};
-use core::slice::SlicePattern;
 
-use crate::levels::CompactDef;
+use crate::table::iterator::{IteratorImpl, IteratorItem};
+use crate::table::table::Table;
+use crate::types::XArc;
+
+use crate::{hex_str, Result};
+use core::slice::SlicePattern;
+use std::fmt::Display;
+
 use crate::options::Options;
-use crate::table::builder::Builder;
+
 use drop_cell::defer;
-use log::info;
+use log::{debug, info, warn};
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::collections::HashSet;
-use std::ops::Deref;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+
+use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::SystemTime;
 
 pub(crate) type LevelHandler = XArc<LevelHandlerInner>;
 
@@ -49,11 +48,12 @@ impl LevelHandler {
                 .into());
             }
 
+            // overlap occurs
             if tables[j - 1].biggest() >= tables[j].smallest() {
                 return Err(format!(
                     "Inter: {} vs {}: level={} j={} numTables={}",
-                    String::from_utf8_lossy(tables[j - 1].biggest()),
-                    String::from_utf8_lossy(tables[j].smallest()),
+                    hex_str(tables[j - 1].biggest()),
+                    hex_str(tables[j].smallest()),
                     self.level(),
                     j,
                     num_tables
@@ -63,8 +63,8 @@ impl LevelHandler {
             if tables[j].smallest() > tables[j].biggest() {
                 return Err(format!(
                     "Intra: {} vs {}: level={} j={} numTables={}",
-                    String::from_utf8_lossy(tables[j].smallest()),
-                    String::from_utf8_lossy(tables[j].biggest()),
+                    hex_str(tables[j].smallest()),
+                    hex_str(tables[j].biggest()),
                     self.level(),
                     j,
                     num_tables
@@ -94,15 +94,24 @@ impl LevelHandler {
     // delete current level's tables of to_del
     pub(crate) fn delete_tables(&self, to_del: Vec<u64>) {
         let to_del = to_del.iter().map(|id| *id).collect::<HashSet<_>>();
+        let level = self.level();
         let mut tb_wl = self.tables_wl();
-        tb_wl.retain_mut(|tb| {
-            if to_del.contains(&tb.id()) {
-                // delete table reference
-                tb.decr_ref();
-                return false;
-            }
-            true
-        });
+        let before_tids = tb_wl.iter().map(|tb| tb.id()).collect::<Vec<_>>();
+        {
+            tb_wl.retain_mut(|tb| {
+                if to_del.contains(&tb.id()) {
+                    // delete table reference
+                    tb.decr_ref();
+                    return false;
+                }
+                true
+            });
+        }
+        let after_tids = tb_wl.iter().map(|tb| tb.id()).collect::<Vec<_>>();
+        info!(
+            "after delete tables level:{},  {:?} => {:?}",
+            level, before_tids, after_tids,
+        );
     }
 
     // init with tables
@@ -111,7 +120,7 @@ impl LevelHandler {
         self.total_size.store(total_size as u64, Ordering::Relaxed);
         let mut tb_wl = self.tables_wl();
         (*tb_wl) = tables;
-        if self.level.load(Ordering::Relaxed) == 0 {
+        if self.level() == 0 {
             // key range will overlap. Just sort by file_id in ascending order
             // because newer tables are at the end of level 0.
             tb_wl.sort_by_key(|tb| tb.id());
@@ -131,18 +140,29 @@ impl LevelHandler {
         self.tables.read()
     }
 
-    // Returns the tables that intersect with key range. Returns a half-interval [left, right].
+    // Returns the tables that intersect with key range. Returns a half-interval [left, right).
     // This function should already have acquired a read lock, and this is so important the caller must
     // pass an empty parameter declaring such.
     pub(crate) fn overlapping_tables(&self, key_range: &KeyRange) -> (usize, usize) {
+        // probe.biggest() >= left
         let left = self
             .tables_rd()
-            .binary_search_by(|tb| key_range.left.as_slice().cmp(tb.biggest()));
-
+            .binary_search_by(|probe| probe.biggest().cmp(&key_range.left));
         let right = self
             .tables_rd()
-            .binary_search_by(|tb| key_range.right.as_slice().cmp(tb.smallest()));
-        (left.unwrap(), right.unwrap())
+            .binary_search_by(|probe| probe.smallest().cmp(&key_range.right));
+
+        info!(
+            "overlapping tables, range: {}, left: {:?}, right: {:?}",
+            key_range, left, right
+        );
+        let left = left.unwrap_or_else(|n| n);
+        let right = right.map(|n| n + 1).unwrap_or_else(|n| n);
+        if left == right {
+            // simple handle
+            return (0, 0);
+        }
+        (left, right)
     }
 
     pub(crate) fn get_total_siz(&self) -> u64 {
@@ -156,6 +176,7 @@ impl LevelHandler {
         // be changing it as well. (They can't touch our tables, but if they add/remove other tables,
         // the indices get shifted around.)
         if new_tables.is_empty() {
+            info!("No tables need to replace");
             return Ok(());
         }
         // TODO Add lock (think of level's sharing lock)
@@ -174,7 +195,9 @@ impl LevelHandler {
 
         // TODO Opz code
         {
+            let level_id = self.level();
             let mut tables_lck = self.tables_wl();
+            let old_ids = tables_lck.iter().map(|tb| tb.id()).collect::<Vec<_>>();
             tables_lck.retain_mut(|tb| {
                 let left = tb.biggest() <= key_range.left.as_slice();
                 let right = tb.smallest() > key_range.right.as_slice();
@@ -192,21 +215,28 @@ impl LevelHandler {
             tables_lck.extend(new_tables);
             // TODO avoid resort
             tables_lck.sort_by(|a, b| a.smallest().cmp(b.smallest()));
+
+            let new_ids = tables_lck.iter().map(|tb| tb.id()).collect::<Vec<_>>();
+            info!(
+                "after replace tables, level:{}, {:?} => {:?}",
+                level_id, old_ids, new_ids
+            );
         }
         Ok(())
     }
 
     // Return true if ok and no stalling that will hold a new table reference
     pub(crate) async fn try_add_level0_table(&self, t: Table) -> bool {
-        assert_eq!(self.level.load(Ordering::Relaxed), 0);
-        let tw = self.tables_wl();
+        assert_eq!(self.get_level(), 0);
+        let mut tw = self.tables_wl();
         if tw.len() >= self.opt.num_level_zero_tables_stall {
+            // Too many tables at zero level need compact
             return false;
         }
         t.incr_ref();
         self.total_size
             .fetch_add(t.size() as u64, Ordering::Relaxed);
-        self.tables_wl().push(t);
+        tw.push(t);
         true
     }
 
@@ -223,17 +253,28 @@ impl LevelHandler {
 
     // Acquires a read-lock to access s.tables. It returns a list of table_handlers.
     pub(crate) fn get_table_for_key(&self, key: &[u8]) -> Option<IteratorItem> {
-        return if self.level.load(Ordering::Relaxed) == 0 {
+        return if self.get_level() == 0 {
+            // For level 0, we need to check every table. Remember to make a copy as self.tables may change
+            // once we exit this function, and we don't want to lock the self.tables while seeking in tabbles.
+            // CAUTION: Reverse the tables.
             let tw = self.tables_rd();
             for tb in tw.iter().rev() {
                 tb.incr_ref();
+                // check it by bloom filter
+                if tb.does_not_have(key) {
+                    debug!("not contain it, key #{}, st: {}", hex_str(key), tb.id());
+                    tb.decr_ref();
+                    continue;
+                }
                 let it = IteratorImpl::new(tb.clone(), false);
                 let item = it.seek(key);
                 tb.decr_ref();
-                if item.is_none() {
-                    // todo add metrics
-                } else {
-                    return item;
+                if let Some(item) = item {
+                    if item.key() != key {
+                        //warn!("try it again, key #{}", crate::y::hex_str(key));
+                        continue;
+                    }
+                    return Some(item);
                 }
             }
             None
@@ -246,13 +287,21 @@ impl LevelHandler {
             }
             let tb = tw.get(ok.unwrap()).unwrap();
             tb.incr_ref();
+            if tb.does_not_have(key) {
+                tb.decr_ref();
+                return None;
+            }
+
             let it = IteratorImpl::new(tb.clone(), false);
             let item = it.seek(key);
             tb.decr_ref();
-            if item.is_none() {
-                // todo add metrics
+
+            if let Some(item) = item {
+                if item.key() == key {
+                    return Some(item);
+                }
             }
-            item
+            return None;
         };
     }
 
@@ -263,6 +312,27 @@ impl LevelHandler {
     // returns current level
     pub(crate) fn level(&self) -> usize {
         self.level.load(Ordering::Relaxed) as usize
+    }
+
+    pub(crate) fn to_log(&self) -> String {
+        format!("{}", self)
+    }
+}
+
+impl Display for LevelHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LevelHandler")
+            .field("level", &self.get_level())
+            .field("max", &self.max_total_size.load(Ordering::Relaxed))
+            .field(
+                "tables",
+                &self
+                    .tables_rd()
+                    .iter()
+                    .map(|tb| tb.id())
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
     }
 }
 
@@ -277,7 +347,7 @@ pub(crate) struct LevelHandlerInner {
     pub(crate) tables: Arc<RwLock<Vec<Table>>>,
     pub(crate) total_size: AtomicU64,
     // The following are initialized once and const.
-    pub(crate) level: AtomicI32,
+    pub(crate) level: AtomicUsize,
     str_level: Arc<String>,
     pub(crate) max_total_size: AtomicU64,
     opt: Options,
@@ -289,11 +359,16 @@ impl LevelHandlerInner {
             self_lock: Arc::new(Default::default()),
             tables: Arc::new(Default::default()),
             total_size: Default::default(),
-            level: Default::default(),
+            level: AtomicUsize::new(level),
             str_level: Arc::new(format!("L{}", level)),
             max_total_size: Default::default(),
             opt,
         }
+    }
+
+    #[inline]
+    pub(crate) fn get_level(&self) -> usize {
+        self.level.load(Ordering::Acquire)
     }
 
     #[inline]

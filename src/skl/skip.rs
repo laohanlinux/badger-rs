@@ -1,20 +1,15 @@
 use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
 use crate::table::iterator::IteratorItem;
-use crate::Xiterator;
-use atom_box::AtomBox;
-use log::info;
-use rand::random;
-use serde_json::Value;
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::fmt::{write, Display, Formatter};
-use std::ops::Deref;
-use std::ptr::null_mut;
-use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::Arc;
-use std::{cmp, ptr, ptr::NonNull, sync::atomic::AtomicI32};
-
 use crate::y::ValueStruct;
+use crate::Xiterator;
+
+use log::{info, warn};
+use rand::random;
+use std::fmt::{Debug, Display, Formatter};
+use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use std::sync::Arc;
+use std::{cmp, ptr, sync::atomic::AtomicI32};
+use uuid::Uuid;
 
 use super::{arena::Arena, node::Node};
 
@@ -24,6 +19,17 @@ pub struct SkipList {
     head: AtomicPtr<Node>,
     _ref: Arc<AtomicI32>,
     pub(crate) arena: Arc<Arena>,
+    id: Arc<AtomicU32>,
+}
+
+impl Debug for SkipList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        f.debug_struct("SkipList")
+            .field("_ref", &self._ref.load(Ordering::Relaxed))
+            .field("id", &self.id.load(Ordering::Relaxed))
+            .field("size", &self.arena.size())
+            .finish()
+    }
 }
 
 impl Clone for SkipList {
@@ -34,6 +40,7 @@ impl Clone for SkipList {
             head: AtomicPtr::new(node),
             _ref: self._ref.clone(),
             arena: self.arena.clone(),
+            id: self.id.clone(),
         }
     }
 }
@@ -43,12 +50,19 @@ impl SkipList {
         let mut arena = Arena::new(arena_size);
         let v = ValueStruct::default();
         let node = Node::new(&mut arena, "".as_bytes(), &v, MAX_HEIGHT as isize);
+        let id = random::<u32>();
         Self {
             height: Arc::new(AtomicI32::new(1)),
             head: AtomicPtr::new(node),
             _ref: Arc::new(AtomicI32::new(1)),
             arena: Arc::new(arena),
+            id: Arc::new(AtomicU32::new(id)),
         }
+    }
+
+    /// Return SkipList's id
+    pub fn id(&self) -> u32 {
+        self.id.load(Ordering::Relaxed)
     }
 
     /// Increases the reference count
@@ -67,12 +81,10 @@ impl SkipList {
     }
 
     pub(crate) fn arena_ref(&self) -> &Arena {
-        // unsafe {self.arena.as_ref()}
         &self.arena
     }
 
     pub(crate) fn arena_mut_ref(&self) -> &Arena {
-        // unsafe  {self.arena.as_mut()}
         &self.arena
     }
 
@@ -81,7 +93,7 @@ impl SkipList {
     }
 
     fn get_head_mut(&self) -> &mut Node {
-        let node = unsafe { self.head.load(Ordering::Relaxed) as *mut Node };
+        let node = self.head.load(Ordering::Relaxed) as *mut Node;
         unsafe { &mut *node }
     }
 
@@ -108,10 +120,9 @@ impl SkipList {
     ) -> (Option<&Node>, bool) {
         let mut x = self.get_head();
         let mut level = self.get_height() - 1;
-        //println!("start to hight: {}", level);
         loop {
             // Assume x.key < key
-            let mut next = self.get_next(x, level);
+            let next = self.get_next(x, level);
             if next.is_none() {
                 // x.key < key < END OF LIST
                 if level > 0 {
@@ -217,6 +228,11 @@ impl SkipList {
     }
 
     unsafe fn _put(&self, key: &[u8], v: ValueStruct) {
+        // info!(
+        //     "At SkipList,  sz: {}, cap: {}",
+        //     self.arena.size(),
+        //     self.arena.cap()
+        // );
         // Since we allow overwrite, we may not need to create a new node. We might not even need to
         // increase the height. Let's defer these actions.
         // let mut def_node = &mut Node::default();
@@ -231,7 +247,7 @@ impl SkipList {
             let (_pre, _next) = self.find_splice_for_level(key, cur, i as isize);
             prev[i] = _pre;
             if _next.is_some() && ptr::eq(_pre, _next.unwrap()) {
-                let mut arena = self.arena_ref().copy().as_mut();
+                let arena = self.arena_ref().copy().as_mut();
                 prev[i].as_ref().unwrap().set_value(&arena, &v);
                 return;
             }
@@ -352,9 +368,19 @@ impl SkipList {
         if !found {
             return None;
         }
-        // println!("find a key: {:?}", key);
-        let (value_offset, value_size) = node.unwrap().get_value_offset();
-        Some(self.arena_ref().get_val(value_offset, value_size))
+        if let Some(node) = node {
+            let (offset, size) = node.get_value_offset();
+            let value = self.arena.get_val(offset, size);
+
+            #[cfg(test)]
+            {
+                let got_key = node.key(&self.arena);
+                assert_eq!(key, got_key);
+            }
+
+            return Some(value);
+        }
+        None
     }
 
     /// Returns a SkipList cursor. You have to close() the cursor.
@@ -366,6 +392,16 @@ impl SkipList {
     /// returns the size of the SkipList in terms of how much memory is used within its internal arena.
     pub fn mem_size(&self) -> u32 {
         self.arena_ref().size()
+    }
+
+    /// Returns the keys, Notice it just travel all keys for statssing
+    pub fn node_count(&self) -> u32 {
+        let cur = self.new_cursor();
+        let mut count = 0;
+        while let Some(_) = cur.next() {
+            count += 1;
+        }
+        return count;
     }
 
     pub fn key_values(&self) -> Vec<(&[u8], ValueStruct)> {
@@ -395,7 +431,6 @@ impl Drop for SkipList {
     fn drop(&mut self) {
         let _ref = self._ref.load(Ordering::Relaxed);
         info!("Drop SkipList, reference: {}", _ref);
-        self.arena_mut_ref().reset();
     }
 }
 
@@ -427,14 +462,20 @@ impl Display for SkipList {
 pub struct UniIterator {
     iter: SkipIterator,
     reversed: bool,
+    id: Box<String>,
 }
 
 impl UniIterator {
     pub fn new(st: SkipList, reversed: bool) -> UniIterator {
         let itr = SkipIterator::new(st);
+        // Notice, If reversed is true, next should be last node when first call it.
+        if reversed {
+            itr.node.store(ptr::null_mut(), Ordering::Relaxed);
+        }
         UniIterator {
             iter: itr,
             reversed,
+            id: Box::new(Uuid::new_v4().to_string()),
         }
     }
 }
@@ -444,9 +485,9 @@ impl Xiterator for UniIterator {
 
     fn next(&self) -> Option<Self::Output> {
         if !self.reversed {
-            self.iter.prev()
-        } else {
             self.iter.next()
+        } else {
+            self.iter.prev()
         }
     }
 
@@ -454,7 +495,7 @@ impl Xiterator for UniIterator {
         if !self.reversed {
             self.iter.seek_to_first()
         } else {
-            self.iter.seek_to_first()
+            self.iter.seek_to_last()
         }
     }
 
@@ -470,6 +511,10 @@ impl Xiterator for UniIterator {
         self.iter.peek()
     }
 
+    fn id(&self) -> String {
+        format!("st_{}", random::<u32>())
+    }
+
     fn close(&self) {
         self.iter.close()
     }
@@ -480,17 +525,32 @@ impl Xiterator for UniIterator {
 // Try GAT lifetime
 pub struct SkipIterator {
     st: SkipList,
+    // store current node
     node: AtomicPtr<Node>,
 }
 
+impl Debug for SkipIterator {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SkipIterator")
+            .field("st_id", &self.st.id.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
 impl SkipIterator {
+    // Return a SkipIterator, Notice, the SkipIterator.st == st.header node
     pub fn new(st: SkipList) -> SkipIterator {
-        SkipIterator {
+        let itr = SkipIterator {
             st,
             node: AtomicPtr::new(ptr::null_mut()),
-        }
+        };
+
+        let header = itr.st.get_head() as *const Node as *mut Node;
+        itr.node.store(header, Ordering::Relaxed);
+        itr
     }
 
+    // Get the node's value, return None if the node is skip list header node
     pub fn get_item_by_node(&self, node: &Node) -> Option<IteratorItem> {
         if ptr::eq(node, self.st.get_head()) {
             return None;
@@ -504,6 +564,7 @@ impl SkipIterator {
         })
     }
 
+    #[inline]
     pub fn peek(&self) -> Option<IteratorItem> {
         unsafe {
             self.node
@@ -526,10 +587,16 @@ impl SkipIterator {
     // Advance to the next position
     pub fn next(&self) -> Option<IteratorItem> {
         let node = self.node.load(Ordering::Relaxed);
+        // If node is null, indicate cursor move the end.
         if node.is_null() {
             return None;
         }
         let next = self.st.get_next(unsafe { node.as_ref().unwrap() }, 0);
+        if next.is_none() {
+            self.node.store(ptr::null_mut(), Ordering::Relaxed);
+            info!("store null");
+            return None;
+        }
         let next = next.unwrap() as *const Node as *mut Node;
         self.node.store(next, Ordering::Relaxed);
         self.get_item_by_node(unsafe { next.as_ref().unwrap() })
@@ -537,7 +604,13 @@ impl SkipIterator {
 
     // Advances to the previous position.
     pub fn prev(&self) -> Option<IteratorItem> {
-        assert!(self.peek().is_some());
+        let cur = self.node.load(Ordering::Relaxed);
+        if cur.is_null() {
+            return self.seek_to_last();
+        }
+        if ptr::eq(cur, self.st.get_head()) {
+            return None;
+        }
         let (node, _) = self.st.find_near(self.peek().unwrap().key(), true, false);
         if node.is_none() {
             self.set_node(self.st.get_head());
@@ -546,6 +619,25 @@ impl SkipIterator {
         self.set_node(node.unwrap());
         self.get_item_by_node(node.unwrap())
     }
+    // pub fn prev(&self) -> Option<IteratorItem> {
+    //     let cur = self.node.load(Ordering::Relaxed);
+    //     // The node is end
+    //     if cur.is_null() {
+    //         return self.seek_to_last();
+    //     }
+    //     // The node is start
+    //     if ptr::eq(cur, self.st.get_head()) {
+    //         return None;
+    //     }
+    //     // TODO Opz
+    //     let (node, _) = self.st.find_near(self.peek().as_ref().unwrap().key(), true, false);
+    //     if node.is_none() {
+    //         self.set_node(self.st.get_head());
+    //         return None;
+    //     }
+    //     self.set_node(node.unwrap());
+    //     self.get_item_by_node(node.unwrap())
+    // }
 
     // Advances to the first entry with a key >= target.
     pub fn seek(&self, key: &[u8]) -> Option<IteratorItem> {
@@ -574,6 +666,15 @@ impl SkipIterator {
     // Seeks position at the first entry in list.
     // Final state of iterator is valid() iff list is not empty.
     pub fn seek_to_first(&self) -> Option<IteratorItem> {
+        let _first_key = unsafe {
+            String::from_utf8_lossy(self.st.find_last().unwrap().key(self.st.arena_ref()))
+        };
+        let _last_key = String::from_utf8_lossy(
+            self.st
+                .get_next(self.st.get_head(), 0)
+                .unwrap()
+                .key(self.st.arena_ref()),
+        );
         let node = self.st.get_next(self.st.get_head(), 0);
         if node.is_none() {
             self.set_node(self.st.get_head());
@@ -602,75 +703,20 @@ impl SkipIterator {
     }
 }
 
-// impl Xiterator for SkipIterator {
-//     type Output = IteratorItem;
-//
-//     fn next(&self) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn rewind(&self) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-//         if self.node.load(Ordering::Relaxed).is_null() {
-//             return None;
-//         }
-//
-//         let node = self.node.load(Ordering::Relaxed);
-//         if node.is_null() {
-//             return None;
-//         }
-//         let key = node.key(self.st.arena_ref()).to_vec();
-//         let value = node.value.load(Ordering::Relaxed);
-//         Some(IteratorItem{ key: node.key(self.st.arena_ref()).to_vec(), value: Default::default() })
-//     }
-//
-//     fn peek(&self) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn close(&self) {
-//         todo!()
-//     }
-// }
-
-// impl<'a> Xiterator for SkipIterator<'a> {
-//     type Output = &'a Node;
-//     fn next(&self) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn rewind(&self) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn peek(&self) -> Option<Self::Output> {
-//         todo!()
-//     }
-//
-//     fn close(&self) {
-//         self.st.decr_ref();
-//     }
-// }
-
 mod tests {
-    use crate::skl::node::Node;
-    use crate::skl::skip::SkipList;
-    use crate::skl::{Arena, Cursor, MAX_HEIGHT};
+
+    use crate::skl::MAX_HEIGHT;
+    use crate::{skl::skip::SkipList, Node};
+
     use crate::y::ValueStruct;
+    use atomic::Ordering;
     use rand::distributions::{Alphanumeric, DistString};
-    use std::fmt::format;
-    use std::ptr;
-    use std::ptr::NonNull;
-    use std::sync::atomic::{AtomicI32, Ordering};
-    use std::sync::Arc;
-    use std::thread::spawn;
+
+    use std::{
+        ptr,
+        sync::{atomic::AtomicI32, Arc},
+        thread::spawn,
+    };
 
     const ARENA_SIZE: usize = 1 << 20;
 
@@ -686,7 +732,7 @@ mod tests {
 
     #[test]
     fn t_empty_list() {
-        let mut st = SkipList::new(ARENA_SIZE);
+        let st = SkipList::new(ARENA_SIZE);
         let key = b"aaa";
         let got = st.get(key);
         assert!(got.is_none());
@@ -718,7 +764,7 @@ mod tests {
         let n1 = &node;
         let n2 = Some(&node);
         assert!(ptr::eq(n1, n2.unwrap()));
-        let mut st = SkipList::new(ARENA_SIZE);
+        let st = SkipList::new(ARENA_SIZE);
         let val1 = b"42";
         let val2 = b"52";
         let val3 = b"62";
@@ -753,8 +799,6 @@ mod tests {
 
     #[test]
     fn t_concurrent_basic() {
-        use rand::{thread_rng, Rng};
-
         let st = Arc::new(SkipList::new(ARENA_SIZE));
         let mut kv = vec![];
         for i in 0..10000 {
@@ -786,11 +830,9 @@ mod tests {
     }
 
     fn t_concurrent_basic2() {
-        use rand::{thread_rng, Rng};
-
         let st = SkipList::new(ARENA_SIZE);
         let mut kv = vec![];
-        for i in 0..10000 {
+        for _i in 0..10000 {
             kv.push((
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 10),
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 20),
@@ -972,7 +1014,7 @@ mod tests {
     // Tests a basic iteration over all nodes from the beginning.
     #[test]
     fn t_iterator_next() {
-        const n: usize = 100;
+        let n = 100;
         let st = SkipList::new(ARENA_SIZE);
 
         {
@@ -999,6 +1041,15 @@ mod tests {
 
             assert!(!cur.valid());
             cur.close();
+        }
+        // Iterator all
+        {
+            let cur = st.new_cursor();
+            let mut count = 0;
+            while let Some(_) = cur.next() {
+                count += 1;
+            }
+            assert_eq!(count, n);
         }
     }
 
@@ -1089,30 +1140,81 @@ mod tests {
 }
 
 mod tests2 {
-    use crate::SkipList;
+    use crate::y::iterator::Xiterator;
+    use crate::{SkipIterator, SkipList, UniIterator, ValueStruct};
+    use log::info;
 
     const ARENA_SIZE: usize = 1 << 20;
 
     #[test]
-    fn atomic_swap_skip_list() {
-        let mut st = SkipList::new(ARENA_SIZE);
+    fn skipiterator() {
+        crate::test_util::tracing_log();
+        const n: usize = 1000;
+        let st = SkipList::new(ARENA_SIZE);
+        for i in 0..n {
+            let key = format!("{:05}", i);
+            st.put(
+                key.as_bytes(),
+                ValueStruct::new(key.as_bytes().to_vec(), 0, 0, i as u64),
+            );
+        }
+        let itr = SkipIterator::new(st);
+        let mut count = 0;
+        while let Some(_) = itr.next() {
+            count += 1;
+        }
+        assert_eq!(count, n);
+        itr.seek_to_last();
+        count -= 1;
+        while let Some(_) = itr.prev() {
+            count -= 1;
+        }
+        assert_eq!(count, 0);
     }
 
     #[test]
-    fn gat() {
-        // #![allow(unused)]
+    fn uniterator() {
+        crate::test_util::tracing_log();
+        const n: usize = 1000;
+        let st = SkipList::new(ARENA_SIZE);
+        for i in 0..n {
+            let key = format!("{:05}", i);
+            st.put(
+                key.as_bytes(),
+                ValueStruct::new(key.as_bytes().to_vec(), 0, 0, i as u64),
+            );
+        }
+        let itr = UniIterator::new(st.clone(), false);
+        let mut count = 0;
+        while let Some(_) = itr.next() {
+            count += 1;
+        }
+        assert_eq!(count, n);
 
-        // trait IterableTypes {
-        //     type Item<'me>;
-        //     type Iterator<'me>: Iterator<Item = Self::Item<'me>>;
-        // }
+        let itr = UniIterator::new(st, true);
+        assert!(itr.peek().is_none());
+        while let Some(_) = itr.next() {
+            count -= 1;
+        }
+        assert_eq!(count, 0);
+    }
 
-        // trait Iterable: IterableTypes {
-        //     fn iter<'a>(&'a self) -> Self::Iterator<'a>;
-        // }
+    #[test]
+    fn atomic_swap_skip_list() {
+        crate::test_util::tracing_log();
+        let st = SkipList::new(1 << 20);
+        st.put(b"hello", ValueStruct::new(vec![], 0, 0, 0));
+        let got = st.get(b"hello");
+        assert!(got.is_some());
 
-        // struct GatSimple {}
-
-        // impl GatSimple {}
+        for i in 0..400 {
+            let sz = st.arena_ref().size();
+            let cap = st.arena_ref().cap();
+            info!("{} {}", sz, cap);
+            st.put(
+                format!("{}", i).as_bytes(),
+                ValueStruct::new(format!("{}", i).into_bytes(), 0, 0, 0),
+            )
+        }
     }
 }

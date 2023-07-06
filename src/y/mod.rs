@@ -5,18 +5,20 @@ mod metrics;
 
 pub use codec::{AsyncEncDec, Decode, Encode};
 pub use iterator::*;
-use libc::{O_DSYNC, O_WRONLY};
+use libc::O_DSYNC;
 use log::error;
 use memmap::MmapMut;
 pub use merge_iterator::*;
 use std::collections::hash_map::DefaultHasher;
-use std::error::Error as _;
-use std::fs::{File, OpenOptions, Permissions};
+
+use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{ErrorKind, Write};
-use std::sync::mpsc::sync_channel;
+
 use std::{cmp, io};
 use thiserror::Error;
+
+pub const EMPTY_SLICE: Vec<u8> = vec![];
 
 /// Constants use in serialization sizes, and in ValueStruct serialization
 pub const META_SIZE: usize = 1;
@@ -79,6 +81,10 @@ pub enum Error {
     /////////////////////////////////
     #[error("Not found")]
     NotFound,
+    ////////////////////////////////
+    // GC
+    #[error("Stop iteration")]
+    StopGC,
 }
 
 impl Default for Error {
@@ -90,7 +96,7 @@ impl Default for Error {
 impl Error {
     pub fn is_io(&self) -> bool {
         match self {
-            Error::StdIO(err) => true,
+            Error::StdIO(_err) => true,
             _ => false,
         }
     }
@@ -182,7 +188,7 @@ pub fn hash(buffer: &[u8]) -> u64 {
     hasher.finish()
 }
 
-pub fn mmap(fd: &File, writable: bool, size: usize) -> Result<MmapMut> {
+pub fn mmap(fd: &File, _writable: bool, size: usize) -> Result<MmapMut> {
     let m = unsafe {
         memmap::MmapOptions::new()
             .offset(0)
@@ -193,7 +199,7 @@ pub fn mmap(fd: &File, writable: bool, size: usize) -> Result<MmapMut> {
     Ok(m)
 }
 
-pub fn open_synced_file(file_name: &str, sync: bool) -> Result<File> {
+pub fn open_synced_file(file_name: &str, _sync: bool) -> Result<File> {
     let file = File::options()
         .write(true)
         .read(true)
@@ -231,7 +237,7 @@ pub(crate) fn parallel_load_block_key(fp: File, offsets: Vec<u64>) -> Vec<Vec<u8
     let mut pool = ThreadPool::new(num);
     for (i, offset) in offsets.iter().enumerate() {
         let offset = *offset;
-        let mut fp = fp.try_clone().unwrap();
+        let fp = fp.try_clone().unwrap();
         let tx = tx.clone();
         pool.execute(move || {
             let mut buffer = vec![0u8; Header::size()];
@@ -242,7 +248,7 @@ pub(crate) fn parallel_load_block_key(fp: File, offsets: Vec<u64>) -> Vec<Vec<u8
                 "key offset: {}, h.p_len = {}",
                 offset, head.p_len
             );
-            let mut out = vec![0u8; head.k_len as usize];
+            let out = vec![0u8; head.k_len as usize];
             read_at(&fp, &mut buffer, offset + Header::size() as u64).unwrap();
             tx.send((i, out)).unwrap();
         })
@@ -285,7 +291,7 @@ pub(crate) fn open_existing_synced_file(file_name: &str, synced: bool) -> Result
     }
 }
 
-pub(crate) fn create_synced_file(file_name: &str, synce: bool) -> Result<File> {
+pub(crate) fn create_synced_file(file_name: &str, _synce: bool) -> Result<File> {
     // use std::os::unix::fs::OpenOptionsExt;
     // let mut flags = libc::O_RDWR | libc::O_CREAT | libc::O_EXCL;
     // if synce {
@@ -307,7 +313,7 @@ pub(crate) fn async_create_synced_file(file_name: &str, synced: bool) -> Result<
 }
 
 pub(crate) fn sync_directory(d: &str) -> Result<()> {
-    let mut fp = File::open(d)?;
+    let fp = File::open(d)?;
     fp.sync_all().map_err(|err| err.into())
 }
 
@@ -317,15 +323,8 @@ pub(crate) async fn async_sync_directory(d: String) -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn it_cpu() {
-    println!("{:?}", num_cpu());
-}
-
-#[test]
-fn sync_dir() {
-    let ok = sync_directory(&"/tmp".to_string());
-    println!("{:?}", ok);
+pub(crate) fn hex_str(buf: &[u8]) -> String {
+    String::from_utf8(buf.to_vec()).unwrap_or_else(|_| "Sorry, Hex String Failed!!!".to_string())
 }
 
 #[test]

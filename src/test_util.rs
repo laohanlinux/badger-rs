@@ -75,30 +75,44 @@ pub(crate) fn tracing_log() {
         }
     }
 
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_panic(info);
+        info!("panic info: {}", info);
+        std::fs::write("out.put", info.to_string()).expect("TODO: panic message");
+        std::process::exit(1);
+    }));
+
     let _ = tracing_log::LogTracer::init();
     let format = tracing_subscriber::fmt::format()
+        // .with_thread_names(true)
         .with_level(true)
         .with_target(true)
         .with_timer(LocalTimer);
 
     let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
+        .with_max_level(tracing::Level::INFO)
         .with_writer(io::stdout)
         .with_ansi(true)
         .event_format(format)
         .try_init();
-    tracing::info!("log setting done");
+    info!("log setting done");
 }
 
 pub fn random_tmp_dir() -> String {
     let id = random::<u32>();
     let path = temp_dir().join(id.to_string()).join("badger");
-    // create_dir_all(&path).unwrap();
     path.to_str().unwrap().to_string()
 }
 
+pub fn create_random_tmp_dir() -> String {
+    let fpath = random_tmp_dir();
+    create_dir_all(&fpath).unwrap();
+    fpath
+}
+
 #[test]
-fn itwork() {
+fn it_work() {
     #[tracing::instrument(skip_all)]
     fn call() {
         info!("call c");
@@ -158,18 +172,6 @@ async fn runtime_tk() {
             Some(299)
         }
     }
-
-    // let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    // tokio::spawn(async move {
-    //     let ft = SafeFnWrapper::<i32>::new(load());
-    //     let s1 = ft.spawn(200).await.unwrap();
-    //     tx.send(s1).unwrap();
-    //     println!("send ok");
-    // });
-    // tokio::runtime::Handle::spawn()
-    // let item = rx.recv().unwrap();
-    // println!("ret: {:?}", item);
-    // tokio::time::sleep(Duration::from_millis(200)).await;
 }
 
 #[test]
@@ -194,6 +196,5 @@ fn tk2() {
         let ret = add();
         println!("return {}", ret);
     });
-
     println!("{}", a.load(Ordering::Relaxed));
 }

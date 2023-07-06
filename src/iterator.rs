@@ -1,38 +1,44 @@
 use crate::iterator::PreFetchStatus::Prefetched;
 use crate::kv::_BADGER_PREFIX;
-use crate::types::{ArcMx, ArcRW, Closer, TArcMx, TArcRW};
-use crate::MergeIterOverIterator;
+use crate::types::{ArcRW, Channel, Closer, TArcMx, TArcRW};
+use crate::ValueStruct;
 use crate::{
     kv::KV,
     types::XArc,
     value_log::{MetaBit, ValuePointer},
-    Decode, Result, Xiterator,
+    Decode, MergeIterator, Result, Xiterator, EMPTY_SLICE,
 };
-use log::Metadata;
-use parking_lot::RwLock;
+
+use atomic::Atomic;
+
+use std::fmt::{Display, Formatter};
 use std::future::Future;
+
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU8, Ordering};
+
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
+use tokio::io::AsyncWriteExt;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub(crate) enum PreFetchStatus {
     Empty,
     Prefetched,
 }
 
-type KVItem = TArcRW<KVItemInner>;
+pub(crate) type KVItem = TArcRW<KVItemInner>;
 
 // Returned during iteration. Both the key() and value() output is only valid until
 // iterator.next() is called.
 #[derive(Clone)]
 pub(crate) struct KVItemInner {
-    status: TArcRW<PreFetchStatus>,
+    status: Arc<Atomic<PreFetchStatus>>,
     kv: XArc<KV>,
     key: Vec<u8>,
-    value: TArcRW<Vec<u8>>,
+    // TODO, Opz memory
     vptr: Vec<u8>,
+    value: TArcMx<Vec<u8>>,
     meta: u8,
     user_meta: u8,
     cas_counter: Arc<AtomicU64>,
@@ -40,10 +46,50 @@ pub(crate) struct KVItemInner {
     err: Result<()>,
 }
 
+impl Display for KVItemInner {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("kv")
+            .field(
+                "key",
+                &format!("{}", String::from_utf8_lossy(&self.key)).as_bytes(),
+            )
+            .finish()
+    }
+}
+
 impl KVItemInner {
+    pub(crate) fn new(key: Vec<u8>, value: ValueStruct, kv: XArc<KV>) -> KVItemInner {
+        Self {
+            status: Arc::new(Atomic::new(PreFetchStatus::Empty)),
+            kv,
+            key,
+            value: TArcMx::new(Default::default()),
+            vptr: value.value,
+            meta: value.meta,
+            user_meta: value.user_meta,
+            cas_counter: Arc::new(AtomicU64::new(value.cas_counter)),
+            wg: Closer::new("kv".to_owned()),
+            err: Ok(()),
+        }
+    }
+
     // Returns the key. Remember to copy if you need to access it outside the iteration loop.
     pub(crate) fn key(&self) -> &[u8] {
         &self.key
+    }
+
+    pub async fn get_value(&self) -> Result<Vec<u8>> {
+        let ch = Channel::new(1);
+        self.value(|value| {
+            let tx = ch.tx();
+            let value = value.to_vec();
+            Box::pin(async move {
+                tx.send(value).await.unwrap();
+                Ok(())
+            })
+        })
+        .await?;
+        Ok(ch.recv().await.unwrap())
     }
 
     // Value retrieves the value of the item from the value log. It calls the
@@ -53,15 +99,20 @@ impl KVItemInner {
     // Note that the call to the consumer func happens synchronously.
     pub(crate) async fn value(
         &self,
-        mut consumer: impl FnMut(Vec<u8>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
-        if *self.status.read().await == PreFetchStatus::Prefetched {
+        if self.status.load(Ordering::Relaxed) == Prefetched {
             if self.err.is_err() {
                 return self.err.clone();
             }
-            return consumer(self.value.read().await.clone()).await;
+            let value = self.value.lock().await;
+            if value.is_empty() {
+                return consumer(&EMPTY_SLICE).await;
+            } else {
+                return consumer(&value).await;
+            }
         }
         return self.kv.yield_item_value(self.clone(), consumer).await;
     }
@@ -73,7 +124,6 @@ impl KVItemInner {
         if self.meta & MetaBit::BIT_DELETE.bits() > 0 {
             return false;
         }
-
         true
     }
 
@@ -81,19 +131,21 @@ impl KVItemInner {
     pub(crate) async fn pre_fetch_value(&self) -> Result<()> {
         let kv = self.kv.clone();
         kv.yield_item_value(self.clone(), |value| {
-            let ref_status = self.status.clone();
-            let ref_value = self.value.clone();
+            let status_wl = self.status.clone();
+            let value = value.to_vec();
+            let value_wl = self.value.clone();
             Box::pin(async move {
+                status_wl.store(Prefetched, Ordering::Release);
                 if value.is_empty() {
-                    *ref_status.write().await = PreFetchStatus::Prefetched;
                     return Ok(());
                 }
-                ref_value.write().await.extend(value);
-                *ref_status.write().await = PreFetchStatus::Prefetched;
+                let mut value_wl = value_wl.lock().await;
+                *value_wl = value;
                 Ok(())
             })
         })
-        .await
+        .await?;
+        Ok(())
     }
 
     // Returns approximate size of the key-value pair.
@@ -115,7 +167,7 @@ impl KVItemInner {
 
     // Returns the  CAS counter associated with the value.
     pub(crate) fn counter(&self) -> u64 {
-        self.cas_counter.load(atomic::Ordering::Relaxed)
+        self.cas_counter.load(atomic::Ordering::Acquire)
     }
 
     // Returns the user_meta set by the user. Typically, this byte, optionally set by the user
@@ -152,18 +204,14 @@ pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
 // Helps iterating over the KV pairs in a lexicographically sorted order.
 pub(crate) struct IteratorExt {
     kv: XArc<KV>,
-    itr: MergeIterOverIterator,
+    itr: MergeIterator,
     opt: IteratorOptions,
     item: ArcRW<Option<KVItem>>,
     data: ArcRW<std::collections::LinkedList<KVItem>>,
 }
 
 impl IteratorExt {
-    pub(crate) fn new(
-        kv: XArc<KV>,
-        itr: MergeIterOverIterator,
-        opt: IteratorOptions,
-    ) -> IteratorExt {
+    pub(crate) fn new(kv: XArc<KV>, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
         IteratorExt {
             kv,
             opt,
@@ -231,7 +279,8 @@ impl IteratorExt {
         if item.is_none() {
             return None;
         }
-        let mut xitem = self.new_item();
+        println!("peek key: {:?}", item);
+        let xitem = self.new_item();
         self.fill(xitem.clone()).await;
         self.data.write().push_back(xitem.clone());
         Some(xitem)
@@ -241,10 +290,10 @@ impl IteratorExt {
 impl IteratorExt {
     fn new_item(&self) -> KVItem {
         let inner_item = KVItemInner {
-            status: Arc::new(tokio::sync::RwLock::new(PreFetchStatus::Empty)),
+            status: Arc::new(Atomic::new(PreFetchStatus::Empty)),
             kv: self.kv.clone(),
             key: vec![],
-            value: Arc::new(Default::default()),
+            value: TArcMx::new(Default::default()),
             vptr: vec![],
             meta: 0,
             user_meta: 0,
@@ -253,13 +302,6 @@ impl IteratorExt {
             err: Ok(()),
         };
         return KVItem::new(tokio::sync::RwLock::new(inner_item));
-    }
-
-    // Returns pointer to the current KVItem.
-    // This item is only valid until it.Next() gets called.
-    fn item(&self) -> Option<KVItem> {
-        todo!()
-        //self.item.clone()
     }
 
     // Returns false when iteration is done.
@@ -283,9 +325,9 @@ impl IteratorExt {
     }
 
     // Close the iterator, It is important to call this when you're done with iteration.
-    fn close(&self) -> Result<()> {
+    async fn close(&self) -> Result<()> {
         // TODO: We could handle this error.
-        self.kv.vlog.as_ref().unwrap().decr_iterator_count()?;
+        self.kv.vlog.as_ref().unwrap().decr_iterator_count().await?;
         Ok(())
     }
 
@@ -296,10 +338,10 @@ impl IteratorExt {
             let mut item = item.write().await;
             item.meta = vs.meta;
             item.user_meta = vs.user_meta;
-            item.cas_counter.store(vs.cas_counter, Ordering::Relaxed);
+            item.cas_counter.store(vs.cas_counter, Ordering::Release);
             item.key.extend(self.itr.peek().as_ref().unwrap().key());
             item.vptr.extend(&vs.value);
-            item.value.write().await.clear();
+            item.value.lock().await.clear();
         }
 
         // need fetch value, use new coroutine to load value.

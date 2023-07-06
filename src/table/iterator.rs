@@ -1,17 +1,16 @@
 use crate::table::builder::Header;
-use crate::table::table::{Block, Table, TableCore};
+use crate::table::table::Table;
 use crate::y::iterator::{KeyValue, Xiterator};
-use crate::y::{Result, ValueStruct};
-use crate::{y, Error};
+use crate::y::ValueStruct;
+
+use log::debug;
 use std::borrow::{Borrow, BorrowMut};
-use std::cell::{Ref, RefCell, RefMut};
-use std::cmp::Ordering;
-use std::cmp::Ordering::{Equal, Less};
+use std::cell::{RefCell, RefMut};
+
 use std::fmt::Formatter;
-use std::ops::Deref;
-use std::process::id;
-use std::ptr::{slice_from_raw_parts, NonNull};
-use std::{cmp, fmt, io};
+
+use std::fmt;
+use std::ptr::slice_from_raw_parts;
 
 pub enum IteratorSeek {
     Origin,
@@ -56,7 +55,7 @@ impl fmt::Display for BlockIterator {
             .last_header
             .borrow()
             .as_ref()
-            .map(|h| format!("{}", h))
+            .map(|h| format!("{:?}", h))
             .or_else(|| Some("Empty".to_string()))
             .unwrap();
         write!(
@@ -87,6 +86,9 @@ impl<'a> BlockIteratorItem<'a> {
 
 impl BlockIterator {
     pub fn new(data: Vec<u8>) -> Self {
+        #[cfg(test)]
+        debug!("build a BlockIterator, buffer len: {}", data.len());
+
         Self {
             data,
             pos: RefCell::new(0),
@@ -103,6 +105,7 @@ impl BlockIterator {
             IteratorSeek::Current => {}
         }
         while let Some(item) = self.next() {
+            // info!("seek {:?}, {:?}", key, item.key());
             if item.key() >= key {
                 return Some(item);
             }
@@ -143,6 +146,7 @@ impl BlockIterator {
         self.last_block.borrow_mut().take();
     }
 
+    // TODO Opz Code
     pub(crate) fn next(&self) -> Option<BlockIteratorItem> {
         let mut pos = self.pos.borrow_mut();
         if *pos >= self.data.len() as u32 {
@@ -154,7 +158,7 @@ impl BlockIterator {
         //move pos cursor
         *pos += Header::size() as u32;
 
-        // dummy header
+        // If the key is dummy, What should be do continue ...
         if h.is_dummy() {
             return None;
         }
@@ -169,7 +173,7 @@ impl BlockIterator {
         }
         // drop pos advoid to borrow twice
         drop(pos);
-        let (key, mut value) = self.parse_kv(&h);
+        let (key, value) = self.parse_kv(&h);
         Some(BlockIteratorItem { key, value })
     }
 
@@ -213,10 +217,6 @@ impl BlockIterator {
         Some(BlockIteratorItem { key, value })
     }
 
-    pub(crate) fn _next(&self) -> Option<BlockIteratorItem> {
-        self.next()
-    }
-
     fn parse_kv(&self, h: &Header) -> (Vec<u8>, &[u8]) {
         let mut pos = self.pos.borrow_mut();
         let mut key = vec![0u8; (h.p_len + h.k_len) as usize];
@@ -226,7 +226,7 @@ impl BlockIterator {
         *pos += h.k_len as u32;
         assert!(
             *pos as usize + h.v_len as usize <= self.data.len(),
-            "Value exceeded size of block: {} {} {} {} {}",
+            "Value exceeded size of block: {} {} {} {} {:?}",
             pos,
             h.k_len,
             h.v_len,
@@ -269,10 +269,12 @@ impl IteratorItem {
     }
 }
 
+/// TODO add start or end
 /// An iterator for a table.
 pub struct IteratorImpl {
     table: Table,
-    bpos: RefCell<usize>, // block chunk index
+    bpos: RefCell<isize>,
+    // block chunk index
     // start 0 to block.len() - 1
     bi: RefCell<Option<BlockIterator>>,
     // Internally, Iterator is bidirectional. However, we only expose the
@@ -280,28 +282,14 @@ pub struct IteratorImpl {
     reversed: bool,
 }
 
-impl<'a> std::iter::Iterator for IteratorImpl {
-    type Item = IteratorItem;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if !self.reversed {
-            self._next()
-        } else {
-            self.prev()
-        }
-    }
-}
-
 impl fmt::Display for IteratorImpl {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let bi = self.bi.borrow().as_ref().map(|b| format!("{}", b)).unwrap();
-        write!(
-            f,
-            "Iter: bpos: {}, bi:{:?}, reversed:{}",
-            self.bpos.borrow(),
-            bi,
-            self.reversed
-        )
+        let _bi = self.bi.borrow().as_ref().map(|b| format!("{}", b)).unwrap();
+        f.debug_struct("IteratorImpl")
+            .field("bpos", &self.bpos.borrow())
+            .field("bi", &self.bi.borrow().is_some())
+            .field("reverse", &self.reversed)
+            .finish()
     }
 }
 
@@ -318,6 +306,7 @@ impl Xiterator for IteratorImpl {
 
     fn rewind(&self) -> Option<Self::Output> {
         if !self.reversed {
+            debug!("rewind at iteratorImpl, {}", self.id());
             self.seek_to_first()
         } else {
             self.seek_to_last()
@@ -343,20 +332,29 @@ impl Xiterator for IteratorImpl {
             None
         }
     }
+
+    fn id(&self) -> String {
+        format!("iteratorImpl_{}", self.table.id())
+    }
 }
 
 impl IteratorImpl {
     pub fn new(table: Table, reversed: bool) -> IteratorImpl {
         table.incr_ref(); // Important
-        IteratorImpl {
+        let itr = IteratorImpl {
             table,
             bpos: RefCell::new(0),
             bi: RefCell::new(None),
             reversed,
-        }
+        };
+        itr.reset();
+        itr
     }
 
     pub fn seek_to_first(&self) -> Option<IteratorItem> {
+        #[cfg(test)]
+        assert!(!self.table.block_index.is_empty());
+
         if self.table.block_index.is_empty() {
             return None;
         }
@@ -372,7 +370,7 @@ impl IteratorImpl {
         if self.table.block_index.is_empty() {
             return None;
         }
-        *self.bpos.borrow_mut() = self.table.block_index.len() - 1;
+        *self.bpos.borrow_mut() = (self.table.block_index.len() - 1) as isize;
         let bi = self.get_bi_by_bpos(*self.bpos.borrow());
         bi.as_ref()
             .unwrap()
@@ -397,26 +395,26 @@ impl IteratorImpl {
             .block_index
             .binary_search_by(|ko| ko.key.as_slice().cmp(key));
         if idx.is_ok() {
-            return self.seek_helper(idx.unwrap(), key);
+            return self.seek_helper(idx.unwrap() as isize, key);
         }
 
         // not found
         let idx = idx.err().unwrap();
-
+        // info!("block_index {:?}, {:?}", idx, self.table.block_index);
         if idx == 0 {
-            return self.seek_helper(idx, key);
+            return self.seek_helper(idx as isize, key);
         }
 
         if idx >= self.table.block_index.len() {
-            return self.seek_helper(idx - 1, key);
+            return self.seek_helper((idx - 1) as isize, key);
         }
 
         //[ (5,6,7), (10, 11), (12, 15)], find 6, check (5,6,7) ~ (10, 11),
-        let item = self.seek_helper(idx - 1, key);
+        let item = self.seek_helper((idx - 1) as isize, key);
         if item.is_some() {
             return item;
         }
-        self.seek_helper(idx, key)
+        self.seek_helper(idx as isize, key)
     }
 
     // maybe reset bpos
@@ -431,7 +429,7 @@ impl IteratorImpl {
             .block_index
             .binary_search_by(|ko| ko.key.as_slice().cmp(key));
         if idx.is_ok() {
-            return self.seek_helper_rewind(idx.unwrap(), key);
+            return self.seek_helper_rewind(idx.unwrap() as isize, key);
         }
 
         // not found
@@ -439,7 +437,7 @@ impl IteratorImpl {
         if idx == 0 {
             return None;
         }
-        self.seek_helper_rewind(idx - 1, key)
+        self.seek_helper_rewind((idx - 1) as isize, key)
     }
 
     // brings us to a key that is >= input key.
@@ -450,7 +448,7 @@ impl IteratorImpl {
     // will reset iterator and seek to <= key.
     pub(crate) fn seek_for_prev(&self, key: &[u8]) -> Option<IteratorItem> {
         // TODO: Optimize this. We shouldn't have to take a Prev step.
-        return if let Some(item) = self.seek_from(key, IteratorSeek::Origin) {
+        if let Some(item) = self.seek_from(key, IteratorSeek::Origin) {
             // >= key
             if item.key == key {
                 // == key
@@ -459,7 +457,7 @@ impl IteratorImpl {
             self.prev() // > key
         } else {
             self.prev() // Just move it front one
-        };
+        }
     }
 
     pub(crate) fn prev(&self) -> Option<IteratorItem> {
@@ -492,7 +490,7 @@ impl IteratorImpl {
 
     fn _next(&self) -> Option<IteratorItem> {
         let mut bpos = self.bpos.borrow_mut();
-        if *bpos >= self.table.block_index.len() {
+        if *bpos >= self.table.block_index.len() as isize {
             return None;
         }
         let mut bi = self.get_or_set_bi(*bpos);
@@ -508,12 +506,17 @@ impl IteratorImpl {
 
     /// Note: Reset will move to first item.
     pub(crate) fn reset(&self) {
-        *self.bpos.borrow_mut() = 0;
-        self.bi.borrow_mut().take();
+        if !self.reversed {
+            *self.bpos.borrow_mut() = 0;
+            self.bi.borrow_mut().take();
+        } else {
+            *self.bpos.borrow_mut() = (self.table.block_index.len() - 1) as isize;
+            self.bi.borrow_mut().take();
+        }
     }
 
     // >= key
-    fn seek_helper(&self, block_index: usize, key: &[u8]) -> Option<IteratorItem> {
+    fn seek_helper(&self, block_index: isize, key: &[u8]) -> Option<IteratorItem> {
         *self.bpos.borrow_mut() = block_index;
         let bi = self.get_bi_by_bpos(*self.bpos.borrow());
         bi.as_ref()
@@ -522,7 +525,7 @@ impl IteratorImpl {
             .map(|b_item| b_item.into())
     }
 
-    fn seek_helper_rewind(&self, block_index: usize, key: &[u8]) -> Option<IteratorItem> {
+    fn seek_helper_rewind(&self, block_index: isize, key: &[u8]) -> Option<IteratorItem> {
         *self.bpos.borrow_mut() = block_index;
         let bi = self.get_bi_by_bpos(*self.bpos.borrow());
         bi.as_ref()
@@ -540,20 +543,23 @@ impl IteratorImpl {
         unsafe { &*bi }
     }
 
-    fn get_or_set_bi(&self, bpos: usize) -> RefMut<'_, Option<BlockIterator>> {
+    fn get_or_set_bi(&self, bpos: isize) -> RefMut<'_, Option<BlockIterator>> {
+        assert!(bpos >= 0);
         let mut bi = self.bi.borrow_mut();
         if bi.is_some() {
             return bi;
         }
-        let mut block = self.table.block(bpos).unwrap();
+        let block = self.table.block(bpos as usize).unwrap();
         let it = BlockIterator::new(block.data);
         *bi = Some(it);
         bi
     }
 
-    fn get_bi_by_bpos(&self, bpos: usize) -> RefMut<'_, Option<BlockIterator>> {
+    fn get_bi_by_bpos(&self, bpos: isize) -> RefMut<'_, Option<BlockIterator>> {
+        assert!(bpos >= 0);
+        let block = self.table.block(bpos as usize).unwrap();
+        // info!("===>{:?}, {:?}", bpos, block);
         let mut bi = self.bi.borrow_mut();
-        let mut block = self.table.block(bpos).unwrap();
         let it = BlockIterator::new(block.data);
         *bi = Some(it);
         bi
@@ -568,9 +574,10 @@ impl<'a> From<BlockIteratorItem<'a>> for IteratorItem {
     }
 }
 
-/// concatenates the sequences defined by several iterators.  (It only works with
+/// Concatenates the sequences defined by several iterators without any overlaps tables between same level Except zero level  (It only works with
 /// TableIterators, probably just because it's faster to not be so generic.)
 pub struct ConcatIterator {
+    // Index < 0, indicate uninit
     index: RefCell<isize>,
     // Which iterator is active now. todo use usize
     iters: Vec<IteratorImpl>,
@@ -578,6 +585,7 @@ pub struct ConcatIterator {
     tables: Vec<Table>,
     // Disregarding `reversed`, this is in ascending order.
     reversed: bool,
+    init: RefCell<bool>,
 }
 
 impl ConcatIterator {
@@ -593,21 +601,19 @@ impl ConcatIterator {
             iters,
             tables,
             reversed,
+            init: RefCell::new(false),
         }
     }
 
     fn set_idx(&self, idx: isize) {
-        if idx >= self.iters.len() as isize {
-            *self.index.borrow_mut() = -1;
-        } else {
-            *self.index.borrow_mut() = idx;
-        }
+        *self.index.borrow_mut() = idx;
     }
 
     fn get_cur(&self) -> Option<&IteratorImpl> {
-        if *self.index.borrow() < 0 {
+        if *self.index.borrow() < 0 || *self.index.borrow() >= self.iters.len() as isize {
             return None;
         }
+
         let cur = self.index.borrow();
         let iter = &self.iters[*cur as usize];
         Some(iter)
@@ -619,31 +625,36 @@ impl Xiterator for ConcatIterator {
 
     /// advances our concat iterator.
     fn next(&self) -> Option<Self::Output> {
-        let cur_iter = self.get_cur();
-        if cur_iter.is_none() {
+        if self.iters.is_empty() {
             return None;
         }
-        let item = cur_iter.as_ref().unwrap().next();
-        if item.is_some() {
-            return item;
-        }
-        loop {
-            //  In case there are empty tables.
-            let index = self.index.borrow().clone();
+        if !*self.init.borrow() {
+            // Not init
             if !self.reversed {
-                self.set_idx(index + 1);
+                self.set_idx(0);
             } else {
-                self.set_idx(index - 1);
-            }
-            if self.get_cur().is_none() {
-                // End of list. Valid will become false.
-                return None;
-            }
-            let item = self.get_cur().unwrap().rewind();
-            if item.is_some() {
-                return item;
+                self.set_idx((self.iters.len() - 1) as isize);
             }
         }
+
+        while (!self.reversed && *self.index.borrow() < self.iters.len() as isize)
+            || (self.reversed && *self.index.borrow() >= 0)
+        {
+            let mut index = *self.index.borrow();
+            let itr = self.get_cur().unwrap();
+            if let Some(item) = itr.next() {
+                return Some(item);
+            }
+            // Get next iterator
+            if !self.reversed {
+                index += 1;
+            } else {
+                index -= 1;
+            }
+            self.set_idx(index);
+        }
+
+        None
     }
 
     fn rewind(&self) -> Option<Self::Output> {
@@ -656,12 +667,19 @@ impl Xiterator for ConcatIterator {
         } else {
             self.set_idx(self.iters.len() as isize - 1);
         }
+        for itr in self.iters.iter() {
+            itr.reset();
+            debug!("rewind iterator");
+        }
         // 2: reset iterator of current table
         self.get_cur().unwrap().rewind()
     }
 
     /// Brings us to element >= key if reversed is false. Otherwise, <= key.
     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
+        if self.iters.is_empty() {
+            return None;
+        }
         if !self.reversed {
             // >= key
             let idx = self.tables.binary_search_by(|tb| tb.biggest().cmp(key));
@@ -700,6 +718,19 @@ impl Xiterator for ConcatIterator {
         }
         cur.as_ref().unwrap().peek()
     }
+
+    fn id(&self) -> String {
+        let id = self
+            .iters
+            .iter()
+            .map(|itr| itr.id().clone())
+            .collect::<Vec<_>>()
+            .join(",");
+        if id.is_empty() {
+            return "iterator_impl_empty".to_owned();
+        }
+        id
+    }
 }
 
 impl fmt::Display for ConcatIterator {
@@ -720,23 +751,8 @@ impl fmt::Display for ConcatIterator {
             *self.index.borrow(),
             self.iters.len(),
             table_str,
-            *self.reversed.borrow(),
+            self.reversed,
             cur
         ))
     }
-}
-
-#[test]
-fn it() {
-    let n = vec![2, 19, 30, 31, 33, 34, 35, 37];
-    println!(
-        "{:?}",
-        n.binary_search_by(|a| {
-            match a.cmp(&1) {
-                Ordering::Equal => Ordering::Equal,
-                Ordering::Greater => Ordering::Equal,
-                Ordering::Less => Ordering::Less,
-            }
-        })
-    );
 }

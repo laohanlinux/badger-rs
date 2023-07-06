@@ -1,30 +1,30 @@
-use crate::skl::{node::Node, skip::SkipList, Chunk};
+use crate::skl::{node::Node, skip::SkipList};
 use crate::y::iterator::{KeyValue, Xiterator};
 use crate::y::ValueStruct;
-use serde_json::Value;
 use std::cell::RefCell;
-use std::marker::PhantomData;
-use std::mem::take;
-use std::ops::Deref;
 
 /// An iterator over `SkipList` object. For new objects, you just
 /// need to initialize Iterator.List.
 pub struct Cursor<'a> {
     pub(crate) list: &'a SkipList,
     item: RefCell<Option<&'a Node>>,
+    id: String,
 }
 
 impl<'a> Cursor<'a> {
     pub fn new(list: &'a SkipList) -> Cursor<'a> {
         Cursor {
             list,
-            item: RefCell::new(None),
+            item: RefCell::new(Some(list.get_head())),
+            id: format!("cursor"),
         }
     }
 
     /// Returns true if the iterator is positioned at a valid node.
     pub fn valid(&self) -> bool {
-        self.item.borrow().is_some()
+        self.item
+            .borrow()
+            .map_or(false, |node| !std::ptr::eq(node, self.list.get_head()))
     }
 
     /// Returns the key at the current position.
@@ -44,7 +44,7 @@ impl<'a> Cursor<'a> {
 
     /// Advances to the next position.
     pub fn next(&'a self) -> Option<&Node> {
-        assert!(self.valid());
+        //assert!(self.valid());
         let next = self.list.get_next(self.item.borrow().unwrap(), 0);
         *self.item.borrow_mut() = next;
         next
@@ -52,7 +52,7 @@ impl<'a> Cursor<'a> {
 
     /// Advances to the previous position.
     pub fn prev(&'a self) -> Option<&Node> {
-        assert!(self.valid());
+        //assert!(self.valid());
         let (node, _) = self.list.find_near(self.key(), true, false);
         *self.item.borrow_mut() = node;
         node
@@ -73,7 +73,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// Seeks position at the first entry in list.
-    /// Final state of iterator is Valid() iff list is not empty.
+    /// Final state of iterator is Valid() if list is not empty.
     pub fn seek_for_first(&'a self) -> Option<&'a Node> {
         let node = self.list.get_next(self.list.get_head(), 0);
         *self.item.borrow_mut() = node;
@@ -92,6 +92,18 @@ impl<'a> Cursor<'a> {
     pub fn close(&self) {
         self.list.decr_ref();
     }
+
+    fn _peek(&self) -> Option<&'a Node> {
+        let node = self.item.borrow();
+        if node.is_none() {
+            return None;
+        }
+        let node = node.unwrap();
+        if std::ptr::eq(node, self.list.get_head()) {
+            return None;
+        }
+        Some(node)
+    }
 }
 
 pub struct CursorReverse<'a> {
@@ -102,7 +114,7 @@ pub struct CursorReverse<'a> {
 impl<'a> Xiterator for CursorReverse<'a> {
     type Output = &'a Node;
     fn next(&self) -> Option<Self::Output> {
-        if !*self.reversed.borrow() {
+        if !*(self.reversed.borrow()) {
             self.iter.next()
         } else {
             self.iter.prev()
@@ -110,7 +122,7 @@ impl<'a> Xiterator for CursorReverse<'a> {
     }
 
     fn rewind(&self) -> Option<Self::Output> {
-        if !*self.reversed.borrow() {
+        if !*(self.reversed.borrow()) {
             self.iter.seek_for_first()
         } else {
             self.iter.seek_for_last()
@@ -118,11 +130,19 @@ impl<'a> Xiterator for CursorReverse<'a> {
     }
 
     fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-        if !*self.reversed.borrow() {
+        if !*(self.reversed.borrow()) {
             self.iter.seek(key)
         } else {
             self.iter.seek_for_prev(key)
         }
+    }
+
+    fn peek(&self) -> Option<Self::Output> {
+        self.iter._peek()
+    }
+
+    fn id(&self) -> String {
+        self.iter.id.clone()
     }
 }
 

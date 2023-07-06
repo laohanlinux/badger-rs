@@ -1,23 +1,19 @@
-use parking_lot::*;
 use std::fmt::Debug;
-use std::mem::ManuallyDrop;
+
+use std::hint;
 use std::ops::{Deref, DerefMut, RangeBounds};
-use std::sync::atomic::{AtomicI32, AtomicIsize, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, TryLockResult, Weak};
 use std::time::Duration;
-use std::{hint, mem, thread};
 
 use async_channel::{
-    bounded, unbounded, Receiver, Recv, RecvError, SendError, Sender, TryRecvError, TrySendError,
+    bounded, unbounded, Receiver, RecvError, SendError, Sender, TryRecvError, TrySendError,
 };
-use atomic::Atomic;
-use crossbeam_epoch::Owned;
-use libc::regoff_t;
-use log::{info, warn};
 
-use crate::value_log::ValuePointer;
+use log::info;
+
 use range_lock::{VecRangeLock, VecRangeLockGuard};
-use tokio::sync::mpsc::{UnboundedSender, WeakUnboundedSender};
+
 use tokio::time::sleep;
 
 pub type TArcMx<T> = Arc<tokio::sync::Mutex<T>>;
@@ -75,6 +71,10 @@ impl<T> Channel<T> {
         self.tx.as_ref().unwrap().clone()
     }
 
+    pub fn rx(&self) -> Receiver<T> {
+        self.rx.as_ref().unwrap().clone()
+    }
+
     /// consume tx and return it if exist
     pub fn take_tx(&mut self) -> Option<Sender<T>> {
         self.tx.take()
@@ -82,9 +82,17 @@ impl<T> Channel<T> {
 
     /// close *Channel*, Sender will be consumed
     pub fn close(&self) {
+        info!("close channel");
         if let Some(tx) = &self.tx {
             tx.close();
         }
+    }
+
+    pub fn is_close(&self) -> bool {
+        if let Some(tx) = &self.tx {
+            return tx.is_closed();
+        }
+        true
     }
 }
 
@@ -146,7 +154,7 @@ impl Drop for Closer {
 impl Closer {
     /// create a Closer with *initial* cap Workers
     pub fn new(name: String) -> Self {
-        let mut close = Closer {
+        let close = Closer {
             name,
             closed: Channel::new(1),
             wait: Arc::from(AtomicIsize::new(0)),
@@ -162,6 +170,11 @@ impl Closer {
 
     /// Spawn a worker
     pub fn spawn(&self) -> Self {
+        info!(
+            "spawn a new closer: {}.{}.Worker",
+            self.name,
+            self.wait.load(Ordering::Relaxed)
+        );
         self.add_running(1);
         self.clone()
     }
@@ -298,36 +311,46 @@ impl<T> Deref for XVec<T> {
     }
 }
 
-#[test]
-fn it_closer() {
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(async {
-        let closer = Closer::new("test".to_owned());
-        let count = Arc::new(AtomicUsize::new(100));
-        for i in 0..count.load(Ordering::Relaxed) {
-            let c = closer.spawn();
-            let n = count.clone();
-            tokio::spawn(async move {
-                n.fetch_sub(1, Ordering::Relaxed);
-                c.done();
-            });
-        }
-        closer.signal_and_wait().await;
-        assert_eq!(count.load(Ordering::Relaxed), 0);
-    });
-}
+#[cfg(test)]
+mod tests {
+    use std::sync::{atomic::AtomicUsize, Arc};
 
-#[tokio::test]
-async fn lck() {
-    use crossbeam_epoch::{self as epoch, Atomic, Shared};
-    use std::sync::atomic::Ordering::SeqCst;
+    use atomic::Ordering;
+    use crossbeam_epoch::Owned;
 
-    let a = Atomic::new(1234);
-    let guard = &epoch::pin();
-    // let p = a.swap(Shared::null(), SeqCst, guard);
-    // println!("{:?}", unsafe { p.as_ref().unwrap()});
-    let p = a.swap(Owned::new(200), SeqCst, guard);
-    let p = a.swap(Owned::new(200), SeqCst, guard);
+    use crate::types::Closer;
 
-    println!("{:?}", unsafe { p.as_ref().unwrap() });
+    #[test]
+    fn it_closer() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let closer = Closer::new("test".to_owned());
+            let count = Arc::new(AtomicUsize::new(100));
+            for i in 0..count.load(Ordering::Relaxed) {
+                let c = closer.spawn();
+                let n = count.clone();
+                tokio::spawn(async move {
+                    n.fetch_sub(1, Ordering::Relaxed);
+                    c.done();
+                });
+            }
+            closer.signal_and_wait().await;
+            assert_eq!(count.load(Ordering::Relaxed), 0);
+        });
+    }
+
+    #[tokio::test]
+    async fn lck() {
+        use crossbeam_epoch::{self as epoch, Atomic, Shared};
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let a = Atomic::new(1234);
+        let guard = &epoch::pin();
+        // let p = a.swap(Shared::null(), SeqCst, guard);
+        // println!("{:?}", unsafe { p.as_ref().unwrap()});
+        let p = a.swap(Owned::new(200), SeqCst, guard);
+        let p = a.swap(Owned::new(200), SeqCst, guard);
+
+        println!("{:?}", unsafe { p.as_ref().unwrap() });
+    }
 }

@@ -1,16 +1,10 @@
 use crate::skl::Chunk;
-use crate::table::iterator::IteratorItem;
-use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE, VALUE_SIZE};
+
 use byteorder::BigEndian;
 use byteorder::{ReadBytesExt, WriteBytesExt};
-use std::borrow::{Borrow, Cow};
-use std::cell::{Cell, RefCell, RefMut};
-use std::cmp::Ordering;
-use std::fmt;
-use std::fmt::Formatter;
-use std::io::{Cursor, Read, Write};
-use std::iter::Iterator as stdIterator;
-use std::slice::{from_raw_parts, from_raw_parts_mut, Iter};
+use log::info;
+
+use std::io::{Cursor, Write};
 
 /// ValueStruct represents the value info that can be associated with a key, but also the internal
 /// Meta field.
@@ -41,7 +35,7 @@ impl ValueStruct {
         Self::header_size() + self.value.len()
     }
 
-    pub(crate) fn write_data(&self, mut buffer: &mut [u8]) {
+    pub(crate) fn write_data(&self, buffer: &mut [u8]) {
         use std::io::Write;
         let mut cursor = Cursor::new(buffer);
         cursor.write_u8(self.meta).unwrap();
@@ -51,19 +45,22 @@ impl ValueStruct {
     }
 
     pub(crate) fn read_data(&mut self, buffer: &[u8]) {
-        use std::io::Read;
         let mut cursor = Cursor::new(buffer);
         self.meta = cursor.read_u8().unwrap();
         self.user_meta = cursor.read_u8().unwrap();
         self.cas_counter = cursor.read_u64::<BigEndian>().unwrap();
         self.value.extend_from_slice(&buffer[Self::header_size()..]);
     }
-}
 
-impl ValueStruct {
-    #[inline]
-    pub(crate) fn get_data_mut_ptr(&self) -> *mut u8 {
-        self as *const Self as *const u8 as *mut u8
+    #[cfg(test)]
+    pub(crate) fn pretty(&self) -> String {
+        format!(
+            "meta: {}, user_meta: {}, cas: {}, value: {}",
+            self.meta,
+            self.user_meta,
+            self.cas_counter,
+            String::from_utf8_lossy(&self.value)
+        )
     }
 }
 
@@ -86,17 +83,32 @@ impl Into<Vec<u8>> for &ValueStruct {
     }
 }
 
+/// A iterator trait
 pub trait Xiterator {
+    /// The iterator element
     type Output;
+    /// Same to std iterator next
     fn next(&self) -> Option<Self::Output>;
+    /// Same to std iterator rev (But not implement by now!)
+    // fn rev(&self) -> Option<Self::Output> {
+    //     todo!()
+    // }
     /// Seeks to first element (or last element for reverse iterator).
     fn rewind(&self) -> Option<Self::Output>;
+    /// Seek with key, return a element that it's key >= key or <= key.
     fn seek(&self, key: &[u8]) -> Option<Self::Output>;
+    /// Peek current element
     fn peek(&self) -> Option<Self::Output> {
         todo!()
     }
+    /// The iterator indetify
+    fn id(&self) -> String {
+        return "unknown_id".to_owned();
+    }
+
+    /// Close the iterator
     fn close(&self) {
-        todo!()
+        info!("close the iterator: {}", self.id());
     }
 }
 

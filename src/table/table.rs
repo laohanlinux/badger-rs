@@ -2,14 +2,15 @@ use crate::options::FileLoadingMode;
 use crate::options::FileLoadingMode::MemoryMap;
 use crate::table::builder::Header;
 use crate::y::{hash, mmap, parallel_load_block_key, read_at, Result};
-use crate::Error;
+use crate::{hex_str, Error};
 use byteorder::{BigEndian, ReadBytesExt};
-use filename::file_name;
+
 use growable_bloom_filter::GrowableBloom;
-use memmap::{Mmap, MmapMut};
-use std::cell::RefCell;
+use memmap::MmapMut;
+
 use std::collections::HashSet;
-use std::fmt::{Display, Formatter};
+
+use std::fmt::{Debug, Display, Formatter};
 use std::fs::{read_dir, remove_file, File};
 use std::io::{Cursor, Seek, SeekFrom};
 use std::path::Path;
@@ -21,14 +22,13 @@ use std::os::unix::fs::FileExt;
 
 use crate::types::{XArc, XWeak};
 use crate::y::iterator::Xiterator;
-use crate::Error::Unexpected;
-use log::{debug, info};
-use serde_json::to_vec;
+
+use log::{debug, info, warn};
+
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::FileExt;
-use std::process::id;
+
 use std::str::pattern::Pattern;
-use std::sync::Arc;
 
 pub(crate) const FILE_SUFFIX: &str = ".sst";
 
@@ -41,14 +41,11 @@ pub(crate) struct KeyOffset {
 
 impl Display for KeyOffset {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let key = String::from_utf8(self.key.clone())
-            .map_err(|_| "...")
-            .unwrap();
-        write!(
-            f,
-            "key: {}  | offset:{:10}| len:{}",
-            key, self.offset, self.len
-        )
+        f.debug_struct("KeyOffset")
+            .field("key", &String::from_utf8_lossy(&self.key))
+            .field("offset", &self.offset)
+            .field("len", &self.len)
+            .finish()
     }
 }
 
@@ -130,7 +127,10 @@ impl TableCore {
         }
 
         #[cfg(any(target_os = "windows"))]
-        table.load_to_ram()?;
+        {
+            warn!("Windows OS only support load file to RAW!!!");
+            table.load_to_ram()?;
+        }
 
         table.read_index()?;
         let table_ref = Table::new(table);
@@ -154,7 +154,7 @@ impl TableCore {
         let mut tc = table_ref.to_inner().unwrap();
         tc.biggest = biggest;
         tc.smallest = smallest;
-        println!("open table ==> {}", tc);
+        // info!("open table ==> {}", tc);
         Ok(tc)
     }
 
@@ -165,10 +165,6 @@ impl TableCore {
     // decrements the refcount and possibly deletes the table
     pub(crate) fn decr_ref(&self) {
         self._ref.fetch_sub(1, Ordering::Relaxed);
-    }
-
-    fn close(&mut self) {
-        todo!()
     }
 }
 
@@ -274,7 +270,7 @@ impl TableCore {
         let data = self.read(ko.offset, ko.len)?;
         Ok(Block {
             offset: ko.offset,
-            data: data,
+            data,
         })
     }
 
@@ -350,28 +346,31 @@ impl Display for TableCore {
             .iter()
             .map(|x| format!("{}", x))
             .collect::<Vec<_>>();
-        let smallest = String::from_utf8_lossy(self.smallest());
-        let biggest = String::from_utf8_lossy(self.biggest());
-        writeln!(
-            f,
-            "_ref: {}, file_name: {}, block_index: {}, id: {}, table_size:{}, smallest: {}, biggest: {}",
-            self._ref.load(Ordering::Relaxed),
-            self.file_name,
-            self.block_index.len(),
-            self.id,
-            self.table_size,
-            smallest, biggest,
-        ).unwrap();
-        for index in index_str {
-            writeln!(f, "{}", index).unwrap();
-        }
-        Ok(())
+        let smallest = hex_str(self.smallest());
+        let biggest = hex_str(self.biggest());
+        f.debug_struct("Table")
+            //.field("block_index", &index_str)
+            .field("_ref", &self._ref.load(Ordering::Relaxed))
+            .field("fname", &self.file_name)
+            .field("size", &self.table_size)
+            .field("smallest", &smallest)
+            .field("biggest", &biggest)
+            .finish()
     }
 }
 
 pub(crate) struct Block {
     offset: usize,
     pub(crate) data: Vec<u8>,
+}
+
+impl Debug for Block {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Block")
+            .field("offset", &self.offset)
+            .field("len", &self.data.len())
+            .finish()
+    }
 }
 
 type ByKey = Vec<KeyOffset>;
@@ -392,7 +391,11 @@ pub fn get_id_map(dir: &str) -> HashSet<u64> {
             debug!("Skip file, {:?}", fid.unwrap_err());
             continue;
         }
-        info!("What dir : {:?} {:?}", fid, dir_el.file_name());
+        debug!(
+            "Find a id table, fid: {:?}, fname: {:?}",
+            fid,
+            dir_el.file_name()
+        );
         ids.insert(fid.unwrap());
     }
     ids
@@ -420,27 +423,4 @@ pub fn new_file_name(id: u64, dir: &str) -> String {
         .to_str()
         .unwrap()
         .to_string()
-}
-
-#[tokio::test]
-async fn t_metrics() {
-    // // construct a TaskMonitor
-    // let monitor = tokio_metrics::TaskMonitor::new();
-    //
-    // // print task metrics every 500ms
-    // {
-    //     let frequency = std::time::Duration::from_millis(500);
-    //     let monitor = monitor.clone();
-    //     tokio::spawn(async move {
-    //         for metrics in monitor.intervals() {
-    //             println!("{:?}", metrics);
-    //             tokio::time::sleep(frequency).await;
-    //         }
-    //     });
-    // }
-    //
-    // // instrument some tasks and spawn them
-    // loop {
-    //     monitor.instrument(async { tokio::time::sleep(Duration::from_millis(20)).await;
-    // }
 }

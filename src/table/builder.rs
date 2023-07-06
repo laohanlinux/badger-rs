@@ -1,35 +1,20 @@
-use crate::y::{hash, is_eof, AsyncEncDec, Decode, Encode, ValueStruct};
-use crate::Error;
-use async_trait::async_trait;
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use bytes::{Buf, BufMut, BytesMut};
-use growable_bloom_filter::GrowableBloom;
-use serde_json;
-use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
-use std::fmt;
-use std::fmt::Formatter;
-use std::hash::Hasher;
-use std::io::{self, Cursor, Read, Write};
-use std::str::pattern::Searcher;
+use crate::y::{hash, is_eof, Decode, Encode, ValueStruct};
 
-#[derive(Clone, Default)]
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+
+use growable_bloom_filter::GrowableBloom;
+use log::{debug, info};
+use serde_json;
+
+use std::hash::Hasher;
+use std::io::{Cursor, Read, Write};
+
+#[derive(Clone, Default, Debug)]
 pub(crate) struct Header {
     pub(crate) p_len: u16, // Overlap with base key(Prefix length)
     pub(crate) k_len: u16, // Length of the diff. Eg: "d" = "abcd" - "abc"
     pub(crate) v_len: u16, // Length of the value.
     pub(crate) prev: u32, // Offset for the previous key-value pair. The offset is relative to `block` base offset.
-}
-
-impl fmt::Display for Header {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "p_len:{}, k_len:{}, v_len:{}, prev:{}",
-            self.p_len, self.k_len, self.v_len, self.prev
-        )
-    }
 }
 
 impl Header {
@@ -62,26 +47,6 @@ impl Encode for Header {
     }
 }
 
-// #[async_trait]
-// impl<R, W> AsyncEncDec<R, W> for Header
-// where
-//     R: AsyncRead + Unpin + Sync + Send,
-//     W: AsyncWrite + Unpin + Sync + Send,
-// {
-//     async fn enc(&self, wt: &mut W) -> crate::Result<usize> {
-//         wt.write_u16(self.p_len).await?;
-//         wt.write_u16(self.k_len).await?;
-//         wt.write_u16(self.v_len).await?;
-//         wt.write_u32(self.prev).await?;
-//         wt.flush().await?;
-//         Ok(Header::size())
-//     }
-//
-//     async fn dec(&mut self, rd: &R) -> crate::Result<()> {
-//         todo!()
-//     }
-// }
-
 impl From<&[u8]> for Header {
     fn from(buffer: &[u8]) -> Self {
         let mut header = Header::default();
@@ -100,21 +65,21 @@ impl Into<Vec<u8>> for Header {
 
 // Used in building a table.
 pub struct Builder {
-    counter: usize, // Number of keys written for the current block.
-    buf: Cursor<Vec<u8>>,
-    base_key: Vec<u8>,  // Base key for the current block.
-    base_offset: u32,   // Offset for the current block.
-    restarts: Vec<u32>, // Base offsets of every block.
+    counter: usize,       // Number of keys written for the current block.
+    buf: Cursor<Vec<u8>>, // bytes buffer
+    base_key: Vec<u8>,    // Base key for the current block.
+    base_offset: u32,     // Offset for the current block.
+    restarts: Vec<u32>,   // Base offsets of every block.
     prev_offset: u32, // Tracks offset for the previous key-value-pair. Offset is relative to block base offset.
     key_buf: Cursor<Vec<u8>>,
     key_count: u32,
 }
 
 impl Builder {
-    const RESTART_INTERVAL: usize = 100;
-
-    pub(crate) fn empty(&self) -> bool {
-        self.buf.is_empty()
+    // the max keys number of every block.
+    pub(crate) const RESTART_INTERVAL: usize = 100;
+    pub(crate) fn is_zero_bytes(&self) -> bool {
+        self.buf.position() == 0
     }
 
     /// Returns a suffix of new_key that is different from b.base_key.
@@ -138,7 +103,7 @@ impl Builder {
         self.key_count += 1;
 
         // diff_key stores the difference of key with base_key.
-        let mut diff_key;
+        let diff_key;
         if self.base_key.is_empty() {
             // Make a copy. Builder should not keep references. Otherwise, caller has to be very careful
             // and will have to make copies of keys every time they add to builder. which is even worse.
@@ -165,23 +130,24 @@ impl Builder {
         self.buf
             .write_all(<&ValueStruct as Into<Vec<u8>>>::into(v).as_slice())
             .unwrap();
-        // println!("insert a key-value: {:?}", key.to_vec());
+        // info!("insert a key-value: {:?}", String::from_utf8_lossy(key));
         // Increment number of keys added for this current block.
         self.counter += 1;
     }
 
+    // Add a key-value pair that indicates the end of a block. The key and value for this pair should both be empty.
     fn finish_block(&mut self) {
         // When we are at the end of the block and Valid=false, and the user wants to do a Prev,
         // we need a dummy header to tell us the offset of the previous key-value pair.
         self.add_helper(b"", &ValueStruct::default());
     }
 
-    // Add adds a key-value pair to the block.
-    // If doNotRestart is true, we will not restart even if b.counter >= restartInterval.
+    /// Add adds a key-value pair to the block.
+    /// If doNotRestart is true, we will not restart even if b.counter >= restartInterval.
     pub fn add(&mut self, key: &[u8], value: &ValueStruct) -> crate::y::Result<()> {
         if self.counter >= Self::RESTART_INTERVAL {
             self.finish_block();
-            println!(
+            debug!(
                 "create new block, base:{:<10}, pre: {:5}, base-key: {:?}",
                 self.base_offset,
                 self.prev_offset,
@@ -227,7 +193,7 @@ impl Builder {
         wt.write_u32::<BigEndian>(self.restarts.len() as u32)
             .unwrap();
         let out = wt.into_inner();
-        println!("write restart: {:?}", self.restarts);
+        debug!("write restart: {:?}", self.restarts);
         assert_eq!(out.len(), sz);
         out
     }
@@ -275,22 +241,4 @@ impl Default for Builder {
             key_count: 0,
         }
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn t() {
-    use tokio::io::AsyncWriteExt;
-    // let mut cursor = Cursor::new(vec![0u8; 1]);
-    // cursor.write_all(b"abc").unwrap();
-    // println!("{:?}", cursor.into_inner());
-
-    // tokio::runtime::Runtime::new().unwrap().spawn(async || {}).await.unwrap();
-    tokio::spawn(async {
-        let mut wt = tokio::io::BufWriter::new(vec![0u8; 0]);
-        wt.write_all(b"abc").await.unwrap();
-        wt.flush().await.unwrap();
-        let buffer = wt.into_inner();
-        println!("{:?}", buffer);
-    })
-    .await;
 }
