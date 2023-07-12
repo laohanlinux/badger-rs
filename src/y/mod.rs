@@ -19,6 +19,8 @@ use std::io::{ErrorKind, Write};
 use std::{cmp, io};
 use thiserror::Error;
 use tracing::info;
+
+#[cfg(any(target_os = "windows"))]
 use winapi::um::winbase;
 
 pub const EMPTY_SLICE: Vec<u8> = vec![];

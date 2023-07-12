@@ -127,10 +127,12 @@ impl CompactStatus {
 }
 
 // Every level compacted status(ranges).
+// del_size: all KeyRange size at the level (NOTE: equal LevelCompactStatus.ranges delete size, so after compacting,
+// KeyRange and del_size all be decr)
 #[derive(Clone, Debug)]
 pub(crate) struct LevelCompactStatus {
     ranges: Arc<RwLock<Vec<KeyRange>>>,
-    del_size: Arc<AtomicU64>, // all KeyRange size at the level (NOTE: equal LevelCompactStatus.ranges delete size)
+    del_size: Arc<AtomicU64>,
 }
 
 impl Default for LevelCompactStatus {

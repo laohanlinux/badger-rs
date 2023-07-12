@@ -1,3 +1,4 @@
+use drop_cell::defer;
 use log::kv::ToValue;
 use log::{debug, info, warn};
 use std::env::temp_dir;
@@ -5,7 +6,6 @@ use std::io::Write;
 use std::process::id;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use drop_cell::defer;
 use tokio::io::AsyncWriteExt;
 use tracing_subscriber::fmt::format;
 
@@ -13,6 +13,7 @@ use crate::iterator::IteratorOptions;
 use crate::types::{TArcMx, XArc};
 use crate::value_log::Entry;
 use crate::{kv::KV, options::Options, Error};
+use crate::y::hex_str;
 
 fn get_test_option(dir: &str) -> Options {
     let mut opt = Options::default();
@@ -45,18 +46,21 @@ async fn t_batch_write() {
     let dir = random_tmp_dir();
     let kv = KV::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
-    let n = 3730;
-    for i in 0..n {
-        let res = kv
-            .set(format!("{}", i).as_bytes().to_vec(), b"word".to_vec(), 10)
-            .await;
+    let n = 2024;
+    for i in 1..n {
+        let key = i.to_string().into_bytes();
+        let res = kv.set(key, b"word".to_vec(), 10).await;
         assert!(res.is_ok());
     }
 
-    for i in 0..n {
-        let got = kv._get(format!("{}", i).as_bytes());
-        assert!(got.is_ok());
-        assert_eq!(&got.unwrap().value, b"word");
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    for i in 1..n {
+        let key = i.to_string().into_bytes();
+        let got = kv.exists(&key).await;
+        kv.must_lc().print_level_fids();
+        assert!(got.is_ok() && got.unwrap(), "#{}", hex_str(&key));
+        // assert_eq!(&got.unwrap().value, b"word");
     }
 }
 

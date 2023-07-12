@@ -3,7 +3,7 @@ use crate::compaction::{CompactStatus, KeyRange, LevelCompactStatus, INFO_RANGE}
 use crate::level_handler::{LevelHandler, LevelHandlerInner};
 use crate::manifest::{Manifest, ManifestChangeBuilder, ManifestFile};
 use crate::options::Options;
-use crate::pb::badgerpb3::mod_ManifestChange::Operation::{DELETE, CREATE};
+use crate::pb::badgerpb3::mod_ManifestChange::Operation::{CREATE, DELETE};
 use crate::pb::badgerpb3::ManifestChange;
 use crate::table::builder::Builder;
 use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
@@ -186,8 +186,7 @@ impl LevelsController {
 
     // compact worker
     async fn run_worker(&self, lc: Closer) {
-        defer! {lc.done()}
-        ;
+        defer! {lc.done()};
         if self.opt.do_not_compact {
             return;
         }
@@ -297,7 +296,8 @@ impl LevelsController {
             // read, or at least acquire s.rlock(), in increasing order by level, so that we don't skip
             // a compaction.
             next_level.replace_tables(cd.top.clone())?;
-            this_level.replace_tables(cd.top.clone())?;
+            let top_ids = cd.top.iter().map(|tb| tb.id()).collect::<Vec<_>>();
+            this_level.delete_tables(top_ids);
             info!(
                 "LOG Compact-Move {}->{} smallest:{} biggest:{} took {}",
                 l,
@@ -398,7 +398,9 @@ impl LevelsController {
                 // not having finished -- we wait for them to finish.  Also, it's crucial this behavior
                 // replicates pickCompactLevels' behavior in computing compactability in order to
                 // guarantee progress.
-                if !self.is_level0_compactable() && !self.levels[1].is_compactable(0) {
+                // TODO why level1 delesize set to zero
+                let del_size = self.c_status.del_size(1);
+                if !self.is_level0_compactable() && !self.levels[1].is_compactable(del_size) {
                     break;
                 }
                 // sleep millis, try it again
@@ -420,8 +422,8 @@ impl LevelsController {
     pub(crate) fn as_iterator(
         &self,
         reverse: bool,
-    ) -> Vec<Box<dyn Xiterator<Output=IteratorItem>>> {
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+    ) -> Vec<Box<dyn Xiterator<Output = IteratorItem>>> {
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for level in self.levels.iter() {
             if level.level() == 0 {
                 for table in level.tables.read().iter().rev() {
@@ -455,7 +457,7 @@ impl LevelsController {
             let mut top_tables = cd.top.clone();
             let bot_tables = cd.bot.clone();
             // Create iterators across all the tables involved first.
-            let mut itr: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+            let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
             if l == 0 {
                 top_tables.reverse();
             } else {
@@ -470,8 +472,7 @@ impl LevelsController {
             itr.push(Box::new(citr));
             let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
             // Important to close the iterator to do ref counting.
-            defer! {mitr.close()}
-            ;
+            defer! {mitr.close()};
             mitr.rewind();
             let mut count = 0;
             loop {
@@ -759,6 +760,11 @@ impl LevelsController {
     pub(crate) fn reserve_file_id(&self) -> u64 {
         let id = self.next_file_id.fetch_add(1, Ordering::Relaxed);
         id
+    }
+
+    pub(crate) fn print_level_fids(&self) {
+        let sz = self.levels.iter().map(|lv| lv.num_tables()).collect::<Vec<_>>();
+        info!("every level size: {:?}", sz);
     }
 }
 

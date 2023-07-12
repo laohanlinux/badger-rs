@@ -80,6 +80,15 @@ impl LevelHandler {
     // which are currently being compacted so that we treat them as already having started being
     // compacted (because they have been, yet their size is already counted in get_total_size).
     pub(crate) fn is_compactable(&self, del_size: u64) -> bool {
+        #[cfg(test)]
+        info!(
+            "trace level{}, does it compactable, total_size:{}, del_size:{}, max_size:{}",
+            self.level(),
+            self.get_total_size(),
+            del_size,
+            self.get_max_total_size()
+        );
+
         self.get_total_size() - del_size >= self.get_max_total_size()
     }
 
@@ -213,14 +222,15 @@ impl LevelHandler {
                     false
                 }
             });
+            let will_add = new_tables.iter().map(|tb| tb.id()).collect::<Vec<_>>();
             tables_lck.extend(new_tables);
             // TODO avoid resort
             tables_lck.sort_by(|a, b| a.smallest().cmp(b.smallest()));
 
             let new_ids = tables_lck.iter().map(|tb| tb.id()).collect::<Vec<_>>();
             info!(
-                "after replace tables, level:{}, {:?} => {:?}",
-                level_id, old_ids, new_ids
+                "after replace tables, level:{}, will_add:{:?}, {:?} => {:?}",
+                level_id, will_add, old_ids, new_ids
             );
         }
         Ok(())
@@ -281,7 +291,13 @@ impl LevelHandler {
             None
         } else {
             let tw = self.tables_rd();
-            let ok = tw.binary_search_by(|tb| tb.biggest().cmp(key));
+            let ok = tw.binary_search_by(|tb| {
+                info!("biggest {:?}", hex_str(tb.biggest()));
+                tb.biggest().cmp(key)
+            });
+            #[cfg(test)]
+            info!("find key at level{}, {:?}", self.level(), ok);
+
             if ok.is_err() {
                 // todo add metrics
                 return None;
