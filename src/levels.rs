@@ -763,7 +763,11 @@ impl LevelsController {
     }
 
     pub(crate) fn print_level_fids(&self) {
-        let sz = self.levels.iter().map(|lv| lv.num_tables()).collect::<Vec<_>>();
+        let sz = self
+            .levels
+            .iter()
+            .map(|lv| lv.num_tables())
+            .collect::<Vec<_>>();
         info!("every level size: {:?}", sz);
     }
 }

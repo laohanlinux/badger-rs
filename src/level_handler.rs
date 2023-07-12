@@ -149,6 +149,22 @@ impl LevelHandler {
         self.tables.read()
     }
 
+    pub(crate) fn debug_tables(&self) {
+        let tw = self.tables_rd();
+        info!(
+            "=============debug tables, level: {}=====================",
+            self.level()
+        );
+        for tb in tw.iter() {
+            info!(
+                "tid:{}, smallest:{}, biggest:{}",
+                tb.id(),
+                hex_str(tb.smallest()),
+                hex_str(tb.biggest())
+            );
+        }
+    }
+
     // Returns the tables that intersect with key range. Returns a half-interval [left, right).
     // This function should already have acquired a read lock, and this is so important the caller must
     // pass an empty parameter declaring such.
@@ -290,6 +306,7 @@ impl LevelHandler {
             }
             None
         } else {
+            self.debug_tables();
             let tw = self.tables_rd();
             let ok = tw.binary_search_by(|tb| {
                 info!("biggest {:?}", hex_str(tb.biggest()));
@@ -298,13 +315,15 @@ impl LevelHandler {
             #[cfg(test)]
             info!("find key at level{}, {:?}", self.level(), ok);
 
-            if ok.is_err() {
+            let index = ok.unwrap_or_else(|n| n);
+            if index >= tw.len() {
                 // todo add metrics
                 return None;
             }
-            let tb = tw.get(ok.unwrap()).unwrap();
+            let tb = tw.get(index).unwrap();
             tb.incr_ref();
             if tb.does_not_have(key) {
+                debug!("not contain it, key #{}, st: {}", hex_str(key), tb.id());
                 tb.decr_ref();
                 return None;
             }
@@ -312,11 +331,11 @@ impl LevelHandler {
             let it = IteratorImpl::new(tb.clone(), false);
             let item = it.seek(key);
             tb.decr_ref();
-
             if let Some(item) = item {
                 if item.key() == key {
                     return Some(item);
                 }
+                info!("<<<<< {}", hex_str(item.key()));
             }
             return None;
         };
