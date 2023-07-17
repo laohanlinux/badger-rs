@@ -10,13 +10,14 @@ use libc::O_DSYNC;
 use log::error;
 use memmap::MmapMut;
 pub use merge_iterator::*;
+use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 
 use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{ErrorKind, Write};
 
-use std::{cmp, io};
+use std::{array, cmp, io};
 use thiserror::Error;
 use tracing::info;
 
@@ -360,4 +361,43 @@ fn dsync() {
     options.custom_flags(libc::O_WRONLY);
     let file = options.open("foo.txt");
     println!("{:?}", file.err());
+}
+
+// find a value in array with binary search
+pub fn binary_search<T: Ord, F>(array: &[T], f: F) -> Option<usize>
+    where
+        F: Fn(&T) -> Ordering,
+{
+    let mut low = 0;
+    let mut high = array.len() - 1;
+    while low <= high {
+        let mid = (low + high) / 2;
+        match f(&array[mid]) {
+            Ordering::Equal => return Some(mid),
+            Ordering::Less => {
+                low = mid + 1;
+            }
+            Ordering::Greater => {
+                if mid <= 0 {
+                    break;
+                }
+                high = mid - 1;
+            }
+        }
+    }
+
+    None
+}
+
+#[test]
+fn binary_search_test() {
+    let v = &[1, 2, 3, 4, 5];
+    for t in v {
+        let ok = binary_search(v, |v| v.cmp(t)).unwrap();
+        assert!(v[ok].eq(t));
+    }
+    for t in &[0, 6, 7] {
+        let ok = binary_search(v, |v| v.cmp(t));
+        assert!(ok.is_none());
+    }
 }

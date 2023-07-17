@@ -31,6 +31,7 @@ use std::time::{Duration, SystemTime};
 use std::vec;
 use tokio::macros::support::thread_rng_n;
 use tokio::time::sleep;
+use crate::test_util::push_log;
 
 #[derive(Clone)]
 pub(crate) struct LevelsController {
@@ -186,7 +187,8 @@ impl LevelsController {
 
     // compact worker
     async fn run_worker(&self, lc: Closer) {
-        defer! {lc.done()};
+        defer! {lc.done()}
+        ;
         if self.opt.do_not_compact {
             return;
         }
@@ -306,6 +308,7 @@ impl LevelsController {
                 String::from_utf8_lossy(table_lck.biggest()),
                 time_start.elapsed().unwrap().as_millis(),
             );
+            self.c_status.delete(&cd);
             return Ok(());
         }
 
@@ -422,8 +425,8 @@ impl LevelsController {
     pub(crate) fn as_iterator(
         &self,
         reverse: bool,
-    ) -> Vec<Box<dyn Xiterator<Output = IteratorItem>>> {
-        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+    ) -> Vec<Box<dyn Xiterator<Output=IteratorItem>>> {
+        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
         for level in self.levels.iter() {
             if level.level() == 0 {
                 for table in level.tables.read().iter().rev() {
@@ -457,12 +460,16 @@ impl LevelsController {
             let mut top_tables = cd.top.clone();
             let bot_tables = cd.bot.clone();
             // Create iterators across all the tables involved first.
-            let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+            let mut itr: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
             if l == 0 {
                 top_tables.reverse();
+                for (i, _) in top_tables.iter().enumerate() {
+                    info!("======== {} ", hex_str(&top_tables[i].smallest()));
+                }
             } else {
                 assert_eq!(1, top_tables.len());
             }
+            let is_empty = bot_tables.is_empty();
             for tb in top_tables {
                 let iter = Box::new(IteratorImpl::new(tb, false));
                 itr.push(iter);
@@ -472,7 +479,8 @@ impl LevelsController {
             itr.push(Box::new(citr));
             let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
             // Important to close the iterator to do ref counting.
-            defer! {mitr.close()};
+            defer! {mitr.close()}
+
             mitr.rewind();
             let mut count = 0;
             loop {
@@ -485,6 +493,12 @@ impl LevelsController {
                         break;
                     }
                     assert!(builder.add(value.key(), value.value()).is_ok());
+
+                    #[cfg(test)]
+                    {
+                        assert!(value.key().eq(b"580") && count == 1 && is_empty);
+                        crate::test_util::push_log(value.key(), false);
+                    }
                 }
                 if builder.is_zero_bytes() {
                     warn!("Builder is empty");
