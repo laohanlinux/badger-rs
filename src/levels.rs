@@ -31,7 +31,6 @@ use std::time::{Duration, SystemTime};
 use std::vec;
 use tokio::macros::support::thread_rng_n;
 use tokio::time::sleep;
-use crate::test_util::push_log;
 
 #[derive(Clone)]
 pub(crate) struct LevelsController {
@@ -187,8 +186,7 @@ impl LevelsController {
 
     // compact worker
     async fn run_worker(&self, lc: Closer) {
-        defer! {lc.done()}
-        ;
+        defer! {lc.done()};
         if self.opt.do_not_compact {
             return;
         }
@@ -425,8 +423,8 @@ impl LevelsController {
     pub(crate) fn as_iterator(
         &self,
         reverse: bool,
-    ) -> Vec<Box<dyn Xiterator<Output=IteratorItem>>> {
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+    ) -> Vec<Box<dyn Xiterator<Output = IteratorItem>>> {
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for level in self.levels.iter() {
             if level.level() == 0 {
                 for table in level.tables.read().iter().rev() {
@@ -460,11 +458,15 @@ impl LevelsController {
             let mut top_tables = cd.top.clone();
             let bot_tables = cd.bot.clone();
             // Create iterators across all the tables involved first.
-            let mut itr: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+            let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
             if l == 0 {
                 top_tables.reverse();
                 for (i, _) in top_tables.iter().enumerate() {
-                    info!("======== {} ", hex_str(&top_tables[i].smallest()));
+                    info!(
+                        "======== {}, {} ",
+                        hex_str(&top_tables[i].smallest()),
+                        bot_tables.len()
+                    );
                 }
             } else {
                 assert_eq!(1, top_tables.len());
@@ -496,8 +498,11 @@ impl LevelsController {
 
                     #[cfg(test)]
                     {
-                        assert!(value.key().eq(b"580") && count == 1 && is_empty);
-                        crate::test_util::push_log(value.key(), false);
+                        //assert!(value.key().eq(b"580") && count == 1 && is_empty);
+                        crate::test_util::push_log(
+                            format!("{}, {}", mitr.id(), hex_str(value.key())).as_bytes(),
+                            false,
+                        );
                     }
                 }
                 if builder.is_zero_bytes() {

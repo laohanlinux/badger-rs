@@ -1,5 +1,6 @@
 use log::info;
 
+use crate::hex_str;
 use crate::table::iterator::IteratorItem;
 
 use crate::y::iterator::Xiterator;
@@ -56,19 +57,25 @@ impl Xiterator for MergeIterator {
         for (itr_index, itr) in self.itrs.iter().enumerate() {
             if let Some(item) = itr.peek() {
                 if let Some(have_latest) = &mut latest {
-                    match need_cmp(have_latest.key(), item.key()) {
+                    match need_cmp(item.key(), have_latest.key()) {
                         std::cmp::Ordering::Less => {
                             // debug!("less");
                         }
                         std::cmp::Ordering::Equal => {
-                            // move it
+                            // move it, here has some issue.
                             itr.next();
+
                             // debug!("equal");
                         }
                         std::cmp::Ordering::Greater => {
+                            info!(
+                                "greater, {}, {}, {}",
+                                itr_index,
+                                hex_str(item.key()),
+                                hex_str(have_latest.key())
+                            );
                             index = itr_index;
                             *have_latest = item;
-                            // debug!("greater");
                         }
                     }
                 } else {
@@ -82,10 +89,10 @@ impl Xiterator for MergeIterator {
         if index != usize::MAX {
             assert!(latest.is_some());
             self.cursor.borrow_mut().replace(index, latest);
-            self.itrs.get(index).as_ref().unwrap().next();
+            self.itrs.get(index).as_ref().unwrap().next(); // Skip current node
         } else {
             self.cursor.borrow_mut().index = 0;
-            self.cursor.borrow_mut().cur_item.take();
+            self.cursor.borrow_mut().cur_item.take(); // Not found any thing.
         }
         self.peek()
     }
@@ -135,8 +142,12 @@ impl Xiterator for MergeIterator {
                 itr.next();
             }
         }
-        // #[cfg(test)]
-        // info!("after merge rewind iterator, {:?}", self.peek());
+        #[cfg(test)]
+        info!(
+            "after merge rewind iterator, {:?}",
+            crate::hex_str(self.peek().unwrap().key())
+        );
+
         self.peek()
     }
 
@@ -147,6 +158,10 @@ impl Xiterator for MergeIterator {
     // MayBe we avoid copy!
     fn peek(&self) -> Option<Self::Output> {
         self.cursor.borrow().cur_item.clone()
+    }
+
+    fn id(&self) -> String {
+        format!("{}", self.cursor.borrow().index)
     }
 }
 

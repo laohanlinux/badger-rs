@@ -5,6 +5,7 @@ use crate::options::Options;
 use crate::table::builder::Builder;
 use crate::table::iterator::IteratorItem;
 use crate::table::table::{new_file_name, Table, TableCore};
+use crate::test_util::push_log;
 use crate::types::{ArcMx, Channel, Closer, TArcRW, XArc, XWeak};
 use crate::value_log::{
     Entry, EntryType, MetaBit, Request, ValueLogCore, ValuePointer, MAX_KEY_SIZE,
@@ -12,7 +13,8 @@ use crate::value_log::{
 use crate::y::{async_sync_directory, create_synced_file, Encode, Result, ValueStruct};
 use crate::Error::{NotFound, Unexpected};
 use crate::{
-    Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager, UniIterator, Xiterator,
+    hex_str, Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager, UniIterator,
+    Xiterator,
 };
 
 use atomic::Atomic;
@@ -1166,16 +1168,21 @@ pub(crate) async fn write_level0_table(
     defer! {info!("Finish write level zero table")}
 
     #[cfg(test)]
-    warn!(
-        "write st into table, st: {}, fpath:{}, {:?}",
-        st.id(),
-        f_name,
-        st.key_values()
+    {
+        let keys = st
+            .key_values()
             .iter()
-            .map(|(key, _)| crate::y::hex_str(key))
+            .map(|(key, _)| hex_str(key))
             .collect::<Vec<_>>()
-            .join("#")
-    );
+            .join("#");
+        warn!(
+            "write st into table, st: {}, fpath:{}, {:?}",
+            st.id(),
+            f_name,
+            keys,
+        );
+        push_log(keys.as_bytes(), false);
+    }
 
     let cur = st.new_cursor();
     let mut builder = Builder::default();
