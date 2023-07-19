@@ -157,12 +157,16 @@ impl LevelHandler {
         );
         for tb in tw.iter() {
             info!(
-                "tid:{}, smallest:{}, biggest:{}",
+                "|tid:{}, smallest:{}, biggest:{}, size: {}|",
                 tb.id(),
                 hex_str(tb.smallest()),
-                hex_str(tb.biggest())
+                hex_str(tb.biggest()),
+                tb.size(),
             );
         }
+        info!(
+            "------------------------end-----------------------------"
+        );
     }
 
     // Returns the tables that intersect with key range. Returns a half-interval [left, right).
@@ -306,14 +310,13 @@ impl LevelHandler {
             }
             None
         } else {
-            self.debug_tables();
+            //self.debug_tables();
             let tw = self.tables_rd();
             let ok = tw.binary_search_by(|tb| {
-                info!("biggest {:?}", hex_str(tb.biggest()));
                 tb.biggest().cmp(key)
             });
-            #[cfg(test)]
-            info!("find key at level{}, {:?}", self.level(), ok);
+            // #[cfg(test)]
+            // info!("find key #{} at level{}, {:?}", hex_str(key), self.level(), ok.unwrap_or_else(|n| n));
 
             let index = ok.unwrap_or_else(|n| n);
             if index >= tw.len() {

@@ -5,7 +5,6 @@ use crate::options::Options;
 use crate::table::builder::Builder;
 use crate::table::iterator::IteratorItem;
 use crate::table::table::{new_file_name, Table, TableCore};
-use crate::test_util::push_log;
 use crate::types::{ArcMx, Channel, Closer, TArcRW, XArc, XWeak};
 use crate::value_log::{
     Entry, EntryType, MetaBit, Request, ValueLogCore, ValuePointer, MAX_KEY_SIZE,
@@ -1176,12 +1175,12 @@ pub(crate) async fn write_level0_table(
             .collect::<Vec<_>>()
             .join("#");
         warn!(
-            "write st into table, st: {}, fpath:{}, {:?}",
+            "write skiplist into table, st: {}, fpath:{}, {:?}",
             st.id(),
             f_name,
             keys,
         );
-        push_log(keys.as_bytes(), false);
+        crate::test_util::push_log(keys.as_bytes(), false);
     }
 
     let cur = st.new_cursor();

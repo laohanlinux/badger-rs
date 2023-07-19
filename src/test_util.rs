@@ -37,6 +37,13 @@ pub fn push_log(buf: &[u8], rd: bool) {
 }
 
 #[cfg(test)]
+pub fn remove_push_log() {
+    use std::fs::remove_file;
+
+    remove_file("raw_log.log");
+}
+
+#[cfg(test)]
 pub(crate) fn mock_log() {
     use chrono::Local;
     use env_logger::Env;
@@ -88,6 +95,7 @@ pub(crate) fn mock_log_terminal() {
 
 #[cfg(test)]
 pub(crate) fn tracing_log() {
+    use libc::remove;
     use tracing::{info, Level};
     use tracing_subscriber;
     struct LocalTimer;
@@ -119,6 +127,7 @@ pub(crate) fn tracing_log() {
         .with_ansi(true)
         .event_format(format)
         .try_init();
+    remove_push_log();
     info!("log setting done");
 }
 
@@ -220,4 +229,6 @@ fn tk2() {
         println!("return {}", ret);
     });
     println!("{}", a.load(Ordering::Relaxed));
+
+    use itertools::Merge;
 }

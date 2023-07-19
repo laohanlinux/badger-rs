@@ -186,7 +186,8 @@ impl LevelsController {
 
     // compact worker
     async fn run_worker(&self, lc: Closer) {
-        defer! {lc.done()};
+        defer! {lc.done()}
+        ;
         if self.opt.do_not_compact {
             return;
         }
@@ -423,8 +424,8 @@ impl LevelsController {
     pub(crate) fn as_iterator(
         &self,
         reverse: bool,
-    ) -> Vec<Box<dyn Xiterator<Output = IteratorItem>>> {
-        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+    ) -> Vec<Box<dyn Xiterator<Output=IteratorItem>>> {
+        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
         for level in self.levels.iter() {
             if level.level() == 0 {
                 for table in level.tables.read().iter().rev() {
@@ -458,7 +459,7 @@ impl LevelsController {
             let mut top_tables = cd.top.clone();
             let bot_tables = cd.bot.clone();
             // Create iterators across all the tables involved first.
-            let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+            let mut itr: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
             if l == 0 {
                 top_tables.reverse();
                 for (i, _) in top_tables.iter().enumerate() {
@@ -490,15 +491,13 @@ impl LevelsController {
                 let mut builder = Builder::default();
                 while let Some(value) = mitr.peek() {
                     count += 1;
+                    assert!(builder.add(value.key(), value.value()).is_ok());
                     mitr.next();
                     if builder.reached_capacity(self.opt.max_table_size) {
                         break;
                     }
-                    assert!(builder.add(value.key(), value.value()).is_ok());
-
                     #[cfg(test)]
                     {
-                        //assert!(value.key().eq(b"580") && count == 1 && is_empty);
                         crate::test_util::push_log(
                             format!("{}, {}", mitr.id(), hex_str(value.key())).as_bytes(),
                             false,

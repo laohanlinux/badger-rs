@@ -46,7 +46,7 @@ async fn t_batch_write() {
     let dir = random_tmp_dir();
     let kv = KV::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
-    let n = 2024;
+    let n = 9024;
     for i in 1..n {
         let key = i.to_string().into_bytes();
         let res = kv.set(key, b"word".to_vec(), 10).await;

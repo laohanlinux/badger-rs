@@ -1,20 +1,17 @@
 use log::info;
 
 use crate::hex_str;
-use crate::table::iterator::IteratorItem;
+use crate::table::iterator::{IteratorImpl, IteratorItem};
 
 use crate::y::iterator::Xiterator;
 use crate::y::KeyValue;
-
+use itertools::Itertools;
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 /// Cursor of the iterator of merge.
-pub struct MergeIterCursor {
-    pub is_dummy: bool,
-    pub cur_item: Option<IteratorItem>,
-}
-
 pub struct MergeCursor {
+    // At init index is set to MAX
     pub index: usize,
     pub cur_item: Option<IteratorItem>,
 }
@@ -26,9 +23,10 @@ impl MergeCursor {
     }
 }
 
+/// A iterator for multi iterator merge into one.
 pub struct MergeIterator {
     pub reverse: bool,
-    pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    pub itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
 }
 
@@ -39,57 +37,85 @@ impl Xiterator for MergeIterator {
         if self.itrs.is_empty() {
             return None;
         }
-        if self.cursor.borrow().index == usize::MAX {
-            for itr in &self.itrs {
-                itr.rewind();
-            }
-            self.cursor.borrow_mut().index = 0;
-        }
+        assert_ne!(self.cursor.borrow().index, usize::MAX);
+        // if self.cursor.borrow().index == usize::MAX {
+        //     for itr in &self.itrs {
+        //         itr.rewind();
+        //     }
+        //     self.cursor.borrow_mut().index = 0;
+        // }
         let mut latest: Option<IteratorItem> = None;
         let mut index = usize::MAX;
-        let need_cmp = |a: &[u8], b: &[u8]| -> std::cmp::Ordering {
-            if !self.reverse {
-                return a.cmp(b);
-            }
-            b.cmp(a)
-        };
-
+        // Use stack memory
+        let mut same_iterators = Vec::with_capacity(self.itrs.len());
+        #[cfg(test)]
+            let mut stack = vec![];
         for (itr_index, itr) in self.itrs.iter().enumerate() {
             if let Some(item) = itr.peek() {
-                if let Some(have_latest) = &mut latest {
-                    match need_cmp(item.key(), have_latest.key()) {
-                        std::cmp::Ordering::Less => {
-                            // debug!("less");
-                        }
-                        std::cmp::Ordering::Equal => {
-                            // move it, here has some issue.
-                            itr.next();
+                #[cfg(test)]
+                stack.push(item.key.clone());
 
-                            // debug!("equal");
+                if let Some(have_latest) = &mut latest {
+                    if !self.reverse {
+                        match item.key().cmp(have_latest.key()) {
+                            std::cmp::Ordering::Less => {
+                                index = itr_index;
+                                *have_latest = item;
+                                same_iterators.push(itr_index);
+                            }
+                            std::cmp::Ordering::Equal => {
+                                same_iterators.push(itr_index);
+                            }
+                            std::cmp::Ordering::Greater => {}
                         }
-                        std::cmp::Ordering::Greater => {
-                            info!(
-                                "greater, {}, {}, {}",
-                                itr_index,
-                                hex_str(item.key()),
-                                hex_str(have_latest.key())
-                            );
-                            index = itr_index;
-                            *have_latest = item;
+                    } else {
+                        match item.key().cmp(have_latest.key()) {
+                            std::cmp::Ordering::Less => {}
+                            std::cmp::Ordering::Equal => {
+                                same_iterators.push(itr_index);
+                            }
+                            std::cmp::Ordering::Greater => {
+                                index = itr_index;
+                                *have_latest = item;
+                                same_iterators.push(itr_index);
+                            }
                         }
                     }
                 } else {
                     latest.replace(item);
                     index = itr_index;
-                    // debug!("None");
+                    same_iterators.push(itr_index);
                 }
             }
         }
 
         if index != usize::MAX {
             assert!(latest.is_some());
+
+            // #[cfg(test)]
+            // {
+            //     let str = stack.into_iter().map(|key| hex_str(&key)).join(",");
+            //     let buf = format!(
+            //         "found target: {}, {}",
+            //         hex_str(latest.as_ref().unwrap().key()),
+            //         str
+            //     );
+            //     crate::test_util::push_log(buf.as_bytes(), false);
+            // }
+
+            // Move same iterators
+            for (itr_index) in same_iterators.iter().rev() {
+                if let Some(key) = self.itrs[*itr_index].peek() && key.key() == latest.as_ref().unwrap().key() {
+                    self.itrs[*itr_index].next();
+                    // #[cfg(test)]
+                    // info!("Move key #{}, index {}, {}", hex_str(key.key()), itr_index, index);
+                    assert_eq!(*itr_index, index);
+                } else {
+                    break;
+                }
+            }
             self.cursor.borrow_mut().replace(index, latest);
-            self.itrs.get(index).as_ref().unwrap().next(); // Skip current node
+            //self.itrs.get(index).as_ref().unwrap().next(); // Skip current node
         } else {
             self.cursor.borrow_mut().index = 0;
             self.cursor.borrow_mut().cur_item.take(); // Not found any thing.
@@ -97,6 +123,7 @@ impl Xiterator for MergeIterator {
         self.peek()
     }
 
+    /// Rewind iterator and return the current item (So it call next that will move to second item).
     /// Notice: 1: Only rewind inner iterators list. Not reverse self.itrs vec sequence, 2: maybe some iterator is empty (Why, TODO)
     /// TODO: Opz rewind algo
     fn rewind(&self) -> Option<Self::Output> {
@@ -106,56 +133,15 @@ impl Xiterator for MergeIterator {
         for itr in self.itrs.iter() {
             itr.rewind();
         }
-
-        let mut min_or_max = None;
-        if !self.reverse {
-            min_or_max = self
-                .itrs
-                .iter()
-                .filter(|itr| itr.peek().is_some())
-                .max_by_key(|itr| itr.peek().unwrap().key);
-        } else {
-            min_or_max = self
-                .itrs
-                .iter()
-                .filter(|itr| itr.peek().is_some())
-                .min_by_key(|itr| itr.peek().unwrap().key);
-        }
-        assert!(min_or_max.is_some());
-        let min_or_max = min_or_max.unwrap().peek();
-        if min_or_max.is_none() {
-            assert_eq!(self.count(), 0);
-            return None;
-        }
-
-        let min_or_max_item = min_or_max.unwrap();
-        let mut update = false;
-        let indexes = (0..self.itrs.len()).into_iter().collect::<Vec<_>>();
-
-        for index in indexes {
-            let itr = &self.itrs[index];
-            if let Some(item) = itr.peek() && item.key() == min_or_max_item.key() {
-                if !update {
-                    self.cursor.borrow_mut().replace(index, Some(item));
-                }
-                update = true;
-                itr.next();
-            }
-        }
-        #[cfg(test)]
-        info!(
-            "after merge rewind iterator, {:?}",
-            crate::hex_str(self.peek().unwrap().key())
-        );
-
-        self.peek()
+        self.cursor.borrow_mut().index = 0;
+        self.next()
     }
 
     fn seek(&self, _key: &[u8]) -> Option<Self::Output> {
         todo!()
     }
 
-    // MayBe we avoid copy!
+    // TODO avoid clone
     fn peek(&self) -> Option<Self::Output> {
         self.cursor.borrow().cur_item.clone()
     }
@@ -174,6 +160,7 @@ impl std::iter::Iterator for MergeIterator {
 }
 
 impl MergeIterator {
+    #[inline]
     fn count(&self) -> usize {
         let mut count = 0;
         for itr in &self.itrs {
@@ -186,49 +173,12 @@ impl MergeIterator {
         }
         count
     }
-
-    fn find_smallest_or_biggest(&self) -> Option<(usize, Vec<usize>)> {
-        if self.itrs.is_empty() {
-            return None;
-        }
-        let mut latest: Option<IteratorItem> = None;
-        let mut index = usize::MAX;
-        let need_cmp = |a: &[u8], b: &[u8]| -> std::cmp::Ordering {
-            if !self.reverse {
-                return a.cmp(b);
-            }
-            b.cmp(a)
-        };
-        let mut eq_itr = Vec::with_capacity(self.itrs.len());
-        for (itr_index, itr) in self.itrs.iter().enumerate() {
-            if let Some(item) = itr.peek() {
-                if let Some(have_latest) = &mut latest {
-                    match need_cmp(have_latest.key(), item.key()) {
-                        std::cmp::Ordering::Less => {}
-                        std::cmp::Ordering::Equal => {
-                            eq_itr.push(itr_index);
-                        }
-                        std::cmp::Ordering::Greater => {
-                            index = itr_index;
-                            *have_latest = item;
-                        }
-                    }
-                } else {
-                    latest.replace(item);
-                    index = itr_index;
-                }
-            }
-        }
-        if index != usize::MAX {
-            return Some((index, eq_itr));
-        }
-        None
-    }
 }
 
+/// A Builder for merge iterator building
 #[derive(Default)]
 pub struct MergeIterOverBuilder {
-    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     reverse: bool,
 }
 
@@ -238,14 +188,14 @@ impl MergeIterOverBuilder {
         self
     }
 
-    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output=IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+        iters: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     ) -> MergeIterOverBuilder {
         self.all.extend(iters);
         self
