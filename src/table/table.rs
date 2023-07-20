@@ -29,6 +29,7 @@ use log::{debug, info, warn};
 use std::os::windows::fs::FileExt;
 
 use std::str::pattern::Pattern;
+use crate::test_util::push_log;
 
 pub(crate) const FILE_SUFFIX: &str = ".sst";
 
@@ -88,10 +89,13 @@ pub struct TableCore {
     table_size: usize,
     pub(crate) block_index: Vec<KeyOffset>,
     loading_mode: FileLoadingMode,
-    _mmap: Option<MmapMut>, // Memory mapped.
+    _mmap: Option<MmapMut>,
+    // Memory mapped.
     // The following are initialized once and const.
-    smallest: Vec<u8>, // smallest keys.
-    biggest: Vec<u8>,  // biggest keys.
+    smallest: Vec<u8>,
+    // smallest keys.
+    biggest: Vec<u8>,
+    // biggest keys.
     id: u64,
     bf: GrowableBloom,
 }
@@ -141,7 +145,7 @@ impl TableCore {
                 .map(|item| item.key().to_vec())
                 .or_else(|| Some(vec![]))
         }
-        .unwrap();
+            .unwrap();
 
         let smallest = {
             let iter1 = super::iterator::IteratorImpl::new(table_ref.clone(), false);
@@ -150,7 +154,7 @@ impl TableCore {
                 .map(|item| item.key().to_vec())
                 .or_else(|| Some(vec![]))
         }
-        .unwrap();
+            .unwrap();
         let mut tc = table_ref.to_inner().unwrap();
         tc.biggest = biggest;
         tc.smallest = smallest;
@@ -160,11 +164,19 @@ impl TableCore {
 
     // increments the refcount (having to do with whether the file should be deleted)
     pub(crate) fn incr_ref(&self) {
-        self._ref.fetch_add(1, Ordering::Relaxed);
+        let count = self._ref.fetch_add(1, Ordering::Release);
+        let buf = format!("incr {} table count {} => {}", self.id, count, self.get_ref());
+        push_log(buf.as_bytes(), false);
     }
     // decrements the refcount and possibly deletes the table
     pub(crate) fn decr_ref(&self) {
-        self._ref.fetch_sub(1, Ordering::Relaxed);
+        let count = self._ref.fetch_sub(1, Ordering::Release);
+        let buf = format!("decr {} table count {} => {}", self.id, count, self.get_ref());
+        push_log(buf.as_bytes(), false);
+    }
+
+    pub(crate) fn get_ref(&self) -> i32 {
+        self._ref.load(Ordering::Acquire)
     }
 }
 
@@ -309,7 +321,7 @@ impl TableCore {
                 "Unable to load file in memory, Table faile: {}",
                 self.filename()
             )
-            .into());
+                .into());
         }
         // todo stats
         self._mmap = Some(_mmap);
@@ -319,7 +331,7 @@ impl TableCore {
 
 impl Drop for TableCore {
     fn drop(&mut self) {
-        dbg!(self._ref.load(Ordering::Relaxed));
+        let _ref = self.get_ref();
         // We can safely delete this file, because for all the current files, we always have
         // at least one reference pointing to them.
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -332,10 +344,11 @@ impl Drop for TableCore {
         }
         // It's necessary to delete windows files
         // This is very important to let the FS know that the file is deleted.
-        #[cfg(not(test))]
+        // #[cfg(not(test))]
         self.fd.set_len(0).expect("can not truncate file to 0");
-        #[cfg(not(test))]
+        // #[cfg(not(test))]
         remove_file(Path::new(&self.file_name)).expect("fail to remove file");
+        info!("Drop table, reference: {}, delete {} table at disk: {}", _ref, self.id, self.file_name);
     }
 }
 
