@@ -2,10 +2,10 @@ use drop_cell::defer;
 use log::kv::ToValue;
 use log::{debug, info, warn};
 use std::env::temp_dir;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::id;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::io::AsyncWriteExt;
 use tracing_subscriber::fmt::format;
 
@@ -47,10 +47,34 @@ async fn t_batch_write() {
     let kv = KV::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
     let n = 50000000;
+    let mut batch = vec![];
+    let mut start = SystemTime::now();
     for i in 1..n {
         let key = i.to_string().into_bytes();
-        let res = kv.set(key, b"word".to_vec(), 10).await;
-        assert!(res.is_ok());
+        // let res = kv.set(key, b"word".to_vec(), 10).await;
+        batch.push(Entry::default()
+            .key(key)
+            .value(b"word".to_vec())
+            .user_meta(10));
+        if batch.len() > 100 {
+            let res = kv.batch_set(batch.clone()).await;
+            for _res in res {
+                assert!(_res.is_ok());
+            }
+            batch.clear();
+        }
+        if i % 10000 == 0 {
+            info!("cost time：{}s", SystemTime::now().duration_since(start).unwrap().as_secs() )
+        }
+    }
+    {
+        if batch.len() > 0 {
+            let res = kv.batch_set(batch.clone()).await;
+            for _res in res {
+                assert!(_res.is_ok());
+            }
+            batch.clear();
+        }
     }
 
     tokio::time::sleep(Duration::from_secs(10)).await;

@@ -430,7 +430,7 @@ impl SkipList {
 impl Drop for SkipList {
     fn drop(&mut self) {
         let _ref = self._ref.load(Ordering::Relaxed);
-        info!("Drop SkipList, reference: {}", _ref);
+        //info!("Drop SkipList, reference: {}, id:{}", _ref, self.id());
     }
 }
 
@@ -704,7 +704,6 @@ impl SkipIterator {
 }
 
 mod tests {
-
     use crate::skl::MAX_HEIGHT;
     use crate::{skl::skip::SkipList, Node};
 

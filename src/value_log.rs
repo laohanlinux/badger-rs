@@ -770,7 +770,7 @@ impl ValueLogCore {
     // write is thread-unsafe by design and should not be called concurrently.
     pub(crate) async fn write(&self, reqs: Vec<Request>) -> Result<()> {
         defer! {info!("Finished write value log");}
-        info!("Start write value log, requests: {:?}", reqs);
+        //info!("Start write value log, requests: {:?}", reqs);
         let cur_vlog_file = self
             .pick_log_by_vlog_id(&self.max_fid.load(Ordering::Acquire))
             .await;

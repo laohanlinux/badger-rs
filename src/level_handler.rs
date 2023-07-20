@@ -80,6 +80,8 @@ impl LevelHandler {
     // which are currently being compacted so that we treat them as already having started being
     // compacted (because they have been, yet their size is already counted in get_total_size).
     pub(crate) fn is_compactable(&self, del_size: u64) -> bool {
+        let compactable = self.get_total_size() - del_size >= self.get_max_total_size();
+
         #[cfg(test)]
         info!(
             "trace level{}, does it compactable, total_size:{}, del_size:{}, max_size:{}, yes: {}",
@@ -87,10 +89,10 @@ impl LevelHandler {
             self.get_total_size(),
             del_size,
             self.get_max_total_size(),
-            self.get_total_size() - del_size >= self.get_max_total_size(),
+            compactable,
         );
 
-        self.get_total_size() - del_size >= self.get_max_total_size()
+        compactable
     }
 
     pub(crate) fn get_total_size(&self) -> u64 {

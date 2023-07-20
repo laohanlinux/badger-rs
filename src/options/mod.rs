@@ -100,10 +100,10 @@ impl Default for Options {
             num_level_zero_tables_stall: 10,
             level_one_size: 256 << 20,
             value_log_file_size: 1 << 30,
-            num_compactors: 3,
+            num_compactors: 1,
             do_not_compact: false,
-            max_batch_count: 0,
-            max_batch_size: 0,
+            max_batch_count: 100,
+            max_batch_size: 1 << 12,
         }
     }
 }

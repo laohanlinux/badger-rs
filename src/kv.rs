@@ -80,6 +80,8 @@ pub struct KV {
     pub manifest: Arc<RwLock<ManifestFile>>,
     lc: Option<LevelsController>,
     flush_chan: Channel<FlushTask>,
+    // Notify zero has compact
+    zero_level_compact_chan: Channel<()>,
     // write_chan: Channel<Request>,
     dir_lock_guard: File,
     value_dir_guard: File,
@@ -130,9 +132,7 @@ impl KV {
         if !(opt.value_log_file_size <= 2 << 30 && opt.value_log_file_size >= 1 << 20) {
             return Err(Error::ValueLogSize);
         }
-        info!(">>>>");
         let manifest_file = open_or_create_manifest_file(opt.dir.as_str()).await?;
-        info!(">>>>");
 
         let dir_lock_guard = OpenOptions::new()
             .write(true)
@@ -164,6 +164,7 @@ impl KV {
             manifest: Arc::new(RwLock::new(manifest_file)),
             lc: None,
             flush_chan: Channel::new(1),
+            zero_level_compact_chan: Channel::new(1),
             dir_lock_guard,
             value_dir_guard,
             closers,
@@ -178,7 +179,7 @@ impl KV {
         let manifest = out.manifest.clone();
 
         // handle levels_controller
-        let lc = LevelsController::new(manifest.clone(), out.opt.clone()).await?;
+        let lc = LevelsController::new(manifest.clone(), out.zero_level_compact_chan.clone(), out.opt.clone()).await?;
         lc.start_compact(out.closers.compactors.clone());
         out.lc.replace(lc);
         let mut vlog = ValueLogCore::default();
@@ -239,6 +240,7 @@ impl KV {
 
         // replay data from vlog
         let mut first = true;
+        let mut count = 0;
         xout.vlog
             .as_ref()
             .unwrap()
@@ -276,7 +278,11 @@ impl KV {
                         cas_counter: entry.get_cas_counter(),
                         value: nv,
                     };
-                    while let Err(_err) = xout.ensure_room_for_write().await {
+                    while let Err(err) = xout.ensure_room_for_write().await {
+                        if count % 1000 == 0 {
+                            info!("No room for write, {}", err);
+                        }
+
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                     xout.must_mt().put(&entry.key, v);
@@ -383,8 +389,8 @@ impl KV {
             return Ok(());
         }
         info!(
-            "write_requests called. Writing to value log, count: {}",
-            reqs.len()
+            "write_requests called. Writing to value log, req_count: {}, entry_total: {}",
+            reqs.len(), reqs.iter().fold(0, |acc, req| acc + req.entries.len()),
         );
 
         // CAS counter for all operations has to go onto value log. Otherwise, if it is just in
@@ -414,6 +420,7 @@ impl KV {
 
         info!("Writing to memory table");
         let mut count = 0;
+        let zero_level_compact_chan = self.zero_level_compact_chan.rx();
         for mut req in reqs.into_iter() {
             if req.entries.is_empty() {
                 continue;
@@ -422,7 +429,12 @@ impl KV {
             while let Err(err) = self.ensure_room_for_write().await {
                 debug!("failed to ensure room for write!, err:{}", err);
                 tokio::time::sleep(Duration::from_millis(10)).await;
-
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    _ = zero_level_compact_chan.recv() => {
+                        info!("receive a continue event");
+                    },
+                }
                 //#[cfg(test)]
                 //tokio::time::sleep(Duration::from_secs(1)).await;
             }
@@ -528,9 +540,9 @@ impl KV {
                 req_index.push(i);
             }
 
-            if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_count {
+            if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_size {
                 assert!(!self.write_ch.is_close());
-                info!("send tasks to write, entries: {}", req.entries.len());
+                info!("send tasks to write, entries: {}, count:{}, max_batch_count:{}, size:{}, max_batch_count:{}", req.entries.len(), count, self.opt.max_batch_count, sz, self.opt.max_batch_size);
                 let resp_ch = req.get_resp_channel();
                 self.write_ch.send(req).await.unwrap();
                 {
@@ -565,13 +577,13 @@ impl KV {
         defer! {info!("exit write to lsm")}
 
         #[cfg(test)]
-        let tid = random::<u32>();
+            let tid = random::<u32>();
 
         for (i, pair) in req.entries.into_iter().enumerate() {
             let (entry, resp_ch) = pair.to_owned();
 
             #[cfg(test)]
-            let debug_entry = entry.clone();
+                let debug_entry = entry.clone();
 
             let mut old_cas = 0;
 
@@ -658,17 +670,17 @@ impl KV {
     }
 
     async fn ensure_room_for_write(&self) -> Result<()> {
-        defer! {info!("exit ensure room for write!")}
+        // defer! {info!("exit ensure room for write!")}
         // TODO a special global lock for this function
         let _ = self.share_lock.write().await;
         if self.must_mt().mem_size() < self.opt.max_table_size as u32 {
             return Ok(());
         }
-        info!(
-            "flush memory table, {}, {}",
-            self.must_mt().mem_size(),
-            self.opt.max_table_size
-        );
+        // info!(
+        //     "flush memory table, {}, {}",
+        //     self.must_mt().mem_size(),
+        //     self.opt.max_table_size
+        // );
         // A nil mt indicates that KV is being closed.
         assert!(!self.must_mt().empty());
         let flush_task = FlushTask {
@@ -677,7 +689,7 @@ impl KV {
         };
         let ret = self.flush_chan.try_send(flush_task);
         if ret.is_err() {
-            info!("No room for write, {:?}", ret.unwrap_err());
+            //info!("No room for write, {:?}", ret.unwrap_err());
             return Err(Unexpected("No room for write".into()));
         }
 
@@ -1051,7 +1063,7 @@ impl ArcKV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1138,7 +1150,7 @@ impl ArcKV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         info!("ready to yield item value from vlog!");
         // no value
