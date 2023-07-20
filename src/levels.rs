@@ -186,8 +186,7 @@ impl LevelsController {
 
     // compact worker
     async fn run_worker(&self, lc: Closer) {
-        defer! {lc.done()}
-        ;
+        defer! {lc.done()};
         if self.opt.do_not_compact {
             return;
         }
@@ -233,7 +232,7 @@ impl LevelsController {
     // Picks some table on level l and compacts it away to the next level.
     async fn do_compact(&self, p: CompactionPriority) -> Result<bool> {
         let l = p.level;
-        assert!(l + 1 < self.opt.max_levels); //  Sanity check.
+        assert!(l + 1 < self.opt.max_levels, "Sanity check"); //  Sanity check.
 
         // merge l's level to (l+1)'s level by p's CompactionPriority
         let mut cd = CompactDef::new(self.levels[l].clone(), self.levels[l + 1].clone());
@@ -247,7 +246,10 @@ impl LevelsController {
             }
         } else {
             if !self.fill_tables(&mut cd) {
-                info!("failed to fill tables for level {}", l);
+                info!(
+                    "failed to fill tables for level {}, the compact priority: {:?}",
+                    l, p
+                );
                 return Ok(false);
             }
         }
@@ -424,8 +426,8 @@ impl LevelsController {
     pub(crate) fn as_iterator(
         &self,
         reverse: bool,
-    ) -> Vec<Box<dyn Xiterator<Output=IteratorItem>>> {
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+    ) -> Vec<Box<dyn Xiterator<Output = IteratorItem>>> {
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for level in self.levels.iter() {
             if level.level() == 0 {
                 for table in level.tables.read().iter().rev() {
@@ -459,7 +461,7 @@ impl LevelsController {
             let mut top_tables = cd.top.clone();
             let bot_tables = cd.bot.clone();
             // Create iterators across all the tables involved first.
-            let mut itr: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+            let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
             if l == 0 {
                 top_tables.reverse();
                 for (i, _) in top_tables.iter().enumerate() {
@@ -655,11 +657,13 @@ impl LevelsController {
         true
     }
 
+    // fill tables for compactDef, and locked them KeyRange
     fn fill_tables(&self, cd: &mut CompactDef) -> bool {
         // lock current level and next levels, So there is at most one compression process per layer
         cd.lock_shared_levels();
         let mut tables = cd.this_level.to_ref().tables.read().to_vec();
         if tables.is_empty() {
+            info!("the tables is empty, skip compact deference");
             cd.unlock_shared_levels();
             return false;
         }
@@ -676,6 +680,10 @@ impl LevelsController {
                 .c_status
                 .overlaps_with(cd.this_level.level(), &this_range)
             {
+                info!(
+                    "not found overlaps with this range: {}",
+                    this_range.to_string()
+                );
                 continue;
             }
             cd.this_size.store(t.size() as u64, Ordering::Relaxed);
@@ -741,7 +749,7 @@ impl LevelsController {
                 level: 0,
                 score: (self.levels[0].num_tables() as f64)
                     / (self.opt.num_level_zero_tables as f64),
-            })
+            });
         }
         // stats level 1..n
         for (i, level) in self.levels[1..].iter().enumerate() {
@@ -786,7 +794,7 @@ impl LevelsController {
             .iter()
             .map(|lv| lv.num_tables())
             .collect::<Vec<_>>();
-        info!("every level size: {:?}", sz);
+        //info!("every level size: {:?}", sz);
     }
 }
 

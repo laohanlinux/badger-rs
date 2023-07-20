@@ -357,7 +357,7 @@ impl KV {
                 return Ok(vs);
             }
         }
-        warn!("found from disk table, key #{}", crate::y::hex_str(key));
+        //warn!("found from disk table, key #{}", crate::y::hex_str(key));
         self.must_lc().get(key).ok_or(NotFound)
     }
 
@@ -423,8 +423,8 @@ impl KV {
                 debug!("failed to ensure room for write!, err:{}", err);
                 tokio::time::sleep(Duration::from_millis(10)).await;
 
-                #[cfg(test)]
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                //#[cfg(test)]
+                //tokio::time::sleep(Duration::from_secs(1)).await;
             }
             info!("Waiting for write lsm, count {}", count);
             self.update_offset(&mut req.ptrs).await;
@@ -740,7 +740,7 @@ impl KV {
             Err(err) if err.is_not_found() => Ok(false),
             Err(err) => Err(err),
             Ok(value) => {
-                info!("{:?}", value);
+                //info!("{:?}", value);
                 if value.value.is_empty() && value.meta == 0 {
                     return Ok(false);
                 }

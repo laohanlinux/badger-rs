@@ -12,8 +12,8 @@ use tracing_subscriber::fmt::format;
 use crate::iterator::IteratorOptions;
 use crate::types::{TArcMx, XArc};
 use crate::value_log::Entry;
-use crate::{kv::KV, options::Options, Error};
 use crate::y::hex_str;
+use crate::{kv::KV, options::Options, Error};
 
 fn get_test_option(dir: &str) -> Options {
     let mut opt = Options::default();
@@ -46,7 +46,7 @@ async fn t_batch_write() {
     let dir = random_tmp_dir();
     let kv = KV::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
-    let n = 9024;
+    let n = 50000000;
     for i in 1..n {
         let key = i.to_string().into_bytes();
         let res = kv.set(key, b"word".to_vec(), 10).await;
@@ -58,7 +58,7 @@ async fn t_batch_write() {
     for i in 1..n {
         let key = i.to_string().into_bytes();
         let got = kv.exists(&key).await;
-        kv.must_lc().print_level_fids();
+        //kv.must_lc().print_level_fids();
         assert!(got.is_ok() && got.unwrap(), "#{}", hex_str(&key));
         // assert_eq!(&got.unwrap().value, b"word");
     }
