@@ -336,6 +336,11 @@ impl Xiterator for IteratorImpl {
     fn id(&self) -> String {
         format!("iteratorImpl_{}", self.table.id())
     }
+
+    /// TODO maybe use Drop to decr reference
+    fn close(&self) {
+       self.table.decr_ref();
+    }
 }
 
 impl IteratorImpl {

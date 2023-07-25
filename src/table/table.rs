@@ -28,8 +28,9 @@ use log::{debug, info, warn};
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::FileExt;
 
-use std::str::pattern::Pattern;
 use crate::test_util::push_log;
+use drop_cell::defer;
+use std::str::pattern::Pattern;
 
 pub(crate) const FILE_SUFFIX: &str = ".sst";
 
@@ -140,21 +141,23 @@ impl TableCore {
         let table_ref = Table::new(table);
         let biggest = {
             let iter1 = super::iterator::IteratorImpl::new(table_ref.clone(), true);
+            defer! {iter1.close()};
             iter1
                 .rewind()
                 .map(|item| item.key().to_vec())
                 .or_else(|| Some(vec![]))
         }
-            .unwrap();
+        .unwrap();
 
         let smallest = {
             let iter1 = super::iterator::IteratorImpl::new(table_ref.clone(), false);
+            defer! {iter1.close()};
             iter1
                 .rewind()
                 .map(|item| item.key().to_vec())
                 .or_else(|| Some(vec![]))
         }
-            .unwrap();
+        .unwrap();
         let mut tc = table_ref.to_inner().unwrap();
         tc.biggest = biggest;
         tc.smallest = smallest;
@@ -164,14 +167,31 @@ impl TableCore {
 
     // increments the refcount (having to do with whether the file should be deleted)
     pub(crate) fn incr_ref(&self) {
+        use std::backtrace::Backtrace;
         let count = self._ref.fetch_add(1, Ordering::Release);
-        let buf = format!("incr {} table count {} => {}", self.id, count, self.get_ref());
+        let buf = format!(
+            "incr {} table count {} => {}",
+            self.id,
+            count,
+            self.get_ref()
+        );
+        // info!("{}", buf);
+        //
+        // info!(
+        //     "BackTrace at table incr reference: {}",
+        //     Backtrace::force_capture()
+        // );
         push_log(buf.as_bytes(), false);
     }
     // decrements the refcount and possibly deletes the table
     pub(crate) fn decr_ref(&self) {
         let count = self._ref.fetch_sub(1, Ordering::Release);
-        let buf = format!("decr {} table count {} => {}", self.id, count, self.get_ref());
+        let buf = format!(
+            "decr {} table count {} => {}",
+            self.id,
+            count,
+            self.get_ref()
+        );
         push_log(buf.as_bytes(), false);
     }
 
@@ -321,7 +341,7 @@ impl TableCore {
                 "Unable to load file in memory, Table faile: {}",
                 self.filename()
             )
-                .into());
+            .into());
         }
         // todo stats
         self._mmap = Some(_mmap);
@@ -342,13 +362,18 @@ impl Drop for TableCore {
                 .flush()
                 .expect("failed to mmap")
         }
-        // It's necessary to delete windows files
-        // This is very important to let the FS know that the file is deleted.
-        // #[cfg(not(test))]
-        self.fd.set_len(0).expect("can not truncate file to 0");
-        // #[cfg(not(test))]
-        remove_file(Path::new(&self.file_name)).expect("fail to remove file");
-        info!("Drop table, reference: {}, delete {} table at disk: {}", _ref, self.id, self.file_name);
+        if _ref == 1 {
+            // It's necessary to delete windows files
+            // This is very important to let the FS know that the file is deleted.
+            // #[cfg(not(test))]
+            self.fd.set_len(0).expect("can not truncate file to 0");
+            // #[cfg(not(test))]
+            remove_file(Path::new(&self.file_name)).expect("fail to remove file");
+            info!(
+                "Drop table: {}, reference: {}, disk: {}",
+                self.id, _ref, self.file_name
+            );
+        }
     }
 }
 

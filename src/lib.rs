@@ -18,6 +18,7 @@
 #![feature(async_iterator)]
 #![feature(let_chains)]
 #![feature(stmt_expr_attributes)]
+#![feature(backtrace_frames)]
 
 use std::mem::align_of;
 

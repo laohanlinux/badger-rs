@@ -18,7 +18,7 @@ use crate::{Result, ValueStruct};
 use atomic::Ordering;
 use awaitgroup::WaitGroup;
 use drop_cell::defer;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use parking_lot::lock_api::RawRwLock;
 
 use std::collections::HashSet;
@@ -47,6 +47,7 @@ pub(crate) struct LevelsController {
     opt: Options,
     last_unstalled: TArcRW<SystemTime>,
     zero_level_compact_chan: Channel<()>,
+    notify_write_request_chan: Channel<()>,
 }
 
 pub(crate) type XLevelsController = XArc<LevelHandler>;
@@ -55,6 +56,7 @@ impl LevelsController {
     pub(crate) async fn new(
         manifest: TArcRW<ManifestFile>,
         zero_level_compact_chan: Channel<()>,
+        notify_write_request_chan: Channel<()>,
         opt: Options,
     ) -> Result<LevelsController> {
         assert!(opt.num_level_zero_tables_stall > opt.num_level_zero_tables);
@@ -117,6 +119,7 @@ impl LevelsController {
             opt: opt.clone(),
             last_unstalled: Arc::new(tokio::sync::RwLock::new(SystemTime::now())),
             zero_level_compact_chan,
+            notify_write_request_chan,
         };
         if let Err(err) = level_controller.validate() {
             let _ = level_controller.cleanup_levels();
@@ -203,7 +206,7 @@ impl LevelsController {
             tokio::time::sleep(Duration::from_millis(duration as u64)).await;
         }
         // 1 seconds to check compact
-        let mut interval = tokio::time::interval(Duration::from_secs(3));
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
         let zero_level_compact_chan = self.zero_level_compact_chan.tx();
         loop {
             // why interval can life long
@@ -212,6 +215,9 @@ impl LevelsController {
                 _ = interval.tick() => {
                     let pick: Vec<CompactionPriority> = self.pick_compact_levels();
                     info!("Try to compact levels, {:?}", pick);
+                    if pick.is_empty() {
+                        zero_level_compact_chan.try_send(());
+                    }
                     for p in pick {
                         match self.do_compact(p.clone()).await {
                             Ok(true) => {
@@ -386,6 +392,7 @@ impl LevelsController {
                 .build()])
             .await?;
         info!("Ready add level0 table, id:{}", table.id());
+        let zero_level_compact_chan = self.zero_level_compact_chan.rx();
         while !self.levels[0].try_add_level0_table(table.clone()).await {
             // Stall. Make sure all levels are healthy before we unstall.
             let mut start_time = SystemTime::now();
@@ -425,9 +432,13 @@ impl LevelsController {
                 if !self.is_level0_compactable() && !self.levels[1].is_compactable(del_size) {
                     break;
                 }
-                // sleep millis, try it again
-                sleep(Duration::from_millis(10000)).await;
-                info!(
+                tokio::select! {
+                     _ = tokio::time::sleep(Duration::from_millis(10)) => {},
+                    _ = zero_level_compact_chan.recv() => {
+                        info!("receive a continue event");
+                    },
+                }
+                debug!(
                     "Try again to check level0 compactable, Waitting gc job compact level zero SST"
                 );
             }
@@ -438,6 +449,7 @@ impl LevelsController {
             );
             *self.last_unstalled.write().await = SystemTime::now();
         }
+        let _ = self.notify_write_request_chan.tx().try_send(());
         Ok(())
     }
 

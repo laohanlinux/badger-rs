@@ -18,6 +18,7 @@ use std::hash::Hasher;
 use std::io::{ErrorKind, Write};
 
 use std::{array, cmp, io};
+use std::backtrace::Backtrace;
 use thiserror::Error;
 use tracing::info;
 
@@ -387,6 +388,18 @@ pub fn binary_search<T: Ord, F>(array: &[T], f: F) -> Option<usize>
     }
 
     None
+}
+
+#[test]
+fn print_backtrace() {
+    let buffer = Backtrace::force_capture();
+    let mut frames = buffer.frames();
+    if frames.len() > 5 {
+        frames = &frames[0..5];
+    }
+    for frame in frames {
+        info!("{:?}", frame)
+    }
 }
 
 #[test]
