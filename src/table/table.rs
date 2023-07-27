@@ -28,7 +28,6 @@ use log::{debug, info, warn};
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::FileExt;
 
-use crate::test_util::push_log;
 use drop_cell::defer;
 use std::str::pattern::Pattern;
 
@@ -181,7 +180,7 @@ impl TableCore {
         //     "BackTrace at table incr reference: {}",
         //     Backtrace::force_capture()
         // );
-        push_log(buf.as_bytes(), false);
+        //push_log(buf.as_bytes(), false);
     }
     // decrements the refcount and possibly deletes the table
     pub(crate) fn decr_ref(&self) {
@@ -192,7 +191,7 @@ impl TableCore {
             count,
             self.get_ref()
         );
-        push_log(buf.as_bytes(), false);
+        //push_log(buf.as_bytes(), false);
     }
 
     pub(crate) fn get_ref(&self) -> i32 {
@@ -369,7 +368,7 @@ impl Drop for TableCore {
             self.fd.set_len(0).expect("can not truncate file to 0");
             // #[cfg(not(test))]
             remove_file(Path::new(&self.file_name)).expect("fail to remove file");
-            info!(
+            debug!(
                 "Drop table: {}, reference: {}, disk: {}",
                 self.id, _ref, self.file_name
             );

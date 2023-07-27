@@ -122,7 +122,7 @@ pub(crate) fn tracing_log() {
         .with_timer(LocalTimer);
 
     let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
+        .with_max_level(tracing::Level::INFO)
         .with_writer(io::stdout)
         .with_ansi(true)
         .event_format(format)

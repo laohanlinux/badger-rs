@@ -11,7 +11,7 @@ use tracing_subscriber::fmt::format;
 
 use crate::iterator::IteratorOptions;
 use crate::types::{TArcMx, XArc};
-use crate::value_log::Entry;
+use crate::value_log::{Entry, MetaBit};
 use crate::y::hex_str;
 use crate::{kv::KV, options::Options, Error};
 
@@ -52,10 +52,12 @@ async fn t_batch_write() {
     for i in 1..n {
         let key = i.to_string().into_bytes();
         // let res = kv.set(key, b"word".to_vec(), 10).await;
-        batch.push(Entry::default()
-            .key(key)
-            .value(b"word".to_vec())
-            .user_meta(10));
+        batch.push(
+            Entry::default()
+                .key(key)
+                .value(b"word".to_vec())
+                .user_meta(10),
+        );
         if batch.len() > 100 {
             let res = kv.batch_set(batch.clone()).await;
             for _res in res {
@@ -64,7 +66,10 @@ async fn t_batch_write() {
             batch.clear();
         }
         if i % 10000 == 0 {
-            info!("cost time：{}s", SystemTime::now().duration_since(start).unwrap().as_secs() )
+            info!(
+                "cost time：{}s",
+                SystemTime::now().duration_since(start).unwrap().as_secs()
+            )
         }
     }
     {
@@ -76,17 +81,58 @@ async fn t_batch_write() {
             batch.clear();
         }
     }
+    {
+        let lc = kv.must_lc();
+        assert!(lc.validate().is_ok());
+    }
+    for i in 1..n {
+        let key = i.to_string().into_bytes();
+        let got = kv.exists(&key).await;
+        //kv.must_lc().print_level_fids();
+        assert!(got.is_ok() && got.unwrap(), "#{}", hex_str(&key));
+        // assert_eq!(&got.unwrap().value, b"word");
+    }
+    let found = kv.exists(b"non-exists").await;
+    assert!(found.is_ok());
+    assert!(!found.unwrap());
 
-    // tokio::time::sleep(Duration::from_secs(100)).await;
-
-    // for i in 1..n {
-    //     let key = i.to_string().into_bytes();
-    //     let got = kv.exists(&key).await;
-    //     //kv.must_lc().print_level_fids();
-    //     assert!(got.is_ok() && got.unwrap(), "#{}", hex_str(&key));
-    //     // assert_eq!(&got.unwrap().value, b"word");
-    // }
-    info!("cost time: {}s", SystemTime::now().duration_since(start).unwrap().as_secs());
+    for i in 1..n {
+        let key = i.to_string().into_bytes();
+        // let res = kv.set(key, b"word".to_vec(), 10).await;
+        batch.push(
+            Entry::default()
+                .key(key)
+                .value(b"word".to_vec())
+                .user_meta(10)
+                .meta(MetaBit::BIT_DELETE.bits()),
+        );
+        if batch.len() > 100 {
+            let res = kv.batch_set(batch.clone()).await;
+            for _res in res {
+                assert!(_res.is_ok());
+            }
+            batch.clear();
+        }
+        if i % 10000 == 0 {
+            info!(
+                "cost time：{}s",
+                SystemTime::now().duration_since(start).unwrap().as_secs()
+            )
+        }
+    }
+    {
+        if batch.len() > 0 {
+            let res = kv.batch_set(batch.clone()).await;
+            for _res in res {
+                assert!(_res.is_ok());
+            }
+            batch.clear();
+        }
+    }
+    info!(
+        "cost time: {}s",
+        SystemTime::now().duration_since(start).unwrap().as_secs()
+    );
 }
 
 #[tokio::test]

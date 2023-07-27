@@ -83,7 +83,7 @@ impl LevelHandler {
         let compactable = self.get_total_size() - del_size >= self.get_max_total_size();
 
         #[cfg(test)]
-        info!(
+        debug!(
             "trace level{}, does it compactable, total_size:{}, del_size:{}, max_size:{}, yes: {}",
             self.level(),
             self.get_total_size(),

@@ -20,6 +20,7 @@ use awaitgroup::WaitGroup;
 use drop_cell::defer;
 use log::{debug, error, info, warn};
 use parking_lot::lock_api::RawRwLock;
+use tracing::instrument;
 
 use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
@@ -51,6 +52,12 @@ pub(crate) struct LevelsController {
 }
 
 pub(crate) type XLevelsController = XArc<LevelHandler>;
+
+impl std::fmt::Debug for LevelsController {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("").field(&self.opt).finish()
+    }
+}
 
 impl LevelsController {
     pub(crate) async fn new(
@@ -134,7 +141,7 @@ impl LevelsController {
         Ok(level_controller)
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         for level in self.levels.iter() {
             level.validate()?;
         }
@@ -194,8 +201,7 @@ impl LevelsController {
 
     // compact worker
     async fn run_worker(&self, lc: Closer) {
-        defer! {lc.done()}
-        ;
+        defer! {lc.done()};
         if self.opt.do_not_compact {
             return;
         }
@@ -328,13 +334,13 @@ impl LevelsController {
                 let top_ids = cd.top.iter().map(|tb| tb.id()).collect::<Vec<_>>();
                 this_level.delete_tables(top_ids);
                 info!(
-                "LOG Compact-Move {}->{} smallest:{} biggest:{} took {}",
-                l,
-                l + 1,
-                String::from_utf8_lossy(table_lck.smallest()),
-                String::from_utf8_lossy(table_lck.biggest()),
-                time_start.elapsed().unwrap().as_millis(),
-            );
+                    "LOG Compact-Move {}->{} smallest:{} biggest:{} took {}",
+                    l,
+                    l + 1,
+                    String::from_utf8_lossy(table_lck.smallest()),
+                    String::from_utf8_lossy(table_lck.biggest()),
+                    time_start.elapsed().unwrap().as_millis(),
+                );
                 return Ok(());
             }
         }
@@ -456,8 +462,8 @@ impl LevelsController {
     pub(crate) fn as_iterator(
         &self,
         reverse: bool,
-    ) -> Vec<Box<dyn Xiterator<Output=IteratorItem>>> {
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+    ) -> Vec<Box<dyn Xiterator<Output = IteratorItem>>> {
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for level in self.levels.iter() {
             if level.level() == 0 {
                 for table in level.tables.read().iter().rev() {
@@ -491,7 +497,7 @@ impl LevelsController {
             let mut top_tables = cd.top.clone();
             let bot_tables = cd.bot.clone();
             // Create iterators across all the tables involved first.
-            let mut itr: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+            let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
             if l == 0 {
                 top_tables.reverse();
                 for (i, _) in top_tables.iter().enumerate() {
@@ -558,16 +564,31 @@ impl LevelsController {
                     defer! {worker.done();}
                     let fd = create_synced_file(&file_name, true);
                     if let Err(err) = fd {
-                        tx.send(Err(format!("While opening new table: {}, err: {}", file_id, err).into())).unwrap();
+                        tx.send(Err(format!(
+                            "While opening new table: {}, err: {}",
+                            file_id, err
+                        )
+                        .into()))
+                            .unwrap();
                         return;
                     }
                     if let Err(err) = fd.as_ref().unwrap().write_all(&builder.finish()) {
-                        tx.send(Err(format!("Unable to write to file: {}, err: {}", file_id, err).into())).unwrap();
+                        tx.send(Err(format!(
+                            "Unable to write to file: {}, err: {}",
+                            file_id, err
+                        )
+                        .into()))
+                            .unwrap();
                         return;
                     }
                     let tbl = TableCore::open_table(fd.unwrap(), &file_name, loading_mode);
                     if let Err(err) = tbl {
-                        tx.send(Err(format!("Unable to open table: {}, err: {}", file_name, err).into())).unwrap();
+                        tx.send(Err(format!(
+                            "Unable to open table: {}, err: {}",
+                            file_name, err
+                        )
+                        .into()))
+                            .unwrap();
                     } else {
                         tx.send(Ok(Table::new(tbl.unwrap()))).unwrap();
                     }
@@ -614,7 +635,12 @@ impl LevelsController {
             // An error happened. Delete all the newly created table files (by calling Decref
             // -- we're the only holders of a ref).
             let _ = new_tables.iter().map(|tb| tb.decr_ref());
-            return Err(format!("While running compaction for: {}, err: {}", cd.read().await, first_err.unwrap_err()).into());
+            return Err(format!(
+                "While running compaction for: {}, err: {}",
+                cd.read().await,
+                first_err.unwrap_err()
+            )
+            .into());
         }
         Ok(new_tables)
     }
@@ -765,6 +791,7 @@ impl LevelsController {
 
     // Determines which level to compact.
     // Base on https://github.com/facebook/rocksdb/wiki/Leveled-Compaction.
+    #[instrument(skip(self))]
     fn pick_compact_levels(&self) -> Vec<CompactionPriority> {
         // This function must use identical criteria for guaranteeing compaction's progress that
         // add_level0_table use.
@@ -803,7 +830,7 @@ impl LevelsController {
     fn is_level0_compactable(&self) -> bool {
         let compactable = self.levels[0].num_tables() >= self.opt.num_level_zero_tables;
         #[cfg(test)]
-        info!(
+        debug!(
             "level0 compactable, num_tables: {}, config_tables: {}, yes: {}",
             self.levels[0].num_tables(),
             self.opt.num_level_zero_tables,
