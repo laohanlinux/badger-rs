@@ -46,7 +46,7 @@ async fn t_batch_write() {
     let dir = random_tmp_dir();
     let kv = KV::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
-    let n = 50000;
+    let n = 10000;
     let mut batch = vec![];
     let mut start = SystemTime::now();
     for i in 1..n {

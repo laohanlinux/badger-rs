@@ -26,7 +26,7 @@ impl MergeCursor {
 /// A iterator for multi iterator merge into one.
 pub struct MergeIterator {
     pub reverse: bool,
-    pub itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
 }
 
@@ -49,7 +49,7 @@ impl Xiterator for MergeIterator {
         // Use stack memory
         let mut same_iterators = Vec::with_capacity(self.itrs.len());
         #[cfg(test)]
-            let mut stack = vec![];
+        let mut stack = vec![];
         for (itr_index, itr) in self.itrs.iter().enumerate() {
             if let Some(item) = itr.peek() {
                 #[cfg(test)]
@@ -92,28 +92,36 @@ impl Xiterator for MergeIterator {
         if index != usize::MAX {
             assert!(latest.is_some());
 
-            // #[cfg(test)]
-            // {
-            //     let str = stack.into_iter().map(|key| hex_str(&key)).join(",");
-            //     let buf = format!(
-            //         "found target: {}, {}",
-            //         hex_str(latest.as_ref().unwrap().key()),
-            //         str
-            //     );
-            //     crate::test_util::push_log(buf.as_bytes(), false);
-            // }
+            #[cfg(test)]
+            {
+                let str = stack.into_iter().map(|key| hex_str(&key)).join(",");
+                let buf = format!(
+                    "found target: {}, {}, iter_count {}",
+                    hex_str(latest.as_ref().unwrap().key()),
+                    str,
+                    self.itrs.len()
+                );
+                crate::test_util::push_log(buf.as_bytes(), false);
+            }
 
             // Move same iterators
+            #[cfg(test)]
+            info!("--------------------------");
             for (itr_index) in same_iterators.iter().rev() {
                 if let Some(key) = self.itrs[*itr_index].peek() && key.key() == latest.as_ref().unwrap().key() {
-                    self.itrs[*itr_index].next();
-                    // #[cfg(test)]
-                    // info!("Move key #{}, index {}, {}", hex_str(key.key()), itr_index, index);
+                    #[cfg(test)]
+                    info!("Move key #{}, index {}, {}, meta:{}, {}", hex_str(key.key()), itr_index, index, latest.as_ref().unwrap().value().meta, key.value().meta);
+                    if *itr_index != index {
+                        self.export_disk();
+                    }
+                     self.itrs[*itr_index].next();
                     assert_eq!(*itr_index, index);
                 } else {
                     break;
                 }
             }
+            #[cfg(test)]
+            info!("--------------------------");
             self.cursor.borrow_mut().replace(index, latest);
             //self.itrs.get(index).as_ref().unwrap().next(); // Skip current node
         } else {
@@ -173,12 +181,23 @@ impl MergeIterator {
         }
         count
     }
+
+    fn export_disk(&self) {
+        for itr in self.itrs.iter() {
+            let mut keys = vec![];
+            if let Some(key) = itr.peek() {
+                keys.push(hex_str(key.key()));
+            }
+            let buffer = keys.join("#");
+            crate::test_util::push_log(buffer.as_bytes(), false);
+        }
+    }
 }
 
 /// A Builder for merge iterator building
 #[derive(Default)]
 pub struct MergeIterOverBuilder {
-    all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     reverse: bool,
 }
 
@@ -188,14 +207,14 @@ impl MergeIterOverBuilder {
         self
     }
 
-    pub fn add(mut self, x: Box<dyn Xiterator<Output=IteratorItem>>) -> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     ) -> MergeIterOverBuilder {
         self.all.extend(iters);
         self

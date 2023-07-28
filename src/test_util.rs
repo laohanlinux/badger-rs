@@ -15,25 +15,25 @@ use tracing_subscriber::fmt::time::FormatTime;
 
 #[cfg(test)]
 pub fn push_log(buf: &[u8], rd: bool) {
-    // use std::io::Write;
-    // let mut fpath = "raw_log.log";
-    // let mut fp = if !rd {
-    //     std::fs::File::options()
-    //         .write(true)
-    //         .append(true)
-    //         .create(true)
-    //         .open(fpath)
-    //         .unwrap()
-    // } else {
-    //     std::fs::File::options()
-    //         .write(true)
-    //         .append(true)
-    //         .create(true)
-    //         .open(random_tmp_dir() + "/" + fpath)
-    //         .unwrap()
-    // };
-    // fp.write_all(buf).unwrap();
-    // fp.write_all(b"\n").unwrap();
+    use std::io::Write;
+    let mut fpath = "raw_log.log";
+    let mut fp = if !rd {
+        std::fs::File::options()
+            .write(true)
+            .append(true)
+            .create(true)
+            .open(fpath)
+            .unwrap()
+    } else {
+        std::fs::File::options()
+            .write(true)
+            .append(true)
+            .create(true)
+            .open(random_tmp_dir() + "/" + fpath)
+            .unwrap()
+    };
+    fp.write_all(buf).unwrap();
+    fp.write_all(b"\n").unwrap();
 }
 
 #[cfg(test)]
