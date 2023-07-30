@@ -7,7 +7,7 @@ use crate::y::iterator::Xiterator;
 use crate::y::KeyValue;
 use itertools::Itertools;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 
 /// Cursor of the iterator of merge.
 pub struct MergeCursor {
@@ -28,6 +28,7 @@ pub struct MergeIterator {
     pub reverse: bool,
     pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
+    pub heap: RefCell<BinaryHeap<IterRef>>,
 }
 
 impl Xiterator for MergeIterator {
@@ -38,110 +39,145 @@ impl Xiterator for MergeIterator {
             return None;
         }
         assert_ne!(self.cursor.borrow().index, usize::MAX);
-        // if self.cursor.borrow().index == usize::MAX {
-        //     for itr in &self.itrs {
-        //         itr.rewind();
-        //     }
-        //     self.cursor.borrow_mut().index = 0;
-        // }
-        let mut latest: Option<IteratorItem> = None;
-        let mut index = usize::MAX;
-        // Use stack memory
-        let mut same_iterators = Vec::with_capacity(self.itrs.len());
-        #[cfg(test)]
-        let mut stack = vec![];
-        for (itr_index, itr) in self.itrs.iter().enumerate() {
-            if let Some(item) = itr.peek() {
-                #[cfg(test)]
-                stack.push(item.key.clone());
-
-                if let Some(have_latest) = &mut latest {
-                    if !self.reverse {
-                        match item.key().cmp(have_latest.key()) {
-                            std::cmp::Ordering::Less => {
-                                index = itr_index;
-                                *have_latest = item;
-                                same_iterators.push(itr_index);
-                            }
-                            std::cmp::Ordering::Equal => {
-                                same_iterators.push(itr_index);
-                            }
-                            std::cmp::Ordering::Greater => {}
-                        }
-                    } else {
-                        match item.key().cmp(have_latest.key()) {
-                            std::cmp::Ordering::Less => {}
-                            std::cmp::Ordering::Equal => {
-                                same_iterators.push(itr_index);
-                            }
-                            std::cmp::Ordering::Greater => {
-                                index = itr_index;
-                                *have_latest = item;
-                                same_iterators.push(itr_index);
-                            }
-                        }
-                    }
-                } else {
-                    latest.replace(item);
-                    index = itr_index;
-                    same_iterators.push(itr_index);
-                }
-            }
-        }
-
-        if index != usize::MAX {
-            assert!(latest.is_some());
-
-            #[cfg(test)]
-            {
-                let str = stack.into_iter().map(|key| hex_str(&key)).join(",");
-                let buf = format!(
-                    "found target: {}, {}, iter_count {}",
-                    hex_str(latest.as_ref().unwrap().key()),
-                    str,
-                    self.itrs.len()
-                );
-                crate::test_util::push_log(buf.as_bytes(), false);
-            }
-
-            // Move same iterators
-            #[cfg(test)]
-            info!("--------------------------");
-            for (itr_index) in same_iterators.iter().rev() {
-                if let Some(key) = self.itrs[*itr_index].peek() && key.key() == latest.as_ref().unwrap().key() {
-                    #[cfg(test)]
-                    info!("Move key #{}, index {}, {}, meta:{}, {}", hex_str(key.key()), itr_index, index, latest.as_ref().unwrap().value().meta, key.value().meta);
-                    if *itr_index != index {
-                        self.export_disk();
-                    }
-                     self.itrs[*itr_index].next();
-                    assert_eq!(*itr_index, index);
-                } else {
-                    break;
-                }
-            }
-            #[cfg(test)]
-            info!("--------------------------");
-            self.cursor.borrow_mut().replace(index, latest);
-            //self.itrs.get(index).as_ref().unwrap().next(); // Skip current node
-        } else {
-            self.cursor.borrow_mut().index = 0;
-            self.cursor.borrow_mut().cur_item.take(); // Not found any thing.
-        }
-        self.peek()
+        self._next()
     }
+
+    // fn next(&self) -> Option<Self::Output> {
+    //     if self.itrs.is_empty() {
+    //         return None;
+    //     }
+    //     assert_ne!(self.cursor.borrow().index, usize::MAX);
+    //
+    //     // if self.cursor.borrow().index == usize::MAX {
+    //     //     for itr in &self.itrs {
+    //     //         itr.rewind();
+    //     //     }
+    //     //     self.cursor.borrow_mut().index = 0;
+    //     // }
+    //     let mut latest: Option<IteratorItem> = None;
+    //     let mut index = usize::MAX;
+    //     // Use stack memory
+    //     let mut same_iterators = Vec::with_capacity(self.itrs.len());
+    //     #[cfg(test)]
+    //     let mut stack = vec![];
+    //     for (itr_index, itr) in self.itrs.iter().enumerate() {
+    //         if let Some(item) = itr.peek() {
+    //             #[cfg(test)]
+    //             stack.push(item.key.clone());
+    //
+    //             if let Some(have_latest) = &mut latest {
+    //                 if !self.reverse {
+    //                     match item.key().cmp(have_latest.key()) {
+    //                         std::cmp::Ordering::Less => {
+    //                             index = itr_index;
+    //                             *have_latest = item;
+    //                             same_iterators.push(itr_index);
+    //                         }
+    //                         std::cmp::Ordering::Equal => {
+    //                             same_iterators.push(itr_index);
+    //                         }
+    //                         std::cmp::Ordering::Greater => {}
+    //                     }
+    //                 } else {
+    //                     match item.key().cmp(have_latest.key()) {
+    //                         std::cmp::Ordering::Less => {}
+    //                         std::cmp::Ordering::Equal => {
+    //                             same_iterators.push(itr_index);
+    //                         }
+    //                         std::cmp::Ordering::Greater => {
+    //                             index = itr_index;
+    //                             *have_latest = item;
+    //                             same_iterators.push(itr_index);
+    //                         }
+    //                     }
+    //                 }
+    //             } else {
+    //                 latest.replace(item);
+    //                 index = itr_index;
+    //                 same_iterators.push(itr_index);
+    //             }
+    //         }
+    //     }
+    //
+    //     if index != usize::MAX {
+    //         assert!(latest.is_some());
+    //
+    //         #[cfg(test)]
+    //         {
+    //             let str = stack.into_iter().map(|key| hex_str(&key)).join(",");
+    //             let buf = format!(
+    //                 "found target: {}, {}, iter_count {}",
+    //                 hex_str(latest.as_ref().unwrap().key()),
+    //                 str,
+    //                 self.itrs.len()
+    //             );
+    //             crate::test_util::push_log(buf.as_bytes(), false);
+    //         }
+    //
+    //         // Move same iterators
+    //         #[cfg(test)]
+    //         info!("--------------------------");
+    //         for (itr_index) in same_iterators.iter().rev() {
+    //             if let Some(key) = self.itrs[*itr_index].peek() && key.key() == latest.as_ref().unwrap().key() {
+    //                 #[cfg(test)]
+    //                 info!("Move key #{}, index {}, {}, meta:{}, {}", hex_str(key.key()), itr_index, index, latest.as_ref().unwrap().value().meta, key.value().meta);
+    //                 if *itr_index != index {
+    //                     self.export_disk();
+    //                 }
+    //                  self.itrs[*itr_index].next();
+    //                 assert_eq!(*itr_index, index);
+    //             } else {
+    //                 break;
+    //             }
+    //         }
+    //         #[cfg(test)]
+    //         info!("--------------------------");
+    //         self.cursor.borrow_mut().replace(index, latest);
+    //         //self.itrs.get(index).as_ref().unwrap().next(); // Skip current node
+    //     } else {
+    //         self.cursor.borrow_mut().index = 0;
+    //         self.cursor.borrow_mut().cur_item.take(); // Not found any thing.
+    //     }
+    //     self.peek()
+    // }
 
     /// Rewind iterator and return the current item (So it call next that will move to second item).
     /// Notice: 1: Only rewind inner iterators list. Not reverse self.itrs vec sequence, 2: maybe some iterator is empty (Why, TODO)
     /// TODO: Opz rewind algo
+    //    fn rewind(&self) -> Option<Self::Output> {
+    //      if self.itrs.is_empty() {
+    //        return None;
+    //   }
+    //  let mut heap = self.heap.borrow_mut();
+    // for (index, itr) in self.itrs.iter().enumerate() {
+    //    if let Some(item) = itr.rewind() {
+    ///      heap.push(IterRef { index, key: item })
+    // }
+    // }
+    ///self.cursor.borrow_mut().index = 0;
+    // self.next()
+    //}
+
     fn rewind(&self) -> Option<Self::Output> {
         if self.itrs.is_empty() {
             return None;
         }
-        for itr in self.itrs.iter() {
-            itr.rewind();
+        {
+            let mut heap = self.heap.borrow_mut();
+            heap.clear();
+            for (index, itr) in self.itrs.iter().enumerate() {
+                if let Some(item) = itr.rewind() {
+                    // info!("rewind {}, {}", index, hex_str(item.key()));
+                    heap.push(IterRef {
+                        index,
+                        key: item,
+                        rev: self.reverse,
+                    });
+                }
+            }
+            self.cursor.borrow_mut().index = 0;
+            self.cursor.borrow_mut().cur_item.take();
         }
-        self.cursor.borrow_mut().index = 0;
         self.next()
     }
 
@@ -189,7 +225,70 @@ impl MergeIterator {
                 keys.push(hex_str(key.key()));
             }
             let buffer = keys.join("#");
+            #[cfg(test)]
             crate::test_util::push_log(buffer.as_bytes(), false);
+        }
+    }
+    fn _next(&self) -> Option<IteratorItem> {
+        {
+            let mut heap = self.heap.borrow_mut();
+            if heap.is_empty() {
+                return None;
+            }
+            let first_el = heap.pop();
+            if first_el.is_none() {
+                return None;
+            }
+            let first_el = first_el.unwrap();
+            // Move it
+            self.cursor.borrow_mut().index = first_el.index;
+            self.cursor
+                .borrow_mut()
+                .cur_item
+                .replace(first_el.key.clone());
+            self.itrs.get(first_el.index).unwrap().next();
+
+            // move dummp keys
+            loop {
+                let pop = heap.pop();
+                if pop.is_none() {
+                    break;
+                }
+                // Find the same, pop it
+                let pop = pop.unwrap();
+                let pop_key = pop.key.key();
+                let first_key = first_el.key.key();
+                if pop_key != first_key {
+                    break;
+                }
+                let index = pop.index;
+                self.itrs.get(index).unwrap().next();
+            }
+        }
+
+        self.init_heap();
+        self.peek()
+    }
+
+    fn init_heap(&self) {
+        self.heap.borrow_mut().clear();
+        // Only push has element
+        for (index, itr) in self.itrs.iter().enumerate() {
+            if let Some(item) = itr.peek() {
+                if !self.reverse {
+                    self.heap.borrow_mut().push(IterRef {
+                        index,
+                        key: item,
+                        rev: self.reverse,
+                    })
+                } else {
+                    self.heap.borrow_mut().push(IterRef {
+                        index,
+                        key: item,
+                        rev: self.reverse,
+                    })
+                }
+            }
         }
     }
 }
@@ -228,80 +327,59 @@ impl MergeIterOverBuilder {
                 index: usize::MAX,
                 cur_item: None,
             }),
+            heap: RefCell::new(BinaryHeap::new()),
         }
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct IterRef {
+    index: usize,
+    key: IteratorItem,
+    rev: bool,
+}
+
+impl Ord for IterRef {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if !self.rev {
+            if self.key.key() == other.key.key() {
+                return other.index.cmp(&self.index);
+            }
+            other.key.key().cmp(&self.key.key())
+        } else {
+            if self.key.key() == other.key.key() {
+                return other.index.cmp(&self.index);
+            }
+            self.key.key().cmp(&other.key.key())
+        }
+    }
+}
+
+impl PartialOrd for IterRef {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for IterRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index && self.key.key() == other.key.key()
+    }
+}
+
+impl Eq for IterRef {}
+
 #[cfg(test)]
 mod tests {
     use std::fmt;
+    use tracing::info;
 
     use crate::{
-        table::iterator::IteratorItem, types::TArcMx, KeyValue, MergeIterOverBuilder, SkipList,
-        UniIterator, ValueStruct, Xiterator,
+        hex_str, table::iterator::IteratorItem, types::TArcMx, KeyValue, MergeIterOverBuilder,
+        SkipList, UniIterator, ValueStruct, Xiterator,
     };
 
-    #[test]
-    fn merge_iter_element() {
-        #[derive(Debug)]
-        struct TestIterator {
-            key: Vec<u8>,
-        }
-
-        impl fmt::Display for TestIterator {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "key: {}", String::from_utf8_lossy(&self.key))
-            }
-        }
-
-        impl Xiterator for TestIterator {
-            type Output = IteratorItem;
-
-            fn next(&self) -> Option<Self::Output> {
-                self.peek()
-            }
-
-            fn rewind(&self) -> Option<Self::Output> {
-                self.peek()
-            }
-
-            fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-                self.peek()
-            }
-
-            fn peek(&self) -> Option<Self::Output> {
-                Some(IteratorItem::new(self.key.clone(), ValueStruct::default()))
-            }
-        }
-
-        impl KeyValue<ValueStruct> for TestIterator {
-            fn key(&self) -> &[u8] {
-                &self.key
-            }
-
-            fn value(&self) -> ValueStruct {
-                todo!()
-            }
-        }
-
-        let t1 = Box::new(TestIterator {
-            key: b"abd".to_vec(),
-        });
-        let t2 = Box::new(TestIterator {
-            key: b"abc".to_vec(),
-        });
-        let t3 = Box::new(TestIterator {
-            key: b"abc".to_vec(),
-        });
-        let t4 = Box::new(TestIterator {
-            key: b"abc".to_vec(),
-        });
-
-        let builder = MergeIterOverBuilder::default().add_batch(vec![t3, t1, t4, t2]);
-        let miter = builder.build();
-        miter.next();
-        assert_eq!(miter.peek().unwrap().key(), b"abc");
-    }
+    use super::IterRef;
 
     #[tokio::test]
     async fn merge_iter_skip() {
@@ -349,9 +427,9 @@ mod tests {
                 .add(Box::new(UniIterator::new(st3.clone(), false)));
             let miter = builder.build();
             assert!(miter.peek().is_none());
-            let mut count = 0;
+            miter.rewind();
+            let mut count = 1;
             while let Some(value) = miter.next() {
-                // info!("{}", String::from_utf8_lossy(value.key()));
                 let expect = keys.lock().await;
                 let expect = expect.get(count).unwrap();
                 assert_eq!(value.key(), expect);
@@ -369,7 +447,8 @@ mod tests {
                 .add(Box::new(UniIterator::new(st3, true)));
             let miter = builder.build();
             assert!(miter.peek().is_none());
-            let mut count = 0;
+            miter.rewind();
+            let mut count = 1;
             keys.lock().await.sort_by(|a, b| b.cmp(a));
             while let Some(value) = miter.next() {
                 // info!("{}", String::from_utf8_lossy(value.key()));
@@ -412,9 +491,11 @@ mod tests {
             let keys = keys.clone().into_iter().unique().collect::<Vec<_>>();
             let miter = builder.build();
             assert!(miter.peek().is_none());
-            let mut count = 0;
+            let key = miter.rewind();
+            let mut count = 1;
+            assert_eq!(hex_str(key.as_ref().unwrap().key()), hex_str(&keys[0]));
             while let Some(value) = miter.next() {
-                // info!("{}", String::from_utf8_lossy(value.key()));
+                // log::info!("{}", String::from_utf8_lossy(value.key()));
                 let expect = keys.get(count).unwrap();
                 assert_eq!(value.key(), expect);
                 count += 1;
@@ -432,14 +513,54 @@ mod tests {
             let keys = keys.into_iter().unique().collect::<Vec<_>>();
             let miter = builder.build();
             assert!(miter.peek().is_none());
-            let mut count = 0;
+            let mut count = 1;
+            miter.rewind();
             while let Some(value) = miter.next() {
-                // info!("{}", String::from_utf8_lossy(value.key()));
                 let expect = keys.get(count).unwrap();
                 assert_eq!(value.key(), expect);
                 count += 1;
             }
             assert_eq!(count, keys.len());
         }
+    }
+
+    #[tokio::test]
+    async fn heap_iter() {
+        let build_key = |key: Vec<u8>| -> IteratorItem {
+            IteratorItem {
+                key,
+                value: ValueStruct::default(),
+            }
+        };
+        let elements = vec![
+            IterRef {
+                index: 10,
+                key: build_key(b"40".to_vec()),
+                rev: false,
+            },
+            IterRef {
+                index: 20,
+                key: build_key(b"59".to_vec()),
+                rev: false,
+            },
+            IterRef {
+                index: 9,
+                key: build_key(b"40".to_vec()),
+                rev: false,
+            },
+            IterRef {
+                index: 7,
+                key: build_key(b"41".to_vec()),
+                rev: false,
+            },
+        ];
+
+        let mut heap = std::collections::BinaryHeap::new();
+        for el in elements {
+            heap.push(std::cmp::Reverse(el));
+        }
+        crate::test_util::tracing_log();
+        let first = heap.pop().unwrap();
+        log::info!("{:?}", first);
     }
 }

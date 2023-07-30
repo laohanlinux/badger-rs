@@ -189,7 +189,7 @@ impl KV {
             out.notify_write_request_chan.clone(),
             out.opt.clone(),
         )
-            .await?;
+        .await?;
         lc.start_compact(out.closers.compactors.clone());
         out.lc.replace(lc);
         let mut vlog = ValueLogCore::default();
@@ -452,7 +452,10 @@ impl KV {
             // It should not fail
             self.write_to_lsm(req).await.unwrap();
         }
-        info!("cost time at write request: {}ms", SystemTime::now().duration_since(cost).unwrap().as_millis());
+        info!(
+            "cost time at write request: {}ms",
+            SystemTime::now().duration_since(cost).unwrap().as_millis()
+        );
         info!("{} entries written", count);
         Ok(())
     }
@@ -566,7 +569,10 @@ impl KV {
                     req = Request::default();
                     req_index.clear();
                 }
-                info!("get response: {}ms", SystemTime::now().duration_since(cost).unwrap().as_millis());
+                info!(
+                    "get response: {}ms",
+                    SystemTime::now().duration_since(cost).unwrap().as_millis()
+                );
             }
         }
 
@@ -589,13 +595,13 @@ impl KV {
         defer! {info!("exit write to lsm")}
 
         #[cfg(test)]
-            let tid = random::<u32>();
+        let tid = random::<u32>();
 
         for (i, pair) in req.entries.into_iter().enumerate() {
             let (entry, resp_ch) = pair.to_owned();
 
             #[cfg(test)]
-                let debug_entry = entry.clone();
+            let debug_entry = entry.clone();
 
             let mut old_cas = 0;
 
@@ -1075,7 +1081,7 @@ impl ArcKV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1169,7 +1175,7 @@ impl ArcKV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         info!("ready to yield item value from vlog!");
         // no value
