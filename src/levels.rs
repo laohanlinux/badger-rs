@@ -524,6 +524,8 @@ impl LevelsController {
 
             mitr.rewind();
             let mut count = 0;
+            let cur = tokio::runtime::Handle::current();
+            let enter = cur.enter();
             loop {
                 let start_time = SystemTime::now();
                 let mut builder = Builder::default();
@@ -534,6 +536,8 @@ impl LevelsController {
                     if builder.reached_capacity(self.opt.max_table_size) {
                         break;
                     }
+                    //info!("Put {}", hex_str(value.key()));
+
                     #[cfg(test)]
                     {
                         crate::test_util::push_log(

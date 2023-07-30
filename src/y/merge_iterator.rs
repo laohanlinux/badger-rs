@@ -36,6 +36,7 @@ impl Xiterator for MergeIterator {
 
     fn next(&self) -> Option<Self::Output> {
         if self.itrs.is_empty() {
+            self.set_iter_empty();
             return None;
         }
         assert_ne!(self.cursor.borrow().index, usize::MAX);
@@ -160,6 +161,7 @@ impl Xiterator for MergeIterator {
 
     fn rewind(&self) -> Option<Self::Output> {
         if self.itrs.is_empty() {
+            self.set_iter_empty();
             return None;
         }
         {
@@ -175,8 +177,7 @@ impl Xiterator for MergeIterator {
                     });
                 }
             }
-            self.cursor.borrow_mut().index = 0;
-            self.cursor.borrow_mut().cur_item.take();
+            self.set_iter_empty();
         }
         self.next()
     }
@@ -233,10 +234,12 @@ impl MergeIterator {
         {
             let mut heap = self.heap.borrow_mut();
             if heap.is_empty() {
+                self.set_iter_empty();
                 return None;
             }
             let first_el = heap.pop();
             if first_el.is_none() {
+                self.set_iter_empty();
                 return None;
             }
             let first_el = first_el.unwrap();
@@ -268,6 +271,11 @@ impl MergeIterator {
 
         self.init_heap();
         self.peek()
+    }
+
+    fn set_iter_empty(&self) {
+        self.cursor.borrow_mut().index = 0;
+        self.cursor.borrow_mut().cur_item.take();
     }
 
     fn init_heap(&self) {
