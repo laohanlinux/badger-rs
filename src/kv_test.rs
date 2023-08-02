@@ -39,66 +39,57 @@ async fn t_1_write() {
     assert_eq!(&got.unwrap().value, b"word");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t_batch_write() {
-    use crate::test_util::{mock_log, mock_log_terminal, random_tmp_dir, tracing_log};
+    use crate::test_util::{random_tmp_dir, tracing_log};
     tracing_log();
     let dir = random_tmp_dir();
     let kv = KV::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
-    let n = 10000;
+    let n = 50000;
     let mut batch = vec![];
     let mut start = SystemTime::now();
     for i in 1..n {
         let key = i.to_string().into_bytes();
-        // let res = kv.set(key, b"word".to_vec(), 10).await;
         batch.push(
             Entry::default()
                 .key(key)
                 .value(b"word".to_vec())
                 .user_meta(10),
         );
-        if batch.len() > 100 {
-            let res = kv.batch_set(batch.clone()).await;
-            for _res in res {
-                assert!(_res.is_ok());
-            }
-            batch.clear();
-        }
-        if i % 10000 == 0 {
-            info!(
-                "cost time：{}s",
-                SystemTime::now().duration_since(start).unwrap().as_secs()
-            )
+    }
+    for chunk in batch.chunks(100) {
+        let res = kv.batch_set(chunk.to_vec()).await;
+        for _res in res {
+            assert!(_res.is_ok());
         }
     }
-    {
-        if batch.len() > 0 {
-            let res = kv.batch_set(batch.clone()).await;
-            for _res in res {
-                assert!(_res.is_ok());
-            }
-            batch.clear();
-        }
-    }
+    batch.clear();
+
     {
         let lc = kv.must_lc();
         assert!(lc.validate().is_ok());
     }
+    warn!(
+        "after push first, cost {}ms",
+        SystemTime::now().duration_since(start).unwrap().as_millis()
+    );
     for i in 1..n {
         let key = i.to_string().into_bytes();
         let got = kv.exists(&key).await;
-        //kv.must_lc().print_level_fids();
         assert!(got.is_ok() && got.unwrap(), "#{}", hex_str(&key));
-        // assert_eq!(&got.unwrap().value, b"word");
     }
     let found = kv.exists(b"non-exists").await;
     assert!(found.is_ok());
     assert!(!found.unwrap());
 
+    warn!(
+        "after check exist, cost {}ms",
+        SystemTime::now().duration_since(start).unwrap().as_millis()
+    );
+
     for i in 1..n {
         let key = i.to_string().into_bytes();
-        // let res = kv.set(key, b"word".to_vec(), 10).await;
         batch.push(
             Entry::default()
                 .key(key)
@@ -106,33 +97,33 @@ async fn t_batch_write() {
                 .user_meta(10)
                 .meta(MetaBit::BIT_DELETE.bits()),
         );
-        if batch.len() > 100 {
-            let res = kv.batch_set(batch.clone()).await;
-            for _res in res {
-                assert!(_res.is_ok());
-            }
-            batch.clear();
-        }
-        if i % 10000 == 0 {
-            info!(
-                "cost time：{}s",
-                SystemTime::now().duration_since(start).unwrap().as_secs()
-            )
+    }
+    for chunk in batch.chunks(100) {
+        let res = kv.batch_set(chunk.to_vec()).await;
+        for _res in res {
+            assert!(_res.is_ok());
         }
     }
+    batch.clear();
+
     {
-        if batch.len() > 0 {
-            let res = kv.batch_set(batch.clone()).await;
-            for _res in res {
-                assert!(_res.is_ok());
-            }
-            batch.clear();
-        }
+        let lc = kv.must_lc();
+        assert!(lc.validate().is_ok());
     }
-    info!(
+    warn!(
+        "after push2 {}s",
+        SystemTime::now().duration_since(start).unwrap().as_secs()
+    );
+    for i in 1..n {
+        let key = i.to_string().into_bytes();
+        let got = kv.exists(&key).await;
+        assert!(got.is_ok() && !got.unwrap(), "#{}", hex_str(&key));
+    }
+    warn!(
         "cost time: {}s",
         SystemTime::now().duration_since(start).unwrap().as_secs()
     );
+    kv.must_lc().print_level_fids();
 }
 
 #[tokio::test]

@@ -171,7 +171,7 @@ impl BlockIterator {
                 .borrow_mut()
                 .extend_from_slice(&self.data[*pos as usize..(*pos + h.k_len as u32) as usize]);
         }
-        // drop pos advoid to borrow twice
+        // drop pos avoid to borrow twice
         drop(pos);
         let (key, value) = self.parse_kv(&h);
         Some(BlockIteratorItem { key, value })
@@ -217,12 +217,13 @@ impl BlockIterator {
         Some(BlockIteratorItem { key, value })
     }
 
+    #[inline]
     fn parse_kv(&self, h: &Header) -> (Vec<u8>, &[u8]) {
         let mut pos = self.pos.borrow_mut();
         let mut key = vec![0u8; (h.p_len + h.k_len) as usize];
-        key[..h.p_len as usize].copy_from_slice(&self.base_key.borrow()[..h.p_len as usize]);
+        key[..h.p_len as usize].clone_from_slice(&self.base_key.borrow()[..h.p_len as usize]);
         key[h.p_len as usize..]
-            .copy_from_slice(&self.data[*pos as usize..*pos as usize + h.k_len as usize]);
+            .clone_from_slice(&self.data[*pos as usize..*pos as usize + h.k_len as usize]);
         *pos += h.k_len as u32;
         assert!(
             *pos as usize + h.v_len as usize <= self.data.len(),
@@ -339,7 +340,7 @@ impl Xiterator for IteratorImpl {
 
     /// TODO maybe use Drop to decr reference
     fn close(&self) {
-       self.table.decr_ref();
+        self.table.decr_ref();
     }
 }
 
@@ -405,7 +406,6 @@ impl IteratorImpl {
 
         // not found
         let idx = idx.err().unwrap();
-        // info!("block_index {:?}, {:?}", idx, self.table.block_index);
         if idx == 0 {
             return self.seek_helper(idx as isize, key);
         }

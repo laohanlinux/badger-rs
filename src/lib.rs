@@ -20,6 +20,8 @@
 #![feature(stmt_expr_attributes)]
 #![feature(backtrace_frames)]
 
+extern crate core;
+
 use std::mem::align_of;
 
 mod event;

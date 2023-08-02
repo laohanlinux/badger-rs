@@ -67,13 +67,13 @@ impl SkipList {
 
     /// Increases the reference count
     pub fn incr_ref(&self) {
-        self._ref.fetch_add(1, Ordering::Relaxed);
+        self._ref.fetch_add(1, Ordering::Release);
     }
 
     // Sub crease the reference count, deallocating the skiplist when done using it
     // TODO
     pub fn decr_ref(&self) {
-        self._ref.fetch_sub(1, Ordering::Relaxed);
+        self._ref.fetch_sub(1, Ordering::Release);
     }
 
     fn valid(&self) -> bool {
@@ -430,7 +430,9 @@ impl SkipList {
 impl Drop for SkipList {
     fn drop(&mut self) {
         let _ref = self._ref.load(Ordering::Relaxed);
-        //info!("Drop SkipList, reference: {}, id:{}", _ref, self.id());
+        if _ref == 1 {
+            warn!("Drop SkipList, reference: {}, id:{}", _ref, self.id());
+        }
     }
 }
 
@@ -547,6 +549,7 @@ impl SkipIterator {
 
         let header = itr.st.get_head() as *const Node as *mut Node;
         itr.node.store(header, Ordering::Relaxed);
+        itr.st.incr_ref();
         itr
     }
 

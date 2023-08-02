@@ -47,6 +47,7 @@ pub(crate) struct LevelsController {
     manifest: TArcRW<ManifestFile>,
     opt: Options,
     last_unstalled: TArcRW<SystemTime>,
+    notify_try_compact_chan: Channel<()>,
     zero_level_compact_chan: Channel<()>,
     notify_write_request_chan: Channel<()>,
 }
@@ -62,6 +63,7 @@ impl std::fmt::Debug for LevelsController {
 impl LevelsController {
     pub(crate) async fn new(
         manifest: TArcRW<ManifestFile>,
+        notify_try_compact_chan: Channel<()>,
         zero_level_compact_chan: Channel<()>,
         notify_write_request_chan: Channel<()>,
         opt: Options,
@@ -125,6 +127,7 @@ impl LevelsController {
             manifest,
             opt: opt.clone(),
             last_unstalled: Arc::new(tokio::sync::RwLock::new(SystemTime::now())),
+            notify_try_compact_chan,
             zero_level_compact_chan,
             notify_write_request_chan,
         };
@@ -141,6 +144,7 @@ impl LevelsController {
         Ok(level_controller)
     }
 
+    #[inline]
     pub(crate) fn validate(&self) -> Result<()> {
         for level in self.levels.iter() {
             level.validate()?;
@@ -160,6 +164,7 @@ impl LevelsController {
         // parallelize this, we will need to call the h.RLock() function by increasing order of level
         // number.)
         for h in self.levels.iter() {
+            h.lock_shared();
             if let Some(item) = h.get(key) {
                 #[cfg(test)]
                 {
@@ -174,8 +179,10 @@ impl LevelsController {
                         hex_str(item.key())
                     );
                 }
+                h.unlock_shared();
                 return Some(item.value().clone());
             }
+            h.unlock_shared();
         }
         None
     }
@@ -214,10 +221,36 @@ impl LevelsController {
         // 1 seconds to check compact
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         let zero_level_compact_chan = self.zero_level_compact_chan.tx();
+        let notify_try_compact_chan = self.notify_try_compact_chan.rx();
         loop {
             // why interval can life long
             let done = lc.has_been_closed();
             tokio::select! {
+                _ = notify_try_compact_chan.recv() => {
+                    let pick: Vec<CompactionPriority> = self.pick_compact_levels();
+                    info!("Try to compact levels, {:?}", pick);
+                    if pick.is_empty() {
+                        zero_level_compact_chan.try_send(());
+                    }
+                    for p in pick {
+                        match self.do_compact(p.clone()).await {
+                            Ok(true) => {
+                                info!("Succeed to compacted");
+                                if p.level == 0 {
+                                    zero_level_compact_chan.try_send(());
+                                }
+                            },
+                            Ok(false) => {
+                                info!("Skip to do compacted");
+                                break;
+                            },
+                            Err(err) => { // TODO handle error
+                                error!("Failed to do compacted, {:?}", err);
+                            },
+                        }
+                    }
+                    interval.reset();
+                },
                 _ = interval.tick() => {
                     let pick: Vec<CompactionPriority> = self.pick_compact_levels();
                     info!("Try to compact levels, {:?}", pick);
@@ -399,7 +432,10 @@ impl LevelsController {
             .await?;
         info!("Ready add level0 table, id:{}", table.id());
         let zero_level_compact_chan = self.zero_level_compact_chan.rx();
+        let notify_try_compact_chan = self.notify_try_compact_chan.tx();
         while !self.levels[0].try_add_level0_table(table.clone()).await {
+            // Notify compact job
+            notify_try_compact_chan.try_send(());
             // Stall. Make sure all levels are healthy before we unstall.
             let mut start_time = SystemTime::now();
             {
@@ -524,6 +560,7 @@ impl LevelsController {
 
             mitr.rewind();
             let mut count = 0;
+            let cur = tokio::runtime::Handle::current();
             loop {
                 let start_time = SystemTime::now();
                 let mut builder = Builder::default();
@@ -534,6 +571,7 @@ impl LevelsController {
                     if builder.reached_capacity(self.opt.max_table_size) {
                         break;
                     }
+
                     #[cfg(test)]
                     {
                         crate::test_util::push_log(
@@ -675,7 +713,7 @@ impl LevelsController {
     // Find the KeyRange that should be merge between cd.this and cd.next
     fn fill_tables_l0(&self, cd: &mut CompactDef) -> bool {
         // lock this, next levels avoid other GC worker
-        cd.lock_shared_levels();
+        cd.lock_exclusive_levels();
         let top = cd.this_level.to_ref().tables.read();
         // TODO here maybe have some issue that i don't understand
         let tables = top.to_vec();
@@ -684,7 +722,7 @@ impl LevelsController {
         assert!(cd.top.is_empty(), "Sanity check!");
         cd.top.extend(tables);
         if cd.top.is_empty() {
-            cd.unlock_shared_levels();
+            cd.unlock_exclusive_levels();
             return false;
         }
         // all kv paire has included.
@@ -704,21 +742,21 @@ impl LevelsController {
         }
         // Add compact status avoid other gcc operate the `RangeKeys`
         if !self.c_status.compare_and_add(cd) {
-            cd.unlock_shared_levels();
+            cd.unlock_exclusive_levels();
             return false;
         }
-        cd.unlock_shared_levels();
+        cd.unlock_exclusive_levels();
         true
     }
 
     // fill tables for compactDef, and locked them KeyRange
     fn fill_tables(&self, cd: &mut CompactDef) -> bool {
         // lock current level and next levels, So there is at most one compression process per layer
-        cd.lock_shared_levels();
+        cd.lock_exclusive_levels();
         let mut tables = cd.this_level.to_ref().tables.read().to_vec();
         if tables.is_empty() {
             info!("the tables is empty, skip compact deference");
-            cd.unlock_shared_levels();
+            cd.unlock_exclusive_levels();
             return false;
         }
         // Find the biggest table, and compact that first.
@@ -764,7 +802,7 @@ impl LevelsController {
                     info!("find a conflict compacted, cd: {}", cd);
                     continue;
                 }
-                cd.unlock_shared_levels();
+                cd.unlock_exclusive_levels();
                 return true;
             }
 
@@ -782,10 +820,10 @@ impl LevelsController {
                 info!("failed to compactDef to c_status, {}", cd);
                 continue;
             }
-            cd.unlock_shared_levels();
+            cd.unlock_exclusive_levels();
             return true;
         }
-        cd.unlock_shared_levels();
+        cd.unlock_exclusive_levels();
         false
     }
 
@@ -852,7 +890,7 @@ impl LevelsController {
             .iter()
             .map(|lv| lv.num_tables())
             .collect::<Vec<_>>();
-        //info!("every level size: {:?}", sz);
+        warn!("every level table's size: {:?}", sz);
     }
 }
 
@@ -922,6 +960,18 @@ impl CompactDef {
     fn unlock_shared_levels(&self) {
         self.next_level.unlock_shared();
         self.this_level.unlock_shared();
+    }
+
+    #[inline]
+    pub fn lock_exclusive_levels(&self) {
+        self.this_level.lock_exclusive();
+        self.next_level.lock_exclusive();
+    }
+
+    #[inline]
+    pub fn unlock_exclusive_levels(&self) {
+        self.next_level.unlock_exclusive();
+        self.this_level.unlock_exclusive();
     }
 }
 

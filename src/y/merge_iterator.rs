@@ -7,7 +7,9 @@ use crate::y::iterator::Xiterator;
 use crate::y::KeyValue;
 use itertools::Itertools;
 use std::cell::RefCell;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::btree_set::Iter;
+use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::os::macos::raw::stat;
 
 /// Cursor of the iterator of merge.
 pub struct MergeCursor {
@@ -29,6 +31,7 @@ pub struct MergeIterator {
     pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
     pub heap: RefCell<BinaryHeap<IterRef>>,
+    pub heap_flag: RefCell<Vec<bool>>,
 }
 
 impl Xiterator for MergeIterator {
@@ -160,24 +163,20 @@ impl Xiterator for MergeIterator {
 
     fn rewind(&self) -> Option<Self::Output> {
         if self.itrs.is_empty() {
+            self.set_iter_empty();
             return None;
         }
         {
-            let mut heap = self.heap.borrow_mut();
-            heap.clear();
+            self.heap.borrow_mut().clear();
             for (index, itr) in self.itrs.iter().enumerate() {
                 if let Some(item) = itr.rewind() {
                     // info!("rewind {}, {}", index, hex_str(item.key()));
-                    heap.push(IterRef {
-                        index,
-                        key: item,
-                        rev: self.reverse,
-                    });
+                    self.push_item_into_heap(index, item);
                 }
             }
-            self.cursor.borrow_mut().index = 0;
-            self.cursor.borrow_mut().cur_item.take();
+            self.set_iter_empty();
         }
+
         self.next()
     }
 
@@ -230,13 +229,18 @@ impl MergeIterator {
         }
     }
     fn _next(&self) -> Option<IteratorItem> {
+        let mut stack = vec![];
         {
-            let mut heap = self.heap.borrow_mut();
-            if heap.is_empty() {
-                return None;
+            {
+                let heap = self.heap.borrow_mut();
+                if heap.is_empty() {
+                    self.set_iter_empty();
+                    return None;
+                }
             }
-            let first_el = heap.pop();
+            let first_el = self.pop_item_from_heap();
             if first_el.is_none() {
+                self.set_iter_empty();
                 return None;
             }
             let first_el = first_el.unwrap();
@@ -247,49 +251,78 @@ impl MergeIterator {
                 .cur_item
                 .replace(first_el.key.clone());
             self.itrs.get(first_el.index).unwrap().next();
+            stack.push(first_el.index);
 
             // move dummp keys
             loop {
-                let pop = heap.pop();
+                let mut heap = self.heap.borrow_mut();
+                let pop = heap.peek();
                 if pop.is_none() {
                     break;
                 }
-                // Find the same, pop it
                 let pop = pop.unwrap();
                 let pop_key = pop.key.key();
                 let first_key = first_el.key.key();
+                let index = pop.index;
                 if pop_key != first_key {
                     break;
                 }
-                let index = pop.index;
+                // Find the same, pop it
+                heap.pop();
+                stack.push(index);
                 self.itrs.get(index).unwrap().next();
             }
         }
 
-        self.init_heap();
+        self.init_heap_by_indexs(stack);
+        // self.init_heap();
         self.peek()
     }
 
+    fn set_iter_empty(&self) {
+        self.cursor.borrow_mut().index = 0;
+        self.cursor.borrow_mut().cur_item.take();
+    }
+
     fn init_heap(&self) {
-        self.heap.borrow_mut().clear();
+        // self.heap.borrow_mut().clear();
         // Only push has element
         for (index, itr) in self.itrs.iter().enumerate() {
             if let Some(item) = itr.peek() {
-                if !self.reverse {
-                    self.heap.borrow_mut().push(IterRef {
-                        index,
-                        key: item,
-                        rev: self.reverse,
-                    })
-                } else {
-                    self.heap.borrow_mut().push(IterRef {
-                        index,
-                        key: item,
-                        rev: self.reverse,
-                    })
-                }
+                self.push_item_into_heap(index, item);
             }
         }
+    }
+
+    fn init_heap_by_indexs(&self, stack: Vec<usize>) {
+        for index in stack {
+            if let Some(item) = self.itrs[index].peek() {
+                self.push_item_into_heap(index, item);
+            }
+        }
+    }
+
+    #[inline]
+    fn push_item_into_heap(&self, index: usize, item: IteratorItem) {
+        if self.heap_flag.borrow()[index] {
+            return;
+        }
+
+        self.heap_flag.borrow_mut()[index] = true;
+        self.heap.borrow_mut().push(IterRef {
+            index,
+            key: item,
+            rev: self.reverse,
+        });
+    }
+
+    #[inline]
+    fn pop_item_from_heap(&self) -> Option<IterRef> {
+        if let Some(item) = self.heap.borrow_mut().pop() {
+            self.heap_flag.borrow_mut()[item.index] = false;
+            return Some(item);
+        }
+        None
     }
 }
 
@@ -320,6 +353,8 @@ impl MergeIterOverBuilder {
     }
 
     pub fn build(self) -> MergeIterator {
+        let cap = self.all.len();
+        let mut flag = vec![false; cap];
         MergeIterator {
             reverse: self.reverse,
             itrs: self.all,
@@ -327,7 +362,8 @@ impl MergeIterOverBuilder {
                 index: usize::MAX,
                 cur_item: None,
             }),
-            heap: RefCell::new(BinaryHeap::new()),
+            heap_flag: RefCell::new(flag),
+            heap: RefCell::new(BinaryHeap::with_capacity(cap)),
         }
     }
 }

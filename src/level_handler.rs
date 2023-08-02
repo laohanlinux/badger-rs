@@ -323,7 +323,6 @@ impl LevelHandler {
                 tb.decr_ref();
                 if let Some(item) = item {
                     if item.key() != key {
-                        //warn!("try it again, key #{}", crate::y::hex_str(key));
                         continue;
                     }
                     return Some(item);
@@ -345,7 +344,7 @@ impl LevelHandler {
             let tb = tw.get(index).unwrap();
             tb.incr_ref();
             if tb.does_not_have(key) {
-                debug!("not contain it, key #{}, st: {}", hex_str(key), tb.id());
+                //debug!("not contain it, key #{}, st: {}", hex_str(key), tb.id());
                 tb.decr_ref();
                 return None;
             }

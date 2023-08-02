@@ -1,6 +1,6 @@
 use atomic::Atomic;
 use chrono::Local;
-use log::{info, kv::source::as_map, kv::Source, Level};
+use log::{info, kv::source::as_map, kv::Source, Level, warn};
 use rand::random;
 use std::collections::HashMap;
 use std::env::temp_dir;
@@ -10,11 +10,14 @@ use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Handle;
+use tokio_metrics::TaskMonitor;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
 
 #[cfg(test)]
 pub fn push_log(buf: &[u8], rd: bool) {
+    #[cfg(test)]
+    return;
     use std::io::Write;
     let mut fpath = "raw_log.log";
     let mut fp = if !rd {
@@ -122,13 +125,30 @@ pub(crate) fn tracing_log() {
         .with_timer(LocalTimer);
 
     let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(tracing::Level::WARN)
         .with_writer(io::stdout)
         .with_ansi(true)
         .event_format(format)
         .try_init();
     remove_push_log();
     info!("log setting done");
+}
+
+#[cfg(test)]
+pub(crate) async fn start_metrics() -> TaskMonitor {
+    let monitor = tokio_metrics::TaskMonitor::new();
+    // print task metrics every 500ms
+    {
+        let frequency = std::time::Duration::from_millis(500);
+        let monitor = monitor.clone();
+        tokio::spawn(async move {
+            for metrics in monitor.intervals() {
+                warn!("{:?}", metrics);
+                tokio::time::sleep(frequency).await;
+            }
+        });
+    }
+    monitor
 }
 
 pub fn random_tmp_dir() -> String {

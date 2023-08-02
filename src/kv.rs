@@ -82,6 +82,7 @@ pub struct KV {
     pub manifest: Arc<RwLock<ManifestFile>>,
     lc: Option<LevelsController>,
     flush_chan: Channel<FlushTask>,
+    notify_try_compact_chan: Channel<()>,
     // Notify zero has compact, so we should try add table into zero tables
     zero_level_compact_chan: Channel<()>,
     notify_write_request_chan: Channel<()>,
@@ -129,7 +130,7 @@ impl BoxKV {
 impl KV {
     pub async fn open(mut opt: Options) -> Result<XArc<KV>> {
         opt.max_batch_size = (15 * opt.max_table_size) / 100;
-        opt.max_batch_count = opt.max_batch_size / Node::size() as u64;
+        opt.max_batch_count = 2 * opt.max_batch_size / Node::size() as u64;
         create_dir_all(opt.dir.as_str()).await?;
         create_dir_all(opt.value_dir.as_str()).await?;
         if !(opt.value_log_file_size <= 2 << 30 && opt.value_log_file_size >= 1 << 20) {
@@ -167,6 +168,7 @@ impl KV {
             manifest: Arc::new(RwLock::new(manifest_file)),
             lc: None,
             flush_chan: Channel::new(opt.num_mem_tables),
+            notify_try_compact_chan: Channel::new(1),
             zero_level_compact_chan: Channel::new(3),
             notify_write_request_chan: Channel::new(3),
             dir_lock_guard,
@@ -185,6 +187,7 @@ impl KV {
         // handle levels_controller
         let lc = LevelsController::new(
             manifest.clone(),
+            out.notify_try_compact_chan.clone(),
             out.zero_level_compact_chan.clone(),
             out.notify_write_request_chan.clone(),
             out.opt.clone(),
@@ -351,18 +354,25 @@ impl KV {
 
     // get returns the value in `mem_table` or disk for given key.
     // Note that value will include meta byte.
+    #[inline]
     pub(crate) fn _get(&self, key: &[u8]) -> Result<ValueStruct> {
         let p = crossbeam_epoch::pin();
         let tables = self.get_mem_tables(&p);
+        // Must decrefernce skiplist
+        let decref_tables = || {
+            tables
+                .iter()
+                .for_each(|tb| unsafe { tb.as_ref().unwrap().decr_ref() })
+        };
+        defer! {decref_tables()};
         // TODO add metrics
-        for tb in tables {
+        for tb in tables.iter() {
             let st = unsafe { tb.as_ref().unwrap() };
             let vs = st.get(key);
             if vs.is_none() {
                 continue;
             }
             let vs = vs.unwrap();
-            // TODO why
             if vs.meta != 0 || !vs.value.is_empty() {
                 debug!(
                     "fount from skiplist, st:{}, key #{}, value: {}",
@@ -373,7 +383,7 @@ impl KV {
                 return Ok(vs);
             }
         }
-        //warn!("found from disk table, key #{}", crate::y::hex_str(key));
+        warn!("found from disk table, key #{}", crate::y::hex_str(key));
         self.must_lc().get(key).ok_or(NotFound)
     }
 
@@ -447,7 +457,7 @@ impl KV {
                     },
                 }
             }
-            info!("Waiting for write lsm, count {}", count);
+            warn!("Waiting for write lsm, count {}", count);
             self.update_offset(&mut req.ptrs).await;
             // It should not fail
             self.write_to_lsm(req).await.unwrap();
@@ -555,7 +565,7 @@ impl KV {
 
             if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_size {
                 assert!(!self.write_ch.is_close());
-                info!("send tasks to write, entries: {}, count:{}, max_batch_count:{}, size:{}, max_batch_count:{}", req.entries.len(), count, self.opt.max_batch_count, sz, self.opt.max_batch_size);
+                warn!("send tasks to write, entries: {}, count:{}, max_batch_count:{}, size:{}, max_batch_count:{}", req.entries.len(), count, self.opt.max_batch_count, sz, self.opt.max_batch_size);
                 let cost = SystemTime::now();
                 let resp_ch = req.get_resp_channel();
                 self.write_ch.send(req).await.unwrap();
@@ -770,7 +780,6 @@ impl KV {
             Err(err) if err.is_not_found() => Ok(false),
             Err(err) => Err(err),
             Ok(value) => {
-                //info!("{:?}", value);
                 if value.value.is_empty() && value.meta == 0 {
                     return Ok(false);
                 }

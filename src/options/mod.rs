@@ -102,8 +102,8 @@ impl Default for Options {
             value_log_file_size: 1 << 30,
             num_compactors: 1,
             do_not_compact: false,
-            max_batch_count: 100,
-            max_batch_size: 1 << 12,
+            max_batch_count: 200,
+            max_batch_size: 1 << 13,
         }
     }
 }

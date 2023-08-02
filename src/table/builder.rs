@@ -9,6 +9,7 @@ use serde_json;
 use std::hash::Hasher;
 use std::io::{Cursor, Read, Write};
 
+// TODO use simd
 #[derive(Clone, Default, Debug)]
 pub(crate) struct Header {
     pub(crate) p_len: u16, // Overlap with base key(Prefix length)
