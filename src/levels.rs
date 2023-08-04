@@ -23,7 +23,7 @@ use parking_lot::lock_api::RawRwLock;
 use tracing::instrument;
 
 use std::collections::HashSet;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::fs::remove_file;
 use std::io::Write;
 use std::ops::Deref;
@@ -208,7 +208,8 @@ impl LevelsController {
 
     // compact worker
     async fn run_worker(&self, lc: Closer) {
-        defer! {lc.done()};
+        defer! {lc.done()}
+        ;
         if self.opt.do_not_compact {
             return;
         }
@@ -498,8 +499,8 @@ impl LevelsController {
     pub(crate) fn as_iterator(
         &self,
         reverse: bool,
-    ) -> Vec<Box<dyn Xiterator<Output = IteratorItem>>> {
-        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+    ) -> Vec<Box<dyn Xiterator<Output=IteratorItem>>> {
+        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
         for level in self.levels.iter() {
             if level.level() == 0 {
                 for table in level.tables.read().iter().rev() {
@@ -517,6 +518,7 @@ impl LevelsController {
     }
 
     // Merge top tables and bot tables to from a List of new tables.
+    #[instrument(skip(self))]
     pub(crate) async fn compact_build_tables(
         &self,
         l: usize,
@@ -533,16 +535,16 @@ impl LevelsController {
             let mut top_tables = cd.top.clone();
             let bot_tables = cd.bot.clone();
             // Create iterators across all the tables involved first.
-            let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+            let mut itr: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
             if l == 0 {
                 top_tables.reverse();
-                for (i, _) in top_tables.iter().enumerate() {
-                    info!(
-                        "======== {}, {} ",
-                        hex_str(&top_tables[i].smallest()),
-                        bot_tables.len()
-                    );
-                }
+                // for (i, _) in top_tables.iter().enumerate() {
+                //     info!(
+                //         "======== {}, {} ",
+                //         hex_str(&top_tables[i].smallest()),
+                //         bot_tables.len()
+                //     );
+                // }
             } else {
                 assert_eq!(1, top_tables.len());
             }
@@ -605,7 +607,7 @@ impl LevelsController {
                             "While opening new table: {}, err: {}",
                             file_id, err
                         )
-                        .into()))
+                            .into()))
                             .unwrap();
                         return;
                     }
@@ -614,7 +616,7 @@ impl LevelsController {
                             "Unable to write to file: {}, err: {}",
                             file_id, err
                         )
-                        .into()))
+                            .into()))
                             .unwrap();
                         return;
                     }
@@ -624,7 +626,7 @@ impl LevelsController {
                             "Unable to open table: {}, err: {}",
                             file_name, err
                         )
-                        .into()))
+                            .into()))
                             .unwrap();
                     } else {
                         tx.send(Ok(Table::new(tbl.unwrap()))).unwrap();
@@ -677,7 +679,7 @@ impl LevelsController {
                 cd.read().await,
                 first_err.unwrap_err()
             )
-            .into());
+                .into());
         }
         Ok(new_tables)
     }
@@ -709,7 +711,7 @@ impl LevelsController {
         changes
     }
 
-    // Find the KeyRange that should be merge between cd.this and cd.next
+    // Find the KeyRange that should be merged between cd.this and cd.next
     fn fill_tables_l0(&self, cd: &mut CompactDef) -> bool {
         // lock this, next levels avoid other GC worker
         cd.lock_exclusive_levels();
@@ -724,9 +726,8 @@ impl LevelsController {
             cd.unlock_exclusive_levels();
             return false;
         }
-        // all kv paire has included.
+        // all kv pair has included.
         cd.this_range = INFO_RANGE;
-
         let kr = KeyRange::get_range(cd.top.as_ref());
         let (left, right) = cd.next_level.overlapping_tables(&kr);
         let bot = cd.next_level.to_ref().tables.read();
@@ -910,6 +911,12 @@ pub(crate) struct CompactDef {
     pub(crate) this_range: KeyRange,
     pub(crate) next_range: KeyRange,
     pub(crate) this_size: AtomicU64, // the compacted table's size(NOTE: this level compacted table is only one, exclude zero level)
+}
+
+impl Debug for CompactDef {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
+    }
 }
 
 impl Display for CompactDef {

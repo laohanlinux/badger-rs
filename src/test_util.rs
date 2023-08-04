@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio_metrics::TaskMonitor;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
 
@@ -42,58 +43,7 @@ pub fn push_log(buf: &[u8], rd: bool) {
 #[cfg(test)]
 pub fn remove_push_log() {
     use std::fs::remove_file;
-
     remove_file("raw_log.log");
-}
-
-#[cfg(test)]
-pub(crate) fn mock_log() {
-    use chrono::Local;
-    use env_logger::Env;
-    use log::kv::source::AsMap;
-    use log::kv::{Error, Key, ToKey, ToValue, Value};
-    use serde::{Deserialize, Serialize};
-    use std::io::Write;
-
-    #[derive(Serialize, Deserialize)]
-    struct JsonLog {
-        level: log::Level,
-        ts: String,
-        module: String,
-        msg: String,
-        #[serde(skip_serializing_if = "HashMap::is_empty", flatten)]
-        kv: HashMap<String, serde_json::Value>,
-    }
-
-    let env = Env::default()
-        .filter_or("MY_LOG_LEVEL", "error")
-        .write_style_or("MY_LOG_STYLE", "always");
-    let _ = env_logger::Builder::from_env(env)
-        .format(|buf, record| {
-            let mut l = JsonLog {
-                ts: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
-                module: record.file().unwrap_or("unknown").to_string()
-                    + ":"
-                    + &*record.line().unwrap_or(0).to_string(),
-                level: record.level(),
-                msg: record.args().to_string(),
-                kv: Default::default(),
-            };
-            let kv: AsMap<&dyn Source> = as_map(record.key_values());
-            if let Ok(kv) = serde_json::to_string(&kv) {
-                let h: HashMap<String, serde_json::Value> = serde_json::from_str(&kv).unwrap();
-                l.kv.extend(h.into_iter());
-            }
-            writeln!(buf, "{}", serde_json::to_string(&l).unwrap())
-        })
-        .try_init();
-    log::info!( is_ok = true; "start init log");
-    // env_logger::try_init_from_env(env);
-}
-
-#[cfg(test)]
-pub(crate) fn mock_log_terminal() {
-    console_log::init_with_level(Level::Debug);
 }
 
 #[cfg(test)]
@@ -117,7 +67,6 @@ pub(crate) fn tracing_log() {
         std::process::exit(1);
     }));
 
-    let _ = tracing_log::LogTracer::init();
     let format = tracing_subscriber::fmt::format()
         // .with_thread_names(true)
         .with_level(true)
@@ -125,13 +74,13 @@ pub(crate) fn tracing_log() {
         .with_timer(LocalTimer);
 
     let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
+        .with_env_filter(EnvFilter::from_default_env())
         .with_writer(io::stdout)
         .with_ansi(true)
         .event_format(format)
         .try_init();
     remove_push_log();
-    info!("log setting done");
+    let recorder = metrics_prometheus::install();
 }
 
 #[cfg(test)]

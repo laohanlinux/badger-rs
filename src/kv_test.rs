@@ -26,7 +26,7 @@ fn get_test_option(dir: &str) -> Options {
 
 #[tokio::test]
 async fn t_1_write() {
-    use crate::test_util::{mock_log, mock_log_terminal, random_tmp_dir, tracing_log};
+    use crate::test_util::{random_tmp_dir, tracing_log};
     tracing_log();
     // console_subscriber::init();
     let dir = random_tmp_dir();
@@ -39,7 +39,7 @@ async fn t_1_write() {
     assert_eq!(&got.unwrap().value, b"word");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn t_batch_write() {
     use crate::test_util::{random_tmp_dir, tracing_log};
     tracing_log();
@@ -128,7 +128,7 @@ async fn t_batch_write() {
 
 #[tokio::test]
 async fn t_concurrent_write() {
-    use crate::test_util::{mock_log, mock_log_terminal, random_tmp_dir, tracing_log};
+    use crate::test_util::{random_tmp_dir, tracing_log};
     tracing_log();
     let dir = random_tmp_dir();
     let kv = KV::open(get_test_option(&dir)).await;
@@ -362,7 +362,7 @@ async fn t_kv_get_more() {
 }
 
 async fn build_kv() -> XArc<KV> {
-    use crate::test_util::{mock_log, mock_log_terminal, random_tmp_dir, tracing_log};
+    use crate::test_util::{random_tmp_dir, tracing_log};
     tracing_log();
     let dir = random_tmp_dir();
     let kv = KV::open(get_test_option(&dir)).await;

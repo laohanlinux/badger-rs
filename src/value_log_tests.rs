@@ -1,6 +1,5 @@
 use crate::kv::KV;
 use crate::options::Options;
-use crate::test_util::{mock_log, mock_log_terminal, random_tmp_dir};
 use crate::value_log::{Entry, MetaBit, Request};
 use awaitgroup::WaitGroup;
 use std::cell::RefCell;
