@@ -39,6 +39,7 @@ impl Xiterator for MergeIterator {
 
     fn next(&self) -> Option<Self::Output> {
         if self.itrs.is_empty() {
+            self.set_iter_empty();
             return None;
         }
         assert_ne!(self.cursor.borrow().index, usize::MAX);

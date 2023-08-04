@@ -571,7 +571,6 @@ impl LevelsController {
                     if builder.reached_capacity(self.opt.max_table_size) {
                         break;
                     }
-
                     #[cfg(test)]
                     {
                         crate::test_util::push_log(
