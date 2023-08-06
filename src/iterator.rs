@@ -279,7 +279,7 @@ impl IteratorExt {
         if item.is_none() {
             return None;
         }
-        println!("peek key: {:?}", item);
+        // println!("peek key: {:?}", item);
         let xitem = self.new_item();
         self.fill(xitem.clone()).await;
         self.data.write().push_back(xitem.clone());

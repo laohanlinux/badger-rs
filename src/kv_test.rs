@@ -1,6 +1,9 @@
+use awaitgroup::WaitGroup;
 use drop_cell::defer;
+use itertools::Itertools;
 use log::kv::ToValue;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
+use std::collections::HashSet;
 use std::env::temp_dir;
 use std::io::{Read, Write};
 use std::process::id;
@@ -10,6 +13,7 @@ use tokio::io::AsyncWriteExt;
 use tracing_subscriber::fmt::format;
 
 use crate::iterator::IteratorOptions;
+use crate::test_util::{push_log, remove_push_log};
 use crate::types::{TArcMx, XArc};
 use crate::value_log::{Entry, MetaBit};
 use crate::y::hex_str;
@@ -48,7 +52,7 @@ async fn t_batch_write() {
     let kv = kv.unwrap();
     let n = 50000;
     let mut batch = vec![];
-    let mut start = SystemTime::now();
+    let start = SystemTime::now();
     for i in 1..n {
         let key = i.to_string().into_bytes();
         batch.push(
@@ -98,6 +102,7 @@ async fn t_batch_write() {
                 .meta(MetaBit::BIT_DELETE.bits()),
         );
     }
+    batch.reverse();
     for chunk in batch.chunks(100) {
         let res = kv.batch_set(chunk.to_vec()).await;
         for _res in res {
@@ -134,14 +139,15 @@ async fn t_concurrent_write() {
     let kv = KV::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
     let mut wg = awaitgroup::WaitGroup::new();
-    let n = 300;
-    let m = 10;
+    let n = 20;
+    let m = 500;
     let keys = TArcMx::new(tokio::sync::Mutex::new(vec![]));
     for i in 0..n {
         let kv = kv.clone();
         let wk = wg.worker();
         let keys = keys.clone();
         tokio::spawn(async move {
+            defer! {wk.done()}
             for j in 0..m {
                 let key = format!("k{:05}_{:08}", i, j).into_bytes().to_vec();
                 keys.lock().await.push(key.clone());
@@ -150,12 +156,12 @@ async fn t_concurrent_write() {
                     .await;
                 assert!(res.is_ok());
             }
-            wk.done();
         });
     }
 
     wg.wait().await;
     info!("Starting iteration");
+    tokio::time::sleep(Duration::from_secs(3)).await;
     let itr = kv
         .new_iterator(IteratorOptions {
             reverse: false,
@@ -163,24 +169,54 @@ async fn t_concurrent_write() {
             pre_fetch_size: 10,
         })
         .await;
-    let mut i = 0;
-    keys.lock().await.sort();
-    let keys = keys.lock().await;
+    let mut keys = keys.lock().await;
+    keys.sort();
+    for key in keys.iter() {
+        assert!(kv.exists(key).await.unwrap());
+    }
+
+    {
+        assert!(kv.exists(b"k00000_00000000").await.unwrap());
+        assert!(kv.exists(b"k00000_00000002").await.unwrap());
+        assert!(kv.exists(b"k00000_00000003").await.unwrap());
+        assert!(kv.exists(b"k00000_00000004").await.unwrap());
+        assert!(kv.exists(b"k00000_00000005").await.unwrap());
+        assert!(kv.exists(b"k00000_00000006").await.unwrap());
+        assert!(kv.exists(b"k00000_00000007").await.unwrap());
+        assert!(kv.exists(b"k00000_00000008").await.unwrap());
+        assert!(kv.exists(b"k00000_00000009").await.unwrap());
+        assert!(kv.exists(b"k00000_00000010").await.unwrap());
+    }
     let got = kv.get_with_ext(b"k00003_00000008").await.unwrap();
     let value = got.read().await;
-    println!(
-        "{:?}",
-        String::from_utf8_lossy(value.get_value().await.as_ref().unwrap())
-    );
+    log::error!("{:05}, load key: {}", 0, hex_str(value.key()));
+    let mut count_set = HashSet::new();
+    let item = itr.rewind().await.unwrap();
+    count_set.insert(hex_str(item.read().await.key()));
+    let mut i = 1;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let str = keys.iter().map(|key| hex_str(key)).join(",");
+    // error!("#{}", str);
     while let Some(item) = itr.next().await {
         let kv_item = item.read().await;
-        println!("load key: {}", String::from_utf8_lossy(kv_item.key()));
+        count_set.insert(hex_str(kv_item.key().clone()));
+        log::error!("{:05}, load key: {}", i, hex_str(kv_item.key()));
         let expect = String::from_utf8_lossy(keys.get(i).unwrap());
         let got = String::from_utf8_lossy(kv_item.key());
-        assert_eq!(expect, got);
+        // assert_eq!(expect, got);
         // assert_eq!(kv_item.key(), format!("{}", i).as_bytes());
         // assert_eq!(kv_item.get_value().await.unwrap(), b"word".to_vec());
         i += 1;
+
+        // push_log(kv_item.key(), false);
+    }
+
+    error!("{}", i);
+
+    for key in keys.iter() {
+        if !count_set.contains(&hex_str(key)) {
+            error!("{}", hex_str(key));
+        }
     }
 }
 

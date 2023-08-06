@@ -435,8 +435,7 @@ pub struct ValueLogCore {
     vlogs: TArcRW<HashMap<u32, TArcRW<LogFile>>>,
     // TODO It is not good idea that use raw lock for Arc<RwLock<LogFile>>, it maybe lock AsyncRuntime thread.
     dirty_vlogs: TArcRW<HashSet<u32>>,
-    // TODO why?
-    // A refcount of iterators -- when this hits zero, we can delete the files_to_be_deleted. Why?
+    // A refcount of iterators -- when this hits zero, we can delete the files_to_be_deleted
     num_active_iterators: AtomicI32,
     writable_log_offset: AtomicU32,
     buf: TArcRW<Cursor<Vec<u8>>>,
@@ -444,6 +443,7 @@ pub struct ValueLogCore {
     kv: BoxKV,
     // Only allow one GC at a time.
     garbage_ch: Channel<()>,
+    _flock: std::sync::Arc<std::sync::RwLock<()>>,
 }
 
 impl Default for ValueLogCore {
@@ -462,6 +462,7 @@ impl Default for ValueLogCore {
             opt: Default::default(),
             kv: BoxKV::new(ptr::null_mut()),
             garbage_ch: Channel::new(1),
+            _flock: std::sync::Arc::new(std::sync::RwLock::new(())),
         }
     }
 }
@@ -684,7 +685,9 @@ impl ValueLogCore {
         Ok(())
     }
 
+    // incr iterator count avoid gc
     pub(crate) fn incr_iterator_count(&self) {
+        let lock = self._flock.read().unwrap();
         self.num_active_iterators.fetch_add(1, Ordering::Relaxed);
     }
 

@@ -55,6 +55,7 @@ tokio-metrics = "0.2.2"
 metrics = "0.21.1"
 metrics-prometheus = "0.4.1"
 prometheus = "0.13.3"
+lazy_static = "1.4.0"
 [dev-dependencies]
 tracing-subscriber = "0.3.17"
 tracing-log = "0.1.3"

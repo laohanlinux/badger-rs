@@ -32,6 +32,7 @@ impl Debug for SkipList {
     }
 }
 
+/// Clone not incr SkipList reference
 impl Clone for SkipList {
     fn clone(&self) -> Self {
         let node = self.head.load(Ordering::Relaxed);

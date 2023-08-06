@@ -22,6 +22,8 @@ use log::{debug, error, info, warn};
 use parking_lot::lock_api::RawRwLock;
 use tracing::instrument;
 
+use itertools::Itertools;
+use rand::random;
 use std::collections::HashSet;
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::remove_file;
@@ -56,7 +58,10 @@ pub(crate) type XLevelsController = XArc<LevelHandler>;
 
 impl std::fmt::Debug for LevelsController {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("").field(&self.opt).finish()
+        for level in self.levels.as_ref() {
+            level.fmt(f)?;
+        }
+        Ok(())
     }
 }
 
@@ -208,8 +213,7 @@ impl LevelsController {
 
     // compact worker
     async fn run_worker(&self, lc: Closer) {
-        defer! {lc.done()}
-        ;
+        defer! {lc.done()};
         if self.opt.do_not_compact {
             return;
         }
@@ -499,8 +503,8 @@ impl LevelsController {
     pub(crate) fn as_iterator(
         &self,
         reverse: bool,
-    ) -> Vec<Box<dyn Xiterator<Output=IteratorItem>>> {
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+    ) -> Vec<Box<dyn Xiterator<Output = IteratorItem>>> {
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for level in self.levels.iter() {
             if level.level() == 0 {
                 for table in level.tables.read().iter().rev() {
@@ -530,21 +534,18 @@ impl LevelsController {
         let (tx, mut rv) = tokio::sync::mpsc::unbounded_channel::<Result<Table>>();
         let mut g = WaitGroup::new();
         let execute_time = SystemTime::now();
+        defer! {
+            let cost = SystemTime::now().duration_since(execute_time).unwrap().as_millis();
+            crate::event::COMPACT_COST_TIME.inc_by(cost as u64);
+        }
         {
             let cd = cd.read().await;
             let mut top_tables = cd.top.clone();
             let bot_tables = cd.bot.clone();
             // Create iterators across all the tables involved first.
-            let mut itr: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+            let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
             if l == 0 {
                 top_tables.reverse();
-                // for (i, _) in top_tables.iter().enumerate() {
-                //     info!(
-                //         "======== {}, {} ",
-                //         hex_str(&top_tables[i].smallest()),
-                //         bot_tables.len()
-                //     );
-                // }
             } else {
                 assert_eq!(1, top_tables.len());
             }
@@ -559,11 +560,14 @@ impl LevelsController {
             let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
             // Important to close the iterator to do ref counting.
             defer! {mitr.close()}
-
             mitr.rewind();
+            let tid = random::<i32>();
             let mut count = 0;
             let cur = tokio::runtime::Handle::current();
+
             loop {
+                #[cfg(test)]
+                let mut keys = vec![];
                 let start_time = SystemTime::now();
                 let mut builder = Builder::default();
                 while let Some(value) = mitr.peek() {
@@ -573,12 +577,17 @@ impl LevelsController {
                     if builder.reached_capacity(self.opt.max_table_size) {
                         break;
                     }
+
                     #[cfg(test)]
                     {
-                        crate::test_util::push_log(
-                            format!("{}, {}", mitr.id(), hex_str(value.key())).as_bytes(),
-                            false,
-                        );
+                        {
+                            crate::test_util::push_log(
+                                format!("{}, {}, {}", tid, mitr.id(), hex_str(value.key()))
+                                    .as_bytes(),
+                                false,
+                            );
+                        }
+                        keys.push(value.key().to_vec());
                     }
                 }
                 if builder.is_zero_bytes() {
@@ -594,8 +603,14 @@ impl LevelsController {
                     file_id,
                     start_time.elapsed().unwrap().as_millis()
                 );
+
                 let dir = self.opt.dir.clone();
                 let file_name = new_file_name(file_id, &dir);
+                #[cfg(test)]
+                {
+                    let str = keys.into_iter().map(|key| hex_str(&key)).join(",");
+                    error!("Save keys into {} {}", file_name, str);
+                }
                 let worker = g.worker();
                 let tx = tx.clone();
                 let loading_mode = self.opt.table_loading_mode;
@@ -607,7 +622,7 @@ impl LevelsController {
                             "While opening new table: {}, err: {}",
                             file_id, err
                         )
-                            .into()))
+                        .into()))
                             .unwrap();
                         return;
                     }
@@ -616,7 +631,7 @@ impl LevelsController {
                             "Unable to write to file: {}, err: {}",
                             file_id, err
                         )
-                            .into()))
+                        .into()))
                             .unwrap();
                         return;
                     }
@@ -626,7 +641,7 @@ impl LevelsController {
                             "Unable to open table: {}, err: {}",
                             file_name, err
                         )
-                            .into()))
+                        .into()))
                             .unwrap();
                     } else {
                         tx.send(Ok(Table::new(tbl.unwrap()))).unwrap();
@@ -679,7 +694,7 @@ impl LevelsController {
                 cd.read().await,
                 first_err.unwrap_err()
             )
-                .into());
+            .into());
         }
         Ok(new_tables)
     }

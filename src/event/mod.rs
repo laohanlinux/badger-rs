@@ -1,52 +1,64 @@
-use std::time::{Duration, Instant};
+use lazy_static::lazy_static;
 use metrics::{counter, describe_counter};
+use prometheus::{IntCounter, IntCounterVec, Opts, Registry};
+use std::time::{Duration, Instant};
 
-/// An `EventLog` provides a log of events associated with a specific object.
-pub trait EventLog {
-    /// Formats its arguments with fmt.Sprintf and adds the
-    /// result to the event log.
-    fn printf(&self);
-
-    /// Like printf. but it marks this event as an error.
-    fn errorf(&self);
-
-    /// Declares that this event log is complete.
-    /// The event log should not be used after calling this method.
-    fn finish(&self);
+lazy_static! {
+    pub static ref COMPACT_COST_TIME: IntCounter =
+        IntCounter::new("compact", "cost").expect("metric can be created");
+    pub static ref ZERO_LEVEL_WAIT: IntCounter =
+        IntCounter::new("zero_wait", "cost").expect("metric can be created");
+    pub static ref METRIC_WRITE_REQUEST: IntCounterVec =
+        IntCounterVec::new(Opts::new("write_request", "Write Request Cost"), &["cost"])
+            .expect("metric can be created");
 }
 
-
-pub fn cost() {
-    let start = Instant::now();
-    let delta = start.elapsed();
-}
-
-pub fn wait_lsm_into_disk(n: Duration) {
-    counter!("wait_lsm_into_disk", n.as_millis() as u64);
-}
-
-pub fn compact_cost_time(n: Duration) {
-    counter!("compact_cost_time", n.as_millis() as u64);
+pub fn register_custom_metrics(reg: &Registry) {
+    reg.register(Box::new(COMPACT_COST_TIME.clone()))
+        .expect("collector can be registered");
+    reg.register(Box::new(ZERO_LEVEL_WAIT.clone()))
+        .expect("collector can be registered");
 }
 
 pub fn stats() {}
 
+lazy_static! {
+    static ref EV: EvMetrics = EvMetrics {
+        num_reads: IntCounter::new("num_reads", "number of reads").unwrap(),
+        num_writes: IntCounter::new("num_writes", "number of writes").unwrap(),
+        bytes_read: IntCounter::new("bytes_read", "bytes of read").unwrap(),
+        bytes_written: IntCounter::new("bytes_written", "bytes of written").unwrap(),
+        num_lsm_gets: IntCounter::new("num_lsm_gets", "number of lsm gets").unwrap(),
+        num_lsm_bloom_hits: IntCounter::new("num_bloom_hits", "number of bloom hits").unwrap(),
+        num_blocked_puts: IntCounter::new("num_blocked_hits", "number of blocked hits").unwrap(),
+        num_mem_tables_gets: IntCounter::new("num_mem_tables", "number of the memtable gets")
+            .unwrap(),
+        num_gets: IntCounter::new("num_gets", "number of gets").unwrap(),
+    };
+}
+
+pub struct EvMetrics {
+    /// These are cumulative
+    pub num_reads: IntCounter,
+    pub num_writes: IntCounter,
+    pub bytes_read: IntCounter,
+    pub bytes_written: IntCounter,
+    pub num_lsm_gets: IntCounter,
+    pub num_lsm_bloom_hits: IntCounter,
+    pub num_gets: IntCounter,
+    pub num_blocked_puts: IntCounter,
+    /// number of the memtable gets
+    pub num_mem_tables_gets: IntCounter,
+}
+
+pub fn get_metrics() -> &'static EvMetrics {
+    &EV
+}
+
 #[test]
 fn t_stats() {
-    {
-        let recorder = metrics_prometheus::install();
-
-        // Either use `metrics` crate interfaces.
-        metrics::increment_counter!("count", "whose" => "mine", "kind" => "owned");
-        metrics::increment_counter!("count", "whose" => "mine", "kind" => "ref");
-        metrics::increment_counter!("count", "kind" => "owned", "whose" => "dummy");
-
-        // Or construct and provide `prometheus` metrics directly.
-        recorder.register_metric(prometheus::Gauge::new("value", "help").unwrap());
-    }
-    let _ = metrics_prometheus::try_install();
-    let report = prometheus::TextEncoder::new()
-        .encode_to_string(&prometheus::default_registry().gather()).unwrap();
-
-    println!("{}", report);
+    let reg = Registry::new();
+    super::event::register_custom_metrics(&reg);
+    COMPACT_COST_TIME.inc_by(19);
+    println!("{}ms", COMPACT_COST_TIME.get());
 }

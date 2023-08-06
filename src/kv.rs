@@ -43,8 +43,9 @@ use tokio::fs::create_dir_all;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
+///
 pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
-// Prefix for internal keys used by badger.
+/// Prefix for internal keys used by badger.
 pub const _HEAD: &[u8; 11] = b"!bager!head"; // For Storing value offset for replay.
 
 pub const KV_WRITE_CH_CAPACITY: usize = 1000;
@@ -75,6 +76,7 @@ pub struct KVBuilder {
     kv: BoxKV,
 }
 
+/// Manage key/value
 pub struct KV {
     pub opt: Options,
     pub vlog: Option<ValueLogCore>,
@@ -82,9 +84,9 @@ pub struct KV {
     pub manifest: Arc<RwLock<ManifestFile>>,
     lc: Option<LevelsController>,
     flush_chan: Channel<FlushTask>,
-    notify_try_compact_chan: Channel<()>,
+    pub notify_try_compact_chan: Channel<()>,
     // Notify zero has compact, so we should try add table into zero tables
-    zero_level_compact_chan: Channel<()>,
+    pub zero_level_compact_chan: Channel<()>,
     notify_write_request_chan: Channel<()>,
     // write_chan: Channel<Request>,
     dir_lock_guard: File,
@@ -334,6 +336,7 @@ impl KV {
 }
 
 impl KV {
+    /// Walk the directory, return sst and vlog total size
     async fn walk_dir(dir: &str) -> Result<(u64, u64)> {
         let mut lsm_size = 0;
         let mut vlog_size = 0;
@@ -365,25 +368,27 @@ impl KV {
                 .for_each(|tb| unsafe { tb.as_ref().unwrap().decr_ref() })
         };
         defer! {decref_tables()};
-        // TODO add metrics
+
+        crate::event::get_metrics().num_gets.inc(); // TODO add metrics
+
         for tb in tables.iter() {
             let st = unsafe { tb.as_ref().unwrap() };
             let vs = st.get(key);
+            crate::event::get_metrics().num_mem_tables_gets.inc();
             if vs.is_none() {
                 continue;
             }
             let vs = vs.unwrap();
             if vs.meta != 0 || !vs.value.is_empty() {
                 debug!(
-                    "fount from skiplist, st:{}, key #{}, value: {}",
+                    "fount from skiplist, st:{}, key #{}",
                     st.id(),
                     crate::y::hex_str(key),
-                    crate::y::hex_str(&vs.value),
                 );
                 return Ok(vs);
             }
         }
-        warn!("found from disk table, key #{}", crate::y::hex_str(key));
+        error!("found from disk table, key #{}, {:?}", crate::y::hex_str(key), self.must_lc());
         self.must_lc().get(key).ok_or(NotFound)
     }
 
@@ -409,6 +414,10 @@ impl KV {
             return Ok(());
         }
         let cost = SystemTime::now();
+        defer! {
+            let mills = SystemTime::now().duration_since(cost).unwrap().as_millis();
+            // crate::event::METRIC_WRITE_REQUEST.with_label_values(&["cost", &mills.to_string()]);
+        }
         info!(
             "write_requests called. Writing to value log, req_count: {}, entry_total: {}",
             reqs.len(),
@@ -457,7 +466,7 @@ impl KV {
                     },
                 }
             }
-            warn!("Waiting for write lsm, count {}", count);
+            // warn!("Waiting for write lsm, count {}", count);
             self.update_offset(&mut req.ptrs).await;
             // It should not fail
             self.write_to_lsm(req).await.unwrap();
@@ -602,7 +611,7 @@ impl KV {
 
     async fn write_to_lsm(&self, req: Request) -> Result<()> {
         assert_eq!(req.entries.len(), req.ptrs.len());
-        defer! {info!("exit write to lsm")}
+        // defer! {info!("exit write to lsm")}
 
         #[cfg(test)]
         let tid = random::<u32>();
@@ -704,11 +713,6 @@ impl KV {
         if self.must_mt().mem_size() < self.opt.max_table_size as u32 {
             return Ok(());
         }
-        // info!(
-        //     "flush memory table, {}, {}",
-        //     self.must_mt().mem_size(),
-        //     self.opt.max_table_size
-        // );
         // A nil mt indicates that KV is being closed.
         assert!(!self.must_mt().empty());
         let flush_task = FlushTask {
@@ -755,7 +759,7 @@ impl KV {
         self.vptr.store(Owned::new(ptr), Ordering::Release);
     }
 
-    // Returns the current `mem_tables` and get references.
+    // Returns the current `mem_tables` and get references(here will incr mem table reference).
     fn get_mem_tables<'a>(&'a self, p: &'a crossbeam_epoch::Guard) -> Vec<Shared<'a, SkipList>> {
         self.mem_st_manger.lock_exclusive();
         defer! {self.mem_st_manger.unlock_exclusive()}
@@ -1081,6 +1085,7 @@ impl ArcKV {
     //   }
     //   itr.Close()
     pub(crate) async fn new_iterator(&self, opt: IteratorOptions) -> IteratorExt {
+        // Notice, the iterator is global iterator, so must incr reference for memtable(SikpList), sst(file), vlog(file).
         let p = crossbeam_epoch::pin();
         let tables = self.get_mem_tables(&p);
         defer! {
@@ -1096,6 +1101,7 @@ impl ArcKV {
             let iter = Box::new(UniIterator::new(st, opt.reverse));
             itrs.push(iter);
         }
+        // Extend sst.table
         itrs.extend(self.must_lc().as_iterator(opt.reverse));
         let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
         IteratorExt::new(self.clone(), mitr, opt)
@@ -1129,7 +1135,7 @@ impl ArcKV {
                     break;
                 },
                 _ = wait_time.tick() => {
-                    info!("wait time trigger!, {}", reqs.lock().len());
+                    // info!("wait time trigger!, {}", reqs.lock().len());
                 },
                 req = write_ch.recv() => {
                     if req.is_err() {
@@ -1211,24 +1217,6 @@ pub(crate) async fn write_level0_table(
     f: &mut tokio::fs::File,
 ) -> Result<()> {
     defer! {info!("Finish write level zero table")}
-    //
-    // #[cfg(test)]
-    // {
-    //     let keys = st
-    //         .key_values()
-    //         .iter()
-    //         .map(|(key, _)| hex_str(key))
-    //         .collect::<Vec<_>>()
-    //         .join("#");
-    //     // warn!(
-    //     //     "write skiplist into table, st: {}, fpath:{}, {:?}",
-    //     //     st.id(),
-    //     //     f_name,
-    //     //     keys,
-    //     // );
-    //     crate::test_util::push_log(keys.as_bytes(), false);
-    // }
-
     let cur = st.new_cursor();
     let mut builder = Builder::default();
     while let Some(_) = cur.next() {

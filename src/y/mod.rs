@@ -17,8 +17,8 @@ use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{ErrorKind, Write};
 
-use std::{array, cmp, io};
 use std::backtrace::Backtrace;
+use std::{array, cmp, io};
 use thiserror::Error;
 use tracing::info;
 
@@ -189,6 +189,7 @@ pub fn is_existing<T>(ret: &io::Result<T>) -> bool {
     }
 }
 
+#[inline]
 pub fn hash(buffer: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::default();
     hasher.write(buffer);
@@ -259,7 +260,7 @@ pub(crate) fn parallel_load_block_key(fp: File, offsets: Vec<u64>) -> Vec<Vec<u8
             read_at(&fp, &mut buffer, offset + Header::size() as u64).unwrap();
             tx.send((i, out)).unwrap();
         })
-            .unwrap();
+        .unwrap();
     }
     pool.close();
 
@@ -366,8 +367,8 @@ fn dsync() {
 
 // find a value in array with binary search
 pub fn binary_search<T: Ord, F>(array: &[T], f: F) -> Option<usize>
-    where
-        F: Fn(&T) -> Ordering,
+where
+    F: Fn(&T) -> Ordering,
 {
     let mut low = 0;
     let mut high = array.len() - 1;

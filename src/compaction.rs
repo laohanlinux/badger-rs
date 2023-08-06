@@ -2,13 +2,13 @@ use crate::hex_str;
 use crate::levels::CompactDef;
 use crate::table::table::Table;
 
+use crate::types::XArc;
 use log::{error, info, warn};
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
 use std::fmt::{Display, Formatter};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use crate::types::XArc;
 
 #[derive(Debug)]
 pub(crate) struct CompactStatus {
@@ -302,8 +302,7 @@ mod tests {
         }];
         let cd = INFO_RANGE;
         v.retain(|kr| kr != &cd);
-        println!("{:?}, {}", v, cd);
-
+        assert!(v.is_empty());
         let tests = vec![vec![2, 20], vec![30, 50], vec![70, 80]];
 
         let inputs = vec![
