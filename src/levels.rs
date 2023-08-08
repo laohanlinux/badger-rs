@@ -609,7 +609,7 @@ impl LevelsController {
                 #[cfg(test)]
                 {
                     let str = keys.into_iter().map(|key| hex_str(&key)).join(",");
-                    error!("Save keys into {} {}", file_name, str);
+                    debug!("Save keys into {} {}", file_name, str);
                 }
                 let worker = g.worker();
                 let tx = tx.clone();

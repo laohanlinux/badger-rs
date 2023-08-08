@@ -39,6 +39,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::{string, vec};
+use libc::difftime;
 use tokio::fs::create_dir_all;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, RwLockWriteGuard};
@@ -309,7 +310,7 @@ impl KV {
         replay_closer.signal_and_wait().await;
 
         // Mmap writeable log
-        let max_fid = xout.must_vlog().max_fid.load(Ordering::Relaxed);
+        let max_fid = xout.must_vlog().get_max_fid();
         let lf = xout.must_vlog().pick_log_by_vlog_id(&max_fid).await;
         lf.write()
             .await
@@ -388,7 +389,11 @@ impl KV {
                 return Ok(vs);
             }
         }
-        error!("found from disk table, key #{}, {:?}", crate::y::hex_str(key), self.must_lc());
+        info!(
+            "found from disk table, key #{}, {:?}",
+            crate::y::hex_str(key),
+            self.must_lc()
+        );
         self.must_lc().get(key).ok_or(NotFound)
     }
 
@@ -1106,6 +1111,18 @@ impl ArcKV {
         let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
         IteratorExt::new(self.clone(), mitr, opt)
     }
+
+    // pub(crate) async fn ext(&self, opt: IteratorOptions) {
+    //     let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+    //     itrs.extend(self.must_lc().as_iterator(false));
+    //     let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
+    //     let itr = IteratorExt::new(self.clone(), mitr, opt);
+    //     itr.rewind();
+    //     while let Some(item) = itr.peek() {
+    //         error!("===> {}", hex_str(item.key()));
+    //         mitr.next();
+    //     }
+    // }
 }
 
 impl ArcKV {

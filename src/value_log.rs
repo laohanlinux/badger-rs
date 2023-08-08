@@ -468,6 +468,10 @@ impl Default for ValueLogCore {
 }
 
 impl ValueLogCore {
+    pub(crate) fn get_max_fid(&self) -> u32 {
+        self.max_fid.load(Ordering::Acquire)
+    }
+
     fn vlog_file_path(dir_path: &str, fid: u32) -> String {
         let path = Path::new(dir_path).join(format!("{:06}.vlog", fid));
         path.to_str().unwrap().to_string()

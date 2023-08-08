@@ -88,7 +88,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-        .await?;
+            .await?;
         Ok(ch.recv().await.unwrap())
     }
 
@@ -99,7 +99,7 @@ impl KVItemInner {
     // Note that the call to the consumer func happens synchronously.
     pub(crate) async fn value(
         &self,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
@@ -144,7 +144,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-        .await?;
+            .await?;
         Ok(())
     }
 
@@ -239,14 +239,15 @@ impl IteratorExt {
 
     // Rewind the iterator cursor all the wy to zero-th position, which would be the
     // smallest key if iterating forward, and largest if iterating backward. It dows not
-    // keep track of whether the cusor started with a `seek`.
+    // keep track of whether the cursor started with a `seek`.
     pub(crate) async fn rewind(&self) -> Option<KVItem> {
         while let Some(el) = self.data.write().pop_front() {
             // Just cleaner to wait before pushing. No ref counting need.
             el.read().await.wg.wait().await;
         }
-
+        // rewind the iterator
         let mut item = self.itr.rewind();
+        // filter internal data
         while item.is_some() && item.as_ref().unwrap().key().starts_with(_BADGER_PREFIX) {
             item = self.itr.next();
         }
@@ -279,11 +280,14 @@ impl IteratorExt {
         if item.is_none() {
             return None;
         }
-        // println!("peek key: {:?}", item);
         let xitem = self.new_item();
         self.fill(xitem.clone()).await;
         self.data.write().push_back(xitem.clone());
         Some(xitem)
+    }
+
+    pub(crate) async fn peek(&self) -> Option<KVItem> {
+        self.item.read().clone()
     }
 }
 
@@ -314,23 +318,24 @@ impl IteratorExt {
     async fn valid_for_prefix(&self, prefix: &[u8]) -> bool {
         self.item.read().is_some()
             && self
-                .item
-                .read()
-                .as_ref()
-                .unwrap()
-                .read()
-                .await
-                .key()
-                .starts_with(prefix)
+            .item
+            .read()
+            .as_ref()
+            .unwrap()
+            .read()
+            .await
+            .key()
+            .starts_with(prefix)
     }
 
     // Close the iterator, It is important to call this when you're done with iteration.
-    async fn close(&self) -> Result<()> {
+    pub(crate) async fn close(&self) -> Result<()> {
         // TODO: We could handle this error.
         self.kv.vlog.as_ref().unwrap().decr_iterator_count().await?;
         Ok(())
     }
 
+    // fill the value
     async fn fill(&self, item: KVItem) {
         let vs = self.itr.peek().unwrap();
         let vs = vs.value();
@@ -368,11 +373,13 @@ impl IteratorExt {
 
         let itr = &self.itr;
         let mut count = 0;
-        while let Some(item) = itr.next() {
+        while let Some(item) = itr.peek() {
             if item.key().starts_with(crate::kv::_BADGER_PREFIX) {
+                itr.next();
                 continue;
             }
             if item.value().meta & MetaBit::BIT_DELETE.bits() > 0 {
+                itr.next();
                 continue;
             }
             count += 1;

@@ -161,7 +161,15 @@ async fn t_concurrent_write() {
 
     wg.wait().await;
     info!("Starting iteration");
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let mut keys = keys.lock().await;
+    keys.sort();
+    for key in keys.iter() {
+        assert!(kv.exists(key).await.unwrap());
+    }
+
+    let mut count_set = HashSet::new();
     let itr = kv
         .new_iterator(IteratorOptions {
             reverse: false,
@@ -169,55 +177,30 @@ async fn t_concurrent_write() {
             pre_fetch_size: 10,
         })
         .await;
-    let mut keys = keys.lock().await;
-    keys.sort();
-    for key in keys.iter() {
-        assert!(kv.exists(key).await.unwrap());
-    }
 
-    {
-        assert!(kv.exists(b"k00000_00000000").await.unwrap());
-        assert!(kv.exists(b"k00000_00000002").await.unwrap());
-        assert!(kv.exists(b"k00000_00000003").await.unwrap());
-        assert!(kv.exists(b"k00000_00000004").await.unwrap());
-        assert!(kv.exists(b"k00000_00000005").await.unwrap());
-        assert!(kv.exists(b"k00000_00000006").await.unwrap());
-        assert!(kv.exists(b"k00000_00000007").await.unwrap());
-        assert!(kv.exists(b"k00000_00000008").await.unwrap());
-        assert!(kv.exists(b"k00000_00000009").await.unwrap());
-        assert!(kv.exists(b"k00000_00000010").await.unwrap());
-    }
-    let got = kv.get_with_ext(b"k00003_00000008").await.unwrap();
-    let value = got.read().await;
-    log::error!("{:05}, load key: {}", 0, hex_str(value.key()));
-    let mut count_set = HashSet::new();
     let item = itr.rewind().await.unwrap();
-    count_set.insert(hex_str(item.read().await.key()));
-    let mut i = 1;
+    let mut i = 0;
     tokio::time::sleep(Duration::from_secs(5)).await;
-    let str = keys.iter().map(|key| hex_str(key)).join(",");
-    // error!("#{}", str);
-    while let Some(item) = itr.next().await {
+    while let Some(item) = itr.peek().await {
         let kv_item = item.read().await;
         count_set.insert(hex_str(kv_item.key().clone()));
-        log::error!("{:05}, load key: {}", i, hex_str(kv_item.key()));
+        error!("i => {}", i);
         let expect = String::from_utf8_lossy(keys.get(i).unwrap());
         let got = String::from_utf8_lossy(kv_item.key());
         // assert_eq!(expect, got);
         // assert_eq!(kv_item.key(), format!("{}", i).as_bytes());
         // assert_eq!(kv_item.get_value().await.unwrap(), b"word".to_vec());
         i += 1;
-
-        // push_log(kv_item.key(), false);
+        itr.next();
     }
-
-    error!("{}", i);
 
     for key in keys.iter() {
         if !count_set.contains(&hex_str(key)) {
             error!("{}", hex_str(key));
         }
     }
+
+    itr.close().await.expect("");
 }
 
 #[tokio::test]
