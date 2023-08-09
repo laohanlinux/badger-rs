@@ -88,7 +88,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-            .await?;
+        .await?;
         Ok(ch.recv().await.unwrap())
     }
 
@@ -99,7 +99,7 @@ impl KVItemInner {
     // Note that the call to the consumer func happens synchronously.
     pub(crate) async fn value(
         &self,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
@@ -144,7 +144,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-            .await?;
+        .await?;
         Ok(())
     }
 
@@ -251,6 +251,7 @@ impl IteratorExt {
         while item.is_some() && item.as_ref().unwrap().key().starts_with(_BADGER_PREFIX) {
             item = self.itr.next();
         }
+        // prefetch item.
         self.pre_fetch().await;
         self.item.read().clone()
     }
@@ -318,14 +319,14 @@ impl IteratorExt {
     async fn valid_for_prefix(&self, prefix: &[u8]) -> bool {
         self.item.read().is_some()
             && self
-            .item
-            .read()
-            .as_ref()
-            .unwrap()
-            .read()
-            .await
-            .key()
-            .starts_with(prefix)
+                .item
+                .read()
+                .as_ref()
+                .unwrap()
+                .read()
+                .await
+                .key()
+                .starts_with(prefix)
     }
 
     // Close the iterator, It is important to call this when you're done with iteration.
@@ -365,6 +366,7 @@ impl IteratorExt {
         }
     }
 
+    // Prefetch load items.
     async fn pre_fetch(&self) {
         let mut pre_fetch_size = 2;
         if self.opt.pre_fetch_values && self.opt.pre_fetch_size > 1 {
