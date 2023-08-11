@@ -34,6 +34,11 @@ lazy_static! {
         num_mem_tables_gets: IntCounter::new("num_mem_tables", "number of the memtable gets")
             .unwrap(),
         num_gets: IntCounter::new("num_gets", "number of gets").unwrap(),
+        block_hash_calc_cost: IntCounter::new(
+            "block_hash_calc_cost",
+            "block hash calc cost for bloom"
+        )
+        .unwrap(),
     };
 }
 
@@ -49,6 +54,7 @@ pub struct EvMetrics {
     pub num_blocked_puts: IntCounter,
     /// number of the memtable gets
     pub num_mem_tables_gets: IntCounter,
+    pub block_hash_calc_cost: IntCounter,
 }
 
 pub fn get_metrics() -> &'static EvMetrics {

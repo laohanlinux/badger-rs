@@ -34,12 +34,12 @@ use std::io::{Cursor, Write};
 use std::path::Path;
 use std::pin::Pin;
 
+use libc::difftime;
 use rand::random;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::{string, vec};
-use libc::difftime;
 use tokio::fs::create_dir_all;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, RwLockWriteGuard};
@@ -1093,6 +1093,7 @@ impl ArcKV {
         // Notice, the iterator is global iterator, so must incr reference for memtable(SikpList), sst(file), vlog(file).
         let p = crossbeam_epoch::pin();
         let tables = self.get_mem_tables(&p);
+        // TODO it should decr at IteratorExt close.
         defer! {
             tables.iter().for_each(|table| unsafe {table.as_ref().unwrap().decr_ref()});
         }

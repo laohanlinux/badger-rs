@@ -144,8 +144,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-        .await?;
-        Ok(())
+        .await
     }
 
     // Returns approximate size of the key-value pair.
@@ -202,11 +201,16 @@ pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
 };
 
 // Helps iterating over the KV pairs in a lexicographically sorted order.
+// skiplist,     sst      vlog
+//  |             |        |
+//  |             |        |
+//  IteratorExt  reference
 pub(crate) struct IteratorExt {
     kv: XArc<KV>,
     itr: MergeIterator,
     opt: IteratorOptions,
     item: ArcRW<Option<KVItem>>,
+    // Cache the prefetch keys, not inlcude current value
     data: ArcRW<std::collections::LinkedList<KVItem>>,
 }
 
@@ -253,13 +257,14 @@ impl IteratorExt {
         }
         // prefetch item.
         self.pre_fetch().await;
+        // return the first el.
         self.item.read().clone()
     }
 
     // Advance the iterator by one. Always check it.valid() after a next ()
     // to ensure you have access to a valid it.item()
     pub(crate) async fn next(&self) -> Option<KVItem> {
-        // Ensure current item
+        // Ensure current item has load
         if let Some(el) = self.item.write().take() {
             el.read().await.wg.wait().await; // Just cleaner to wait before pushing to avoid doing ref counting.
         }
@@ -267,12 +272,15 @@ impl IteratorExt {
         if let Some(el) = self.data.write().pop_front() {
             self.item.write().replace(el);
         }
+        #[cfg(test)]
+        let mut has = false;
         // Advance internal iterator until entry is not deleted
         while let Some(el) = self.itr.next() {
             if el.key().starts_with(_BADGER_PREFIX) {
                 continue;
             }
             if el.value().meta & MetaBit::BIT_DELETE.bits() == 0 {
+                has = true;
                 // Not deleted
                 break;
             }
@@ -281,6 +289,12 @@ impl IteratorExt {
         if item.is_none() {
             return None;
         }
+        #[cfg(test)]
+        assert!(has, "has key!!!");
+        log::error!(
+            "==> find it {}",
+            crate::y::hex_str(item.as_ref().unwrap().key())
+        );
         let xitem = self.new_item();
         self.fill(xitem.clone()).await;
         self.data.write().push_back(xitem.clone());
@@ -386,10 +400,12 @@ impl IteratorExt {
             }
             count += 1;
             let xitem = self.new_item();
+            // fill a el from itr.peek
             self.fill(xitem.clone()).await;
             if self.item.read().is_none() {
-                self.item.write().replace(xitem);
+                self.item.write().replace(xitem); // store it
             } else {
+                // push prefetch el into cache queue, Notice it not including current item
                 self.data.write().push_back(xitem);
             }
             if count == pre_fetch_size {
