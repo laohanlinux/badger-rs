@@ -178,20 +178,21 @@ async fn t_concurrent_write() {
         })
         .await;
 
-    let item = itr.rewind().await.unwrap();
+    assert!(itr.peek().await.is_none());
+    itr.rewind().await;
     let mut i = 0;
     tokio::time::sleep(Duration::from_secs(5)).await;
     while let Some(item) = itr.peek().await {
         let kv_item = item.read().await;
         count_set.insert(hex_str(kv_item.key().clone()));
-        error!("i => {}", i);
+        error!("i => {}, {}", i, hex_str(kv_item.key()));
         let expect = String::from_utf8_lossy(keys.get(i).unwrap());
         let got = String::from_utf8_lossy(kv_item.key());
         // assert_eq!(expect, got);
         // assert_eq!(kv_item.key(), format!("{}", i).as_bytes());
         // assert_eq!(kv_item.get_value().await.unwrap(), b"word".to_vec());
         i += 1;
-        itr.next();
+        itr.next().await;
     }
 
     for key in keys.iter() {

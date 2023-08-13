@@ -239,7 +239,7 @@ impl MergeIterOverBuilder {
 
     pub fn build(self) -> MergeIterator {
         let cap = self.all.len();
-        let mut flag = vec![false; cap];
+        let flag = vec![false; cap];
         MergeIterator {
             reverse: self.reverse,
             itrs: self.all,

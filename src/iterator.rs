@@ -272,7 +272,6 @@ impl IteratorExt {
         if let Some(el) = self.data.write().pop_front() {
             self.item.write().replace(el);
         }
-        #[cfg(test)]
         let mut has = false;
         // Advance internal iterator until entry is not deleted
         while let Some(el) = self.itr.next() {
@@ -289,7 +288,7 @@ impl IteratorExt {
         if item.is_none() {
             return None;
         }
-        #[cfg(test)]
+
         assert!(has, "has key!!!");
         log::error!(
             "==> find it {}",
