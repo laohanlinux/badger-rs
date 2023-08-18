@@ -272,14 +272,12 @@ impl IteratorExt {
         if let Some(el) = self.data.write().pop_front() {
             self.item.write().replace(el);
         }
-        let mut has = false;
         // Advance internal iterator until entry is not deleted
         while let Some(el) = self.itr.next() {
             if el.key().starts_with(_BADGER_PREFIX) {
                 continue;
             }
             if el.value().meta & MetaBit::BIT_DELETE.bits() == 0 {
-                has = true;
                 // Not deleted
                 break;
             }
@@ -289,11 +287,6 @@ impl IteratorExt {
             return None;
         }
 
-        assert!(has, "has key!!!");
-        log::error!(
-            "==> find it {}",
-            crate::y::hex_str(item.as_ref().unwrap().key())
-        );
         let xitem = self.new_item();
         self.fill(xitem.clone()).await;
         self.data.write().push_back(xitem.clone());
@@ -410,6 +403,7 @@ impl IteratorExt {
             if count == pre_fetch_size {
                 break;
             }
+            itr.next();
         }
     }
 }

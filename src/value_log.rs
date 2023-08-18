@@ -605,7 +605,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-            .into());
+                .into());
         }
 
         self.read_value_bytes(vp, |buffer| {
@@ -619,13 +619,13 @@ impl ValueLogCore {
             let n = Header::encoded_size() + h.k_len as usize;
             consumer(&buffer[n..n + h.v_len as usize])
         })
-        .await
+            .await
     }
 
     pub async fn async_read(
         &self,
         vp: &ValuePointer,
-        consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         // Check for valid offset if we are reading to writable log.
         if vp.fid == self.max_fid.load(Ordering::Acquire)
@@ -636,7 +636,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-            .into());
+                .into());
         }
         self.async_read_bytes(vp, consumer).await?;
         Ok(())
@@ -649,7 +649,7 @@ impl ValueLogCore {
         mut f: impl for<'a> FnMut(
             &'a Entry,
             &'a ValuePointer,
-        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
+        ) -> Pin<Box<dyn Future<Output=Result<bool>> + 'a>>,
     ) -> Result<()> {
         let vlogs = self.pick_log_guard().await;
         info!("Seeking at value pointer: {:?}", vp);
@@ -758,7 +758,7 @@ impl ValueLogCore {
     async fn async_read_bytes(
         &self,
         vp: &ValuePointer,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         let vlog = self.pick_log_by_vlog_id(&vp.fid).await;
         let buffer = vlog.read().await;
@@ -795,8 +795,9 @@ impl ValueLogCore {
                 }
 
                 info!(
-                    "Write a # {:?} into vlog file, mmap position: {}",
+                    "Write a # {:?} into vlog file, disk file position:{}, mmap position: {}",
                     String::from_utf8(entry.entry().key.clone()).unwrap(),
+                    self.writable_log_offset.load(Ordering::Acquire),
                     self.buf.read().await.position(),
                 );
                 let mut ptr = ValuePointer::default();
@@ -1054,8 +1055,8 @@ impl ValueLogCore {
     pub(crate) async fn wait_on_gc(&self, lc: Closer) {
         defer! {lc.done()}
         lc.wait().await; // wait for lc to be closed.
-                         // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
-                         // the channel of size 1.
+        // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
+        // the channel of size 1.
         self.garbage_ch.send(()).await.unwrap();
     }
 

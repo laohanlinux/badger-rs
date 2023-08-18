@@ -80,7 +80,7 @@ pub(crate) fn tracing_log() {
         .event_format(format)
         .try_init();
     remove_push_log();
-    let recorder = metrics_prometheus::install();
+    // let recorder = metrics_prometheus::install();
 }
 
 #[cfg(test)]

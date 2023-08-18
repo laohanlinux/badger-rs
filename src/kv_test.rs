@@ -13,7 +13,7 @@ use tokio::io::AsyncWriteExt;
 use tracing_subscriber::fmt::format;
 
 use crate::iterator::IteratorOptions;
-use crate::test_util::{push_log, remove_push_log};
+use crate::test_util::{push_log, remove_push_log, tracing_log};
 use crate::types::{TArcMx, XArc};
 use crate::value_log::{Entry, MetaBit};
 use crate::y::hex_str;
@@ -32,7 +32,6 @@ fn get_test_option(dir: &str) -> Options {
 async fn t_1_write() {
     use crate::test_util::{random_tmp_dir, tracing_log};
     tracing_log();
-    // console_subscriber::init();
     let dir = random_tmp_dir();
     let kv = KV::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
@@ -181,38 +180,29 @@ async fn t_concurrent_write() {
     assert!(itr.peek().await.is_none());
     itr.rewind().await;
     let mut i = 0;
-    tokio::time::sleep(Duration::from_secs(5)).await;
     while let Some(item) = itr.peek().await {
         let kv_item = item.read().await;
         count_set.insert(hex_str(kv_item.key().clone()));
-        error!("i => {}, {}", i, hex_str(kv_item.key()));
         let expect = String::from_utf8_lossy(keys.get(i).unwrap());
         let got = String::from_utf8_lossy(kv_item.key());
-        // assert_eq!(expect, got);
-        // assert_eq!(kv_item.key(), format!("{}", i).as_bytes());
-        // assert_eq!(kv_item.get_value().await.unwrap(), b"word".to_vec());
+        assert_eq!(expect, got);
         i += 1;
         itr.next().await;
     }
 
     for key in keys.iter() {
-        if !count_set.contains(&hex_str(key)) {
-            error!("{}", hex_str(key));
-        }
+        assert!(count_set.contains(&hex_str(key)));
     }
 
     itr.close().await.expect("");
 }
 
 #[tokio::test]
-async fn t_cas() {
-    crate::test_util::tracing_log();
+async fn t_kv_cas() {
+    tracing_log();
     let n = 299;
     let kv = build_kv().await;
     let opt = kv.opt.clone();
-    defer! {
-        info!("opt=> {:?}", opt);
-    }
     let entries = (0..n)
         .into_iter()
         .map(|i| {
@@ -359,25 +349,45 @@ async fn t_kv_get_more() {
     let kv = build_kv().await;
     let n = 10000;
     let m = 100;
-    for i in (0..n).step_by(m) {
-        if i % 10000 == 0 {
-            info!("Put i={}", i);
-        }
-        let mut entries = vec![];
-        for j in i..(i + m) {
-            if j >= n {
-                break;
-            }
-            entries.push(
-                Entry::default()
-                    .key(format!("{}", j).into_bytes())
-                    .value(format!("{}", j).into_bytes()),
-            );
-        }
-        let ret = kv.batch_set(entries).await;
-        for e in ret {
-            assert!(e.is_ok(), "entry with error: {}", e.unwrap_err());
-        }
+    let mut entries = (0..n)
+        .into_iter()
+        .map(|i| i.to_string().as_bytes().to_vec())
+        .map(|key| Entry::default().key(key.clone()).value(key.clone()))
+        .collect::<Vec<_>>();
+    for chunk in entries.chunks(m) {
+        let ret = kv
+            .batch_set(chunk.into_iter().map(|entry| entry.clone()).collect())
+            .await;
+        let pass = ret.into_iter().all(|ret| ret.is_ok());
+        assert!(pass);
+    }
+    assert!(kv.must_lc().validate().is_ok());
+
+    for entry in &entries {
+        let got = kv.get(entry.key.as_ref()).await;
+        assert!(got.is_ok());
+        let value = got.unwrap();
+        assert_eq!(value, entry.value);
+    }
+
+    // Overwrite
+    entries.iter_mut().for_each(|entry| {
+        entry.value = format!(
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz{}",
+            rand::random::<u32>()
+        )
+            .into_bytes()
+    });
+    entries.reverse();
+    for chunk in entries.chunks(m) {
+        kv.batch_set(chunk.to_vec()).await;
+    }
+
+    for entry in &entries {
+        let got = kv.get(entry.key.as_ref()).await;
+        assert!(got.is_ok());
+        let value = got.unwrap();
+        assert_eq!(value, entry.value);
     }
 }
 
