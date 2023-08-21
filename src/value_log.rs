@@ -6,6 +6,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use bytes::BufMut;
 use crc32fast::Hasher;
 use drop_cell::defer;
+use getset::{Getters, Setters};
 
 use log::kv::Source;
 use log::{debug, info};
@@ -103,7 +104,7 @@ impl Decode for Header {
 /// Entry provides Key, Value and if required, cas_counter_check to kv.batch_set() API.
 /// If cas_counter_check is provided, it would be compared against the current `cas_counter`
 /// assigned to this key-value. Set be done on this key only if the counters match.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Getters, Setters)]
 pub struct Entry {
     pub(crate) key: Vec<u8>,
     pub(crate) meta: u8,
@@ -605,7 +606,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-                .into());
+            .into());
         }
 
         self.read_value_bytes(vp, |buffer| {
@@ -619,13 +620,13 @@ impl ValueLogCore {
             let n = Header::encoded_size() + h.k_len as usize;
             consumer(&buffer[n..n + h.v_len as usize])
         })
-            .await
+        .await
     }
 
     pub async fn async_read(
         &self,
         vp: &ValuePointer,
-        consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // Check for valid offset if we are reading to writable log.
         if vp.fid == self.max_fid.load(Ordering::Acquire)
@@ -636,7 +637,7 @@ impl ValueLogCore {
                 vp.offset,
                 self.writable_log_offset.load(Ordering::Acquire)
             )
-                .into());
+            .into());
         }
         self.async_read_bytes(vp, consumer).await?;
         Ok(())
@@ -649,7 +650,7 @@ impl ValueLogCore {
         mut f: impl for<'a> FnMut(
             &'a Entry,
             &'a ValuePointer,
-        ) -> Pin<Box<dyn Future<Output=Result<bool>> + 'a>>,
+        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
     ) -> Result<()> {
         let vlogs = self.pick_log_guard().await;
         info!("Seeking at value pointer: {:?}", vp);
@@ -758,7 +759,7 @@ impl ValueLogCore {
     async fn async_read_bytes(
         &self,
         vp: &ValuePointer,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         let vlog = self.pick_log_by_vlog_id(&vp.fid).await;
         let buffer = vlog.read().await;
@@ -795,21 +796,25 @@ impl ValueLogCore {
                 }
 
                 info!(
-                    "Write a # {:?} into vlog file, disk file position:{}, mmap position: {}",
+                    "Write a # {:?} into vlog file, offset: {}",
                     String::from_utf8(entry.entry().key.clone()).unwrap(),
-                    self.writable_log_offset.load(Ordering::Acquire),
-                    self.buf.read().await.position(),
+                    self.buf.read().await.get_ref().len()
+                        + self.writable_log_offset.load(Ordering::Acquire) as usize,
                 );
                 let mut ptr = ValuePointer::default();
                 ptr.fid = cur_fid;
                 // Use the offset including buffer length so far.
                 ptr.offset = self.writable_log_offset.load(Ordering::Acquire)
-                    + self.buf.read().await.position() as u32;
+                    + self.buf.read().await.get_ref().len() as u32;
                 let mut buf = self.buf.write().await;
                 let entry = entry.mut_entry();
                 let sz = entry.enc(&mut buf.get_mut()).unwrap();
                 wt_count += sz;
-                ptr.len = buf.get_ref().len() as u32 - ptr.offset;
+                ptr.len = sz as u32;
+                assert_eq!(
+                    buf.get_ref().len() + self.writable_log_offset.load(Ordering::Acquire) as usize,
+                    ptr.offset as usize + sz
+                );
                 req.ptrs[idx].store(Some(ptr), Ordering::Release);
             }
         }
@@ -834,7 +839,8 @@ impl ValueLogCore {
                 .fetch_add(n as u32, Ordering::Release);
 
             info!(
-                "Flushing {} requests of total size: {}",
+                "Flushing {} requests of total size: {}, file_offset:{}",
+                fp_wt.as_ref().len(),
                 reqs_count,
                 self.writable_log_offset.load(Ordering::Acquire)
             );
@@ -1055,8 +1061,8 @@ impl ValueLogCore {
     pub(crate) async fn wait_on_gc(&self, lc: Closer) {
         defer! {lc.done()}
         lc.wait().await; // wait for lc to be closed.
-        // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
-        // the channel of size 1.
+                         // Block any GC in progress to finish, and don't allow any more writes to runGC by filling up
+                         // the channel of size 1.
         self.garbage_ch.send(()).await.unwrap();
     }
 

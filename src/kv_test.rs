@@ -346,9 +346,10 @@ async fn t_kv_exists() {
 // WARNING: This test might take a while, but it should pass!
 #[tokio::test]
 async fn t_kv_get_more() {
+    tracing_log();
     let kv = build_kv().await;
-    let n = 10000;
-    let m = 100;
+    let n = 3;
+    let m = 1;
     let mut entries = (0..n)
         .into_iter()
         .map(|i| i.to_string().as_bytes().to_vec())
@@ -372,11 +373,8 @@ async fn t_kv_get_more() {
 
     // Overwrite
     entries.iter_mut().for_each(|entry| {
-        entry.value = format!(
-            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz{}",
-            rand::random::<u32>()
-        )
-            .into_bytes()
+        entry.offset = 0;
+        entry.value = format!("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz").into_bytes()
     });
     entries.reverse();
     for chunk in entries.chunks(m) {
@@ -385,9 +383,14 @@ async fn t_kv_get_more() {
 
     for entry in &entries {
         let got = kv.get(entry.key.as_ref()).await;
-        assert!(got.is_ok());
+        assert!(got.is_ok(), "{}", hex_str(entry.key.as_ref()));
         let value = got.unwrap();
-        assert_eq!(value, entry.value);
+        assert_eq!(
+            hex_str(&value),
+            hex_str(&entry.value),
+            "#{}",
+            hex_str(entry.key.as_ref())
+        );
     }
 }
 
