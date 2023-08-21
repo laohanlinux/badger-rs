@@ -14,7 +14,7 @@ use memmap::{Mmap, MmapMut};
 use std::fmt::{Debug, Formatter};
 use std::fs::File;
 use std::future::Future;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::atomic::AtomicU64;
@@ -313,6 +313,12 @@ impl LogFile {
     pub(crate) fn mut_mmap(&mut self) -> &mut MmapMut {
         let mp = self._mmap.as_mut().unwrap();
         mp.get_mut_mmap_ref()
+    }
+
+    pub(crate) fn write_buffer(&mut self, buffer: &[u8], offset: usize) -> Result<usize> {
+        let wt = self.mut_mmap();
+        let mut wt = &mut wt[offset..];
+        wt.write(buffer).map_err(|err| err.into())
     }
 
     fn mmap_ref(&self) -> &Mmap {

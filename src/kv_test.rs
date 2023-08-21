@@ -348,8 +348,8 @@ async fn t_kv_exists() {
 async fn t_kv_get_more() {
     tracing_log();
     let kv = build_kv().await;
-    let n = 3;
-    let m = 1;
+    let n = 3000;
+    let m = 100;
     let mut entries = (0..n)
         .into_iter()
         .map(|i| i.to_string().as_bytes().to_vec())
@@ -373,7 +373,6 @@ async fn t_kv_get_more() {
 
     // Overwrite
     entries.iter_mut().for_each(|entry| {
-        entry.offset = 0;
         entry.value = format!("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz").into_bytes()
     });
     entries.reverse();

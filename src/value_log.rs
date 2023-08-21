@@ -38,7 +38,9 @@ use crate::log_file::LogFile;
 use crate::options::Options;
 
 use crate::types::{Channel, Closer, TArcRW};
-use crate::y::{create_synced_file, open_existing_synced_file, sync_directory, Decode, Encode};
+use crate::y::{
+    create_synced_file, hex_str, open_existing_synced_file, sync_directory, Decode, Encode,
+};
 use crate::Error::Unexpected;
 use crate::{Error, Result, EMPTY_SLICE};
 
@@ -766,6 +768,7 @@ impl ValueLogCore {
         let buffer = buffer.read(&vp)?;
         let mut h = Header::default();
         h.dec(&mut Cursor::new(&buffer[0..Header::encoded_size()]))?;
+        info!("read content: {:?}", buffer);
         if (h.meta & MetaBit::BIT_DELETE.bits()) != 0 {
             // Tombstone key
             consumer(&EMPTY_SLICE).await
@@ -796,8 +799,9 @@ impl ValueLogCore {
                 }
 
                 info!(
-                    "Write a # {:?} into vlog file, offset: {}",
-                    String::from_utf8(entry.entry().key.clone()).unwrap(),
+                    "Write a # {:?} => {} into vlog file, offset: {}",
+                    hex_str(entry.entry().key.as_ref()),
+                    hex_str(entry.entry().value.as_ref()),
                     self.buf.read().await.get_ref().len()
                         + self.writable_log_offset.load(Ordering::Acquire) as usize,
                 );
@@ -829,9 +833,9 @@ impl ValueLogCore {
                 );
                 return Ok(());
             }
-            let fp_wt = cur_vlog_wl.mut_mmap();
             // write value pointer into vlog file. (Just only write to mmap)
-            let n = fp_wt.as_mut().write(buffer.get_ref())?;
+            let offset = self.writable_log_offset.load(Ordering::Acquire);
+            let n = cur_vlog_wl.write_buffer(buffer.get_ref(), offset as usize)?;
             assert_eq!(n, buffer.get_ref().len());
             // todo add metrics
             // update log
@@ -839,8 +843,7 @@ impl ValueLogCore {
                 .fetch_add(n as u32, Ordering::Release);
 
             info!(
-                "Flushing {} requests of total size: {}, file_offset:{}",
-                fp_wt.as_ref().len(),
+                "Flushing {} requests, file_offset:{}",
                 reqs_count,
                 self.writable_log_offset.load(Ordering::Acquire)
             );
