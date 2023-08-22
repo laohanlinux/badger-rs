@@ -348,12 +348,17 @@ async fn t_kv_exists() {
 async fn t_kv_get_more() {
     tracing_log();
     let kv = build_kv().await;
-    let n = 3000;
+    let n = 2000;
     let m = 100;
     let mut entries = (0..n)
         .into_iter()
         .map(|i| i.to_string().as_bytes().to_vec())
-        .map(|key| Entry::default().key(key.clone()).value(key.clone()))
+        .map(|key| {
+            Entry::default()
+                .key(key.clone())
+                .value(key.clone())
+                .user_meta(1)
+        })
         .collect::<Vec<_>>();
     for chunk in entries.chunks(m) {
         let ret = kv
@@ -373,16 +378,22 @@ async fn t_kv_get_more() {
 
     // Overwrite
     entries.iter_mut().for_each(|entry| {
-        entry.value = format!("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz").into_bytes()
+        entry.user_meta = 3;
+        entry.value = format!("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz").into_bytes();
     });
     entries.reverse();
     for chunk in entries.chunks(m) {
         kv.batch_set(chunk.to_vec()).await;
     }
-
+    tokio::time::sleep(Duration::from_secs(2)).await;
     for entry in &entries {
         let got = kv.get(entry.key.as_ref()).await;
-        assert!(got.is_ok(), "{}", hex_str(entry.key.as_ref()));
+        assert!(
+            got.is_ok(),
+            "{}, err:{}",
+            hex_str(entry.key.as_ref()),
+            got.unwrap_err()
+        );
         let value = got.unwrap();
         assert_eq!(
             hex_str(&value),

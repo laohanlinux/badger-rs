@@ -44,8 +44,8 @@ use crate::y::{
 use crate::Error::Unexpected;
 use crate::{Error, Result, EMPTY_SLICE};
 
-// Values have their first byte being byteData or byteDelete. This helps us distinguish between
-// a key that has never been seen and a key that has been explicitly deleted.
+/// Values have their first byte being byteData or byteDelete. This helps us distinguish between
+/// a key that has never been seen and a key that has been explicitly deleted.
 bitflags! {
     pub struct MetaBit: u8{
         /// Set if the key has been deleted.
@@ -593,38 +593,6 @@ impl ValueLogCore {
         Ok(())
     }
 
-    // Read the value log at given location.
-    pub async fn read(
-        &self,
-        vp: &ValuePointer,
-        mut consumer: impl FnMut(&[u8]) -> Result<()>,
-    ) -> Result<()> {
-        // Check for valid offset if we are reading to writable log.
-        if vp.fid == self.max_fid.load(Ordering::Acquire)
-            && vp.offset >= self.writable_log_offset.load(Ordering::Acquire)
-        {
-            return Err(format!(
-                "Invalid value pointer offset: {} greater than current offset: {}",
-                vp.offset,
-                self.writable_log_offset.load(Ordering::Acquire)
-            )
-            .into());
-        }
-
-        self.read_value_bytes(vp, |buffer| {
-            let mut cursor = Cursor::new(buffer);
-            let mut h = Header::default();
-            h.dec(&mut cursor)?;
-            if (h.meta & MetaBit::BIT_DELETE.bits()) != 0 {
-                // Tombstone key
-                return consumer(&vec![]);
-            }
-            let n = Header::encoded_size() + h.k_len as usize;
-            consumer(&buffer[n..n + h.v_len as usize])
-        })
-        .await
-    }
-
     pub async fn async_read(
         &self,
         vp: &ValuePointer,
@@ -799,11 +767,12 @@ impl ValueLogCore {
                 }
 
                 info!(
-                    "Write a # {:?} => {} into vlog file, offset: {}",
+                    "Write a # {:?} => {} into vlog file, offset: {}, meta:{}",
                     hex_str(entry.entry().key.as_ref()),
                     hex_str(entry.entry().value.as_ref()),
                     self.buf.read().await.get_ref().len()
                         + self.writable_log_offset.load(Ordering::Acquire) as usize,
+                    entry.entry.meta,
                 );
                 let mut ptr = ValuePointer::default();
                 ptr.fid = cur_fid;
@@ -826,11 +795,6 @@ impl ValueLogCore {
             assert!(wt_count <= 0 || !self.buf.read().await.is_empty());
             let mut buffer = self.buf.write().await;
             if buffer.is_empty() {
-                info!(
-                    "Nothing to flush, {} requests of total size: {}",
-                    reqs_count,
-                    self.writable_log_offset.load(Ordering::Acquire)
-                );
                 return Ok(());
             }
             // write value pointer into vlog file. (Just only write to mmap)

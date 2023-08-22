@@ -1,7 +1,7 @@
 use crate::iterator::PreFetchStatus::Prefetched;
 use crate::kv::_BADGER_PREFIX;
 use crate::types::{ArcRW, Channel, Closer, TArcMx, TArcRW};
-use crate::ValueStruct;
+use crate::{hex_str, ValueStruct};
 use crate::{
     kv::KV,
     types::XArc,
@@ -49,10 +49,10 @@ pub(crate) struct KVItemInner {
 impl Display for KVItemInner {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("kv")
-            .field(
-                "key",
-                &format!("{}", String::from_utf8_lossy(&self.key)).as_bytes(),
-            )
+            .field("key", &hex_str(&self.key))
+            .field("meta", &self.meta)
+            .field("user_meta", &self.user_meta)
+            .field("cas", &self.counter())
             .finish()
     }
 }
@@ -78,6 +78,7 @@ impl KVItemInner {
         &self.key
     }
 
+    // Return value
     pub async fn get_value(&self) -> Result<Vec<u8>> {
         let ch = Channel::new(1);
         self.value(|value| {
@@ -103,16 +104,16 @@ impl KVItemInner {
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
-        if self.status.load(Ordering::Relaxed) == Prefetched {
+        if self.status.load(Ordering::Acquire) == Prefetched {
             if self.err.is_err() {
                 return self.err.clone();
             }
             let value = self.value.lock().await;
-            if value.is_empty() {
-                return consumer(&EMPTY_SLICE).await;
+            return if value.is_empty() {
+                consumer(&EMPTY_SLICE).await
             } else {
-                return consumer(&value).await;
-            }
+                consumer(&value).await
+            };
         }
         return self.kv.yield_item_value(self.clone(), consumer).await;
     }
@@ -121,7 +122,7 @@ impl KVItemInner {
         if self.meta == 0 && self.vptr.is_empty() {
             return false;
         }
-        if self.meta & MetaBit::BIT_DELETE.bits() > 0 {
+        if (self.meta & MetaBit::BIT_DELETE.bits()) > 0 {
             return false;
         }
         true

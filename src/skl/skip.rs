@@ -229,11 +229,6 @@ impl SkipList {
     }
 
     unsafe fn _put(&self, key: &[u8], v: ValueStruct) {
-        // info!(
-        //     "At SkipList,  sz: {}, cap: {}",
-        //     self.arena.size(),
-        //     self.arena.cap()
-        // );
         // Since we allow overwrite, we may not need to create a new node. We might not even need to
         // increase the height. Let's defer these actions.
         // let mut def_node = &mut Node::default();

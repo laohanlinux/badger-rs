@@ -890,6 +890,7 @@ impl ArcKV {
     /// Return a value that will async load value, if want not return value, should be `exists`
     pub async fn get(&self, key: &[u8]) -> Result<Vec<u8>> {
         let got = self._get(key)?;
+        info!("{} value struct: {}", hex_str(key), got.pretty());
         let inner = KVItemInner::new(key.to_vec(), got, self.clone());
         inner.get_value().await
     }
@@ -1210,17 +1211,22 @@ impl ArcKV {
         item: KVItemInner,
         mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
-        info!(
-            "ready to yield item:{} value from vlog!",
-            hex_str(item.key())
-        );
+        info!("ready to yield item:{} value from vlog!", item);
         // no value
         if !item.has_value() {
+            info!(
+                "not found the key:{}, it has not value",
+                hex_str(item.key())
+            );
             return consumer(&[0u8; 0]).await;
         }
 
-        // TODO What is this
         if (item.meta() & MetaBit::BIT_VALUE_POINTER.bits()) == 0 {
+            info!(
+                "not found the key:{}, meta: {} ",
+                hex_str(item.key()),
+                item.meta()
+            );
             return consumer(item.vptr()).await;
         }
         let mut vptr = ValuePointer::default();
@@ -1238,12 +1244,24 @@ pub(crate) async fn write_level0_table(
     f: &mut tokio::fs::File,
 ) -> Result<()> {
     defer! {info!("Finish write level zero table")}
+    let st_id = st.id();
     let cur = st.new_cursor();
     let mut builder = Builder::default();
     while let Some(_) = cur.next() {
         let key = cur.key();
         let value = cur.value();
         builder.add(key, &value)?;
+        #[cfg(test)]
+        {
+            let s = format!(
+                "{}, {}, {}, {}",
+                f_name,
+                st_id,
+                hex_str(key),
+                value.pretty()
+            );
+            crate::test_util::push_log(s.as_bytes(), false);
+        }
     }
     f.write_all(&builder.finish()).await?;
     Ok(())

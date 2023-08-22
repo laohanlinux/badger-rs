@@ -375,8 +375,8 @@ impl LevelsController {
                     "LOG Compact-Move {}->{} smallest:{} biggest:{} took {}",
                     l,
                     l + 1,
-                    String::from_utf8_lossy(table_lck.smallest()),
-                    String::from_utf8_lossy(table_lck.biggest()),
+                    hex_str(table_lck.smallest()),
+                    hex_str(table_lck.biggest()),
                     time_start.elapsed().unwrap().as_millis(),
                 );
                 return Ok(());
@@ -561,7 +561,7 @@ impl LevelsController {
             // Important to close the iterator to do ref counting.
             defer! {mitr.close()}
             mitr.rewind();
-            let tid = random::<i32>();
+            let tid = random::<u32>();
             let mut count = 0;
             let cur = tokio::runtime::Handle::current();
 
@@ -580,10 +580,16 @@ impl LevelsController {
 
                     #[cfg(test)]
                     {
+                        info!("merge, mitr{}, key {}", mitr.id(), hex_str(value.key()));
                         {
                             crate::test_util::push_log(
-                                format!("{}, {}, {}", tid, mitr.id(), hex_str(value.key()))
-                                    .as_bytes(),
+                                format!(
+                                    "tid:{}, mitr:{}, key:{}",
+                                    tid,
+                                    mitr.id(),
+                                    hex_str(value.key())
+                                )
+                                .as_bytes(),
                                 false,
                             );
                         }

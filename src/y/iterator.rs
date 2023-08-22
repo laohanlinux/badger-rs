@@ -54,12 +54,13 @@ impl ValueStruct {
 
     #[cfg(test)]
     pub(crate) fn pretty(&self) -> String {
+        use crate::hex_str;
         format!(
             "meta: {}, user_meta: {}, cas: {}, value: {}",
             self.meta,
             self.user_meta,
             self.cas_counter,
-            String::from_utf8_lossy(&self.value)
+            hex_str(&self.value)
         )
     }
 }
