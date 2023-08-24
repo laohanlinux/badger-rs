@@ -1,6 +1,6 @@
 use atomic::Atomic;
 use chrono::Local;
-use log::{info, kv::source::as_map, kv::Source, Level, warn};
+use log::{info, kv::source::as_map, kv::Source, warn, Level};
 use rand::random;
 use std::collections::HashMap;
 use std::env::temp_dir;
@@ -11,9 +11,22 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio_metrics::TaskMonitor;
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
+use tracing_subscriber::EnvFilter;
+
+#[cfg(test)]
+pub fn push_log_by_filename(fpath: &str, buf: &[u8]) {
+    use std::io::Write;
+    let mut fp = std::fs::File::options()
+        .write(true)
+        .append(true)
+        .create(true)
+        .open(fpath)
+        .unwrap();
+    fp.write_all(buf).unwrap();
+    fp.write_all(b"\n").unwrap();
+}
 
 #[cfg(test)]
 pub fn push_log(buf: &[u8], rd: bool) {

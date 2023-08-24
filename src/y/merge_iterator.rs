@@ -9,6 +9,7 @@ use itertools::Itertools;
 use std::cell::RefCell;
 use std::collections::btree_set::Iter;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::fmt::format;
 
 /// Cursor of the iterator of merge.
 pub struct MergeCursor {
@@ -27,7 +28,7 @@ impl MergeCursor {
 /// A iterator for multi iterator merge into one.
 pub struct MergeIterator {
     pub reverse: bool,
-    pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    pub itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
     pub heap: RefCell<BinaryHeap<IterRef>>,
     pub heap_flag: RefCell<Vec<bool>>,
@@ -104,12 +105,28 @@ impl MergeIterator {
     pub(crate) fn export_disk(&self) {
         for itr in self.itrs.iter() {
             let mut keys = vec![];
-            if let Some(key) = itr.peek() {
-                keys.push(hex_str(key.key()));
+            while let Some(key) = itr.peek() {
+                //keys.push(format!("{},{}", itr.id(), hex_str(key.key())));
+                keys.push(format!("{}", hex_str(key.key())));
+                itr.next();
             }
             let buffer = keys.join("#");
             #[cfg(test)]
-            crate::test_util::push_log(buffer.as_bytes(), false);
+            crate::test_util::push_log_by_filename("merge_iterator.txt", buffer.as_bytes());
+        }
+    }
+
+    pub(crate) fn export_disk_ext(&self) {
+        for itr in self.itrs.iter() {
+            let mut keys = vec![];
+            while let Some(item) = itr.peek() {
+                // let j = serde_json::to_vec(&item).unwrap();
+                keys.push(item);
+                itr.next();
+            }
+            let buffer = serde_json::to_vec(&keys).unwrap();
+            #[cfg(test)]
+            crate::test_util::push_log_by_filename("merge_iterator_ext.txt", &buffer);
         }
     }
 
@@ -159,7 +176,7 @@ impl MergeIterator {
             }
         }
 
-        self.init_heap_by_indexs(stack);
+        self.init_heap_by_indexes(stack);
         // self.init_heap();
         self.peek()
     }
@@ -179,7 +196,7 @@ impl MergeIterator {
         }
     }
 
-    fn init_heap_by_indexs(&self, stack: Vec<usize>) {
+    fn init_heap_by_indexes(&self, stack: Vec<usize>) {
         for index in stack {
             if let Some(item) = self.itrs[index].peek() {
                 self.push_item_into_heap(index, item);
@@ -214,7 +231,7 @@ impl MergeIterator {
 /// A Builder for merge iterator building
 #[derive(Default)]
 pub struct MergeIterOverBuilder {
-    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     reverse: bool,
 }
 
@@ -224,14 +241,14 @@ impl MergeIterOverBuilder {
         self
     }
 
-    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output=IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+        iters: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     ) -> MergeIterOverBuilder {
         self.all.extend(iters);
         self

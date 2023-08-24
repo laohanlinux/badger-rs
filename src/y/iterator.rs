@@ -5,11 +5,12 @@ use byteorder::{ReadBytesExt, WriteBytesExt};
 use log::info;
 
 use std::io::{Cursor, Write};
+use serde::{Deserialize, Serialize};
 
 /// ValueStruct represents the value info that can be associated with a key, but also the internal
 /// Meta field.
 /// |meta|user_meta|cas_counter|value_size|value|
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[repr(C)]
 pub struct ValueStruct {
     pub(crate) meta: u8,

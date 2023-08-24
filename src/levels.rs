@@ -560,11 +560,15 @@ impl LevelsController {
             let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
             // Important to close the iterator to do ref counting.
             defer! {mitr.close()}
+            {
+                mitr.rewind();
+                // mitr.export_disk();
+                mitr.export_disk_ext();
+            }
             mitr.rewind();
             let tid = random::<u32>();
             let mut count = 0;
             let cur = tokio::runtime::Handle::current();
-
             loop {
                 #[cfg(test)]
                 let mut keys = vec![];
