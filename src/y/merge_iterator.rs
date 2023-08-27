@@ -28,7 +28,7 @@ impl MergeCursor {
 /// A iterator for multi iterator merge into one.
 pub struct MergeIterator {
     pub reverse: bool,
-    pub itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
     pub heap: RefCell<BinaryHeap<IterRef>>,
     pub heap_flag: RefCell<Vec<bool>>,
@@ -103,6 +103,7 @@ impl MergeIterator {
     }
 
     pub(crate) fn export_disk(&self) {
+        #[cfg(test)]
         for itr in self.itrs.iter() {
             let mut keys = vec![];
             while let Some(key) = itr.peek() {
@@ -111,26 +112,27 @@ impl MergeIterator {
                 itr.next();
             }
             let buffer = keys.join("#");
-            #[cfg(test)]
             crate::test_util::push_log_by_filename("merge_iterator.txt", buffer.as_bytes());
         }
     }
 
     pub(crate) fn export_disk_ext(&self) {
-        for itr in self.itrs.iter() {
-            let mut keys = vec![];
-            while let Some(item) = itr.peek() {
-                // let j = serde_json::to_vec(&item).unwrap();
-                keys.push(item);
-                itr.next();
+        #[cfg(test)]
+        {
+            for itr in self.itrs.iter() {
+                let mut keys = vec![];
+                while let Some(item) = itr.peek() {
+                    keys.push(item);
+                    itr.next();
+                }
+                let buffer = serde_json::to_vec(&keys).unwrap();
+                crate::test_util::push_log_by_filename("test_data/merge_iterator_ext.txt", &buffer);
             }
-            let buffer = serde_json::to_vec(&keys).unwrap();
-            #[cfg(test)]
-            crate::test_util::push_log_by_filename("merge_iterator_ext.txt", &buffer);
         }
     }
 
     fn _next(&self) -> Option<IteratorItem> {
+        // the stack store the index that should be repush to heap
         let mut stack = vec![];
         {
             {
@@ -166,6 +168,7 @@ impl MergeIterator {
                 let pop_key = pop.key.key();
                 let first_key = first_el.key.key();
                 let index = pop.index;
+                // the key not equal the next key.
                 if pop_key != first_key {
                     break;
                 }
@@ -177,7 +180,6 @@ impl MergeIterator {
         }
 
         self.init_heap_by_indexes(stack);
-        // self.init_heap();
         self.peek()
     }
 
@@ -231,7 +233,7 @@ impl MergeIterator {
 /// A Builder for merge iterator building
 #[derive(Default)]
 pub struct MergeIterOverBuilder {
-    all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     reverse: bool,
 }
 
@@ -241,14 +243,14 @@ impl MergeIterOverBuilder {
         self
     }
 
-    pub fn add(mut self, x: Box<dyn Xiterator<Output=IteratorItem>>) -> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     ) -> MergeIterOverBuilder {
         self.all.extend(iters);
         self

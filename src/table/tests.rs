@@ -751,6 +751,7 @@ mod utils {
                 key_value: vec![],
                 mode: FileLoadingMode::MemoryMap,
                 pre: None,
+                item_kp: Vec::new(),
             }
         }
 

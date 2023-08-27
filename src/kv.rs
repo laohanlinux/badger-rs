@@ -890,7 +890,6 @@ impl ArcKV {
     /// Return a value that will async load value, if want not return value, should be `exists`
     pub async fn get(&self, key: &[u8]) -> Result<Vec<u8>> {
         let got = self._get(key)?;
-        info!("{} value struct: {}", hex_str(key), got.pretty());
         let inner = KVItemInner::new(key.to_vec(), got, self.clone());
         inner.get_value().await
     }
