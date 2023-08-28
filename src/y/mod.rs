@@ -365,7 +365,7 @@ fn dsync() {
     println!("{:?}", file.err());
 }
 
-// find a value in array with binary search
+/// find a value in array with binary search
 pub fn binary_search<T: Ord, F>(array: &[T], f: F) -> Option<usize>
 where
     F: Fn(&T) -> Ordering,
