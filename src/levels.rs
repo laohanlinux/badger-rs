@@ -242,6 +242,7 @@ impl LevelsController {
                             Ok(true) => {
                                 info!("Succeed to compacted");
                                 if p.level == 0 {
+                                    // zero level has compacted, memory SkipList can continue handle *write request*
                                     zero_level_compact_chan.try_send(());
                                 }
                             },
@@ -260,6 +261,7 @@ impl LevelsController {
                     let pick: Vec<CompactionPriority> = self.pick_compact_levels();
                     info!("Try to compact levels, {:?}", pick);
                     if pick.is_empty() {
+                        // No table need to compact, notify `KV` continue handle *write request*
                         zero_level_compact_chan.try_send(());
                     }
                     for p in pick {

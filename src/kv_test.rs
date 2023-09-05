@@ -350,6 +350,7 @@ async fn t_kv_get_more() {
     let kv = build_kv().await;
     let n = 2000;
     let m = 100;
+    // first version
     let mut entries = (0..n)
         .into_iter()
         .map(|i| i.to_string().as_bytes().to_vec())
@@ -376,9 +377,9 @@ async fn t_kv_get_more() {
         assert_eq!(value, entry.value);
     }
 
-    // Overwrite
+    // Overwrite with version 2
     entries.iter_mut().for_each(|entry| {
-        entry.user_meta = 3;
+        entry.user_meta = 2;
         entry.value = format!("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz").into_bytes();
     });
     entries.reverse();

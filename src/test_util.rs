@@ -68,7 +68,7 @@ pub(crate) fn tracing_log() {
 
     impl FormatTime for LocalTimer {
         fn format_time(&self, w: &mut Writer<'_>) -> std::fmt::Result {
-            write!(w, "{}", Local::now().format("%FT%T%.3f"))
+            write!(w, "{}", Local::now().format("%T"))
         }
     }
 
@@ -81,9 +81,10 @@ pub(crate) fn tracing_log() {
     }));
 
     let format = tracing_subscriber::fmt::format()
-        // .with_thread_names(true)
+        .with_thread_ids(true)
         .with_level(true)
         .with_target(true)
+        .with_line_number(true)
         .with_timer(LocalTimer);
 
     let _ = tracing_subscriber::fmt()

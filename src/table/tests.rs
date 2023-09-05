@@ -16,7 +16,7 @@ mod utils {
     use std::borrow::Borrow;
     use std::cell::RefCell;
     use std::cmp::Ordering;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::env::temp_dir;
     use std::fmt::format;
     use std::fs::File;
@@ -25,7 +25,6 @@ mod utils {
     use std::process::Output;
     use std::sync::Arc;
     use std::thread::spawn;
-    use itertools::Itertools;
     use tokio::io::AsyncSeekExt;
     use tokio_metrics::TaskMetrics;
     use tracing::info;
@@ -573,32 +572,44 @@ mod utils {
         assert_eq!(count, 2);
     }
 
-
     #[test]
     fn chaos_merge_iterator_ext() {
         crate::test_util::tracing_log();
         let keys = keypairs("merge_iterator_ext.txt");
-        // info!("{:?}", kp);
-
         let tables = keys
             .into_iter()
-            .map(|kp| {
-                TableBuilder::new().item_keypair(kp).build()
-            })
+            .map(|kp| TableBuilder::new().item_keypair(kp).build_by_iterator())
             .collect::<Vec<_>>();
-        let mut itr: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+        tracing_log::log::info!("tables count {}", tables.len());
+        let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         let mut num = 0;
-        let mut all = HashSet::new();
+        let mut all = HashMap::new();
         for table in tables {
             let iter = IteratorImpl::new(table, false);
-            while let Some(item) = iter.next() {
-                log::info!("{}=>{}. {}", num, hex_str(item.key()), item.value().pretty());
-                all.insert(hex_str(item.key()));
+            iter.rewind();
+            let mut has = HashSet::new();
+            while let Some(item) = iter.peek() {
+                let ok = has.insert(hex_str(item.key()));
+                assert!(!ok);
+                tracing_log::log::info!(
+                    "{}=>{}. {}",
+                    num,
+                    hex_str(item.key()),
+                    item.value().pretty()
+                );
+                if let Some(old) = all.insert(hex_str(item.key()), item.clone()) {
+                    tracing_log::log::warn!(
+                        "{} has inserted, old: {}",
+                        hex_str(item.key()),
+                        old.value().pretty()
+                    );
+                }
                 num += 1;
+                iter.next();
             }
             itr.push(Box::new(iter));
         }
-        log::info!("{}, {}", num, all.len());
+        log::info!("total:{}, distinct:{}", num, all.len());
     }
 
     #[test]
@@ -629,7 +640,7 @@ mod utils {
             })
             .collect::<Vec<_>>();
 
-        let mut itr: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+        let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         let mut num = 0;
         let mut all = vec![];
         for table in tables {
@@ -686,10 +697,7 @@ mod utils {
         // key_value.sort_by(|a, b| a.cmp(&b.0));
 
         for (i, item) in key_value.iter().enumerate() {
-            let got = builder.add(
-                item.key(),
-                item.value(),
-            );
+            let got = builder.add(item.key(), item.value());
             assert!(got.is_ok());
         }
 
@@ -839,6 +847,8 @@ mod utils {
     fn keypairs(fpath: &str) -> Vec<Vec<IteratorItem>> {
         let content = std::fs::read_to_string(fpath).unwrap();
         let c = content.split_ascii_whitespace().collect::<Vec<_>>();
-        c.into_iter().map(|s| serde_json::from_str::<Vec<IteratorItem>>(s).unwrap()).collect::<Vec<_>>()
+        c.into_iter()
+            .map(|s| serde_json::from_str::<Vec<IteratorItem>>(s).unwrap())
+            .collect::<Vec<_>>()
     }
 }

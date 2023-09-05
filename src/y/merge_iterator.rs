@@ -55,7 +55,6 @@ impl Xiterator for MergeIterator {
             self.heap.borrow_mut().clear();
             for (index, itr) in self.itrs.iter().enumerate() {
                 if let Some(item) = itr.rewind() {
-                    // info!("rewind {}, {}", index, hex_str(item.key()));
                     self.push_item_into_heap(index, item);
                 }
             }
@@ -121,9 +120,13 @@ impl MergeIterator {
         {
             for itr in self.itrs.iter() {
                 let mut keys = vec![];
+                let mut has = HashMap::new();
                 while let Some(item) = itr.peek() {
-                    keys.push(item);
+                    keys.push(item.clone());
                     itr.next();
+                    if let Some(old) = has.insert(item.key.clone(), item.clone()) {
+                        panic!("it should be not happen, dump key: {}", hex_str(item.key()));
+                    }
                 }
                 let buffer = serde_json::to_vec(&keys).unwrap();
                 crate::test_util::push_log_by_filename("test_data/merge_iterator_ext.txt", &buffer);
