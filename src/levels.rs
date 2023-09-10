@@ -547,6 +547,7 @@ impl LevelsController {
             // Create iterators across all the tables involved first.
             let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
             if l == 0 {
+                log::error!("REVER the table");
                 top_tables.reverse();
             } else {
                 assert_eq!(1, top_tables.len());

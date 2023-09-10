@@ -575,7 +575,7 @@ mod utils {
     #[test]
     fn chaos_merge_iterator_ext() {
         crate::test_util::tracing_log();
-        let keys = keypairs("merge_iterator_ext.txt");
+        let keys = keypairs("test_data/merge_iterator_ext.txt");
         let tables = keys
             .into_iter()
             .map(|kp| TableBuilder::new().item_keypair(kp).build_by_iterator())
@@ -584,13 +584,13 @@ mod utils {
         let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         let mut num = 0;
         let mut all = HashMap::new();
-        for table in tables {
+        for (index, table) in tables.into_iter().enumerate() {
             let iter = IteratorImpl::new(table, false);
             iter.rewind();
             let mut has = HashSet::new();
             while let Some(item) = iter.peek() {
                 let ok = has.insert(hex_str(item.key()));
-                assert!(!ok);
+                assert!(!ok, "dump key, index: {}", index);
                 tracing_log::log::info!(
                     "{}=>{}. {}",
                     num,

@@ -181,7 +181,6 @@ impl LevelCompactStatus {
     pub(crate) fn remove(&self, dst: &KeyRange) -> bool {
         let mut rlock = self.wl();
         let len = rlock.len();
-        //  rlock.retain(|r| r == dst);
         rlock.retain(|r| r != dst);
         len > rlock.len()
     }

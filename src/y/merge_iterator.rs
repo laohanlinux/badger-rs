@@ -124,7 +124,7 @@ impl MergeIterator {
                 while let Some(item) = itr.peek() {
                     keys.push(item.clone());
                     itr.next();
-                    if let Some(old) = has.insert(item.key.clone(), item.clone()) {
+                    if let Some(_old) = has.insert(item.key.clone(), item.clone()) {
                         panic!("it should be not happen, dump key: {}", hex_str(item.key()));
                     }
                 }
