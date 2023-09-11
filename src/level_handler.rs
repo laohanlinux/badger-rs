@@ -143,7 +143,7 @@ impl LevelHandler {
             });
         }
         let after_tids = tb_wl.iter().map(|tb| tb.id()).collect::<Vec<_>>();
-        info!(
+        warn!(
             "after delete tables level:{},  {:?} => {:?}, to_del: {:?}",
             level, before_tids, after_tids, to_del,
         );
@@ -314,7 +314,7 @@ impl LevelHandler {
                 tb.incr_ref();
                 // check it by bloom filter
                 if tb.does_not_have(key) {
-                    debug!("not contain it, key #{}, st: {}", hex_str(key), tb.id());
+                    //debug!("not contain it, key #{}, st: {}", hex_str(key), tb.id());
                     tb.decr_ref();
                     continue;
                 }

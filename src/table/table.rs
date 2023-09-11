@@ -368,7 +368,7 @@ impl Drop for TableCore {
             self.fd.set_len(0).expect("can not truncate file to 0");
             // #[cfg(not(test))]
             remove_file(Path::new(&self.file_name)).expect("fail to remove file");
-            debug!(
+            warn!(
                 "Drop table: {}, reference: {}, disk: {}",
                 self.id, _ref, self.file_name
             );

@@ -1,4 +1,4 @@
-use log::info;
+use log::{info, warn};
 
 use crate::hex_str;
 use crate::table::iterator::{IteratorImpl, IteratorItem};
@@ -56,6 +56,8 @@ impl Xiterator for MergeIterator {
             for (index, itr) in self.itrs.iter().enumerate() {
                 if let Some(item) = itr.rewind() {
                     self.push_item_into_heap(index, item);
+                } else {
+                    warn!("has a empty iterator, index:{}, id:{}", index, itr.id());
                 }
             }
             self.set_iter_empty();

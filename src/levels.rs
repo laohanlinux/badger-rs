@@ -547,7 +547,10 @@ impl LevelsController {
             // Create iterators across all the tables involved first.
             let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
             if l == 0 {
-                log::error!("REVER the table");
+                log::error!(
+                    "REVER the table, {:?}",
+                    top_tables.iter().map(|tb| tb.id()).collect::<Vec<_>>()
+                );
                 top_tables.reverse();
             } else {
                 assert_eq!(1, top_tables.len());
@@ -565,7 +568,6 @@ impl LevelsController {
             defer! {mitr.close()}
             {
                 mitr.rewind();
-                // mitr.export_disk();
                 mitr.export_disk_ext();
             }
             mitr.rewind();

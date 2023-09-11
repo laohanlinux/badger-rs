@@ -584,13 +584,17 @@ mod utils {
         let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         let mut num = 0;
         let mut all = HashMap::new();
+        let mut last_one = b"9999999999999999999999999".to_vec();
         for (index, table) in tables.into_iter().enumerate() {
             let iter = IteratorImpl::new(table, false);
             iter.rewind();
             let mut has = HashSet::new();
             while let Some(item) = iter.peek() {
+                if item.key() < last_one.as_slice() {
+                    last_one = item.key.clone();
+                }
                 let ok = has.insert(hex_str(item.key()));
-                assert!(!ok, "dump key, index: {}", index);
+                assert!(!ok, "dump key, index: {}, {}", index, hex_str(item.key()));
                 tracing_log::log::info!(
                     "{}=>{}. {}",
                     num,

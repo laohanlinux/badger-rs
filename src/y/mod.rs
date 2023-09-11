@@ -189,6 +189,7 @@ pub fn is_existing<T>(ret: &io::Result<T>) -> bool {
     }
 }
 
+// TODO add SIMD hash
 #[inline]
 pub fn hash(buffer: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::default();
