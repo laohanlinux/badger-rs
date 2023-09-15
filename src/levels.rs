@@ -120,8 +120,8 @@ impl LevelsController {
         }
 
         let next_file_id = max_file_id + 1;
-        for (i, tbls) in tables.into_iter().enumerate() {
-            levels[i].init_tables(tbls);
+        for (i, tbs) in tables.into_iter().enumerate() {
+            levels[i].init_tables(tbs);
         }
         // Make sure key ranges do not overlap etc.
         let level_controller = LevelsController {
@@ -552,6 +552,10 @@ impl LevelsController {
                     top_tables.iter().map(|tb| tb.id()).collect::<Vec<_>>()
                 );
                 top_tables.reverse();
+                log::error!(
+                    "after REVER the table, {:?}",
+                    top_tables.iter().map(|tb| tb.id()).collect::<Vec<_>>()
+                );
             } else {
                 assert_eq!(1, top_tables.len());
             }
@@ -566,10 +570,10 @@ impl LevelsController {
             let mitr = MergeIterOverBuilder::default().add_batch(itr).build();
             // Important to close the iterator to do ref counting.
             defer! {mitr.close()}
-            {
-                mitr.rewind();
-                mitr.export_disk_ext();
-            }
+            // {
+            //     mitr.rewind();
+            //     mitr.export_disk_ext();
+            // }
             mitr.rewind();
             let tid = random::<u32>();
             let mut count = 0;
@@ -589,7 +593,7 @@ impl LevelsController {
 
                     #[cfg(test)]
                     {
-                        info!("merge, mitr{}, key {}", mitr.id(), hex_str(value.key()));
+                        error!("merge, mitr{}, key {}", mitr.id(), hex_str(value.key()));
                         {
                             crate::test_util::push_log(
                                 format!(

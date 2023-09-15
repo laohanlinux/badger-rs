@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::collections::btree_set::Iter;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt::format;
+use crate::kv::{_BADGER_PREFIX, _HEAD};
 
 /// Cursor of the iterator of merge.
 pub struct MergeCursor {
@@ -20,6 +21,9 @@ pub struct MergeCursor {
 
 impl MergeCursor {
     fn replace(&mut self, index: usize, cur_item: Option<IteratorItem>) {
+        if cur_item.is_some() {
+            assert!(!cur_item.as_ref().unwrap().key().starts_with(_BADGER_PREFIX));
+        }
         self.index = index;
         self.cur_item = cur_item;
     }
@@ -28,7 +32,7 @@ impl MergeCursor {
 /// A iterator for multi iterator merge into one.
 pub struct MergeIterator {
     pub reverse: bool,
-    pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    pub itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
     pub heap: RefCell<BinaryHeap<IterRef>>,
     pub heap_flag: RefCell<Vec<bool>>,
@@ -125,6 +129,7 @@ impl MergeIterator {
                 let mut has = HashMap::new();
                 while let Some(item) = itr.peek() {
                     keys.push(item.clone());
+                    tracing_log::log::error!("put {}, cas: {}", hex_str(item.key()), item.value().cas_counter);
                     itr.next();
                     if let Some(_old) = has.insert(item.key.clone(), item.clone()) {
                         panic!("it should be not happen, dump key: {}", hex_str(item.key()));
@@ -154,11 +159,12 @@ impl MergeIterator {
             }
             let first_el = first_el.unwrap();
             // Move it
-            self.cursor.borrow_mut().index = first_el.index;
-            self.cursor
-                .borrow_mut()
-                .cur_item
-                .replace(first_el.key.clone());
+            self.cursor.borrow_mut().replace(first_el.index, Some(first_el.key.clone()));
+            // self.cursor.borrow_mut().index = first_el.index;
+            // self.cursor
+            //     .borrow_mut()
+            //     .cur_item
+            //     .replace(first_el.key.clone());
             self.itrs.get(first_el.index).unwrap().next();
             stack.push(first_el.index);
 
@@ -238,7 +244,7 @@ impl MergeIterator {
 /// A Builder for merge iterator building
 #[derive(Default)]
 pub struct MergeIterOverBuilder {
-    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     reverse: bool,
 }
 
@@ -248,14 +254,14 @@ impl MergeIterOverBuilder {
         self
     }
 
-    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output=IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+        iters: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     ) -> MergeIterOverBuilder {
         self.all.extend(iters);
         self

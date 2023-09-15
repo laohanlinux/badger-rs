@@ -594,18 +594,19 @@ mod utils {
                     last_one = item.key.clone();
                 }
                 let ok = has.insert(hex_str(item.key()));
-                assert!(!ok, "dump key, index: {}, {}", index, hex_str(item.key()));
-                tracing_log::log::info!(
-                    "{}=>{}. {}",
-                    num,
-                    hex_str(item.key()),
-                    item.value().pretty()
-                );
+                assert!(ok, "dump key, index: {}, {}", index, hex_str(item.key()));
+                // tracing_log::log::info!(
+                //     "{}=>{}. {}",
+                //     num,
+                //     hex_str(item.key()),
+                //     item.value().pretty()
+                // );
                 if let Some(old) = all.insert(hex_str(item.key()), item.clone()) {
                     tracing_log::log::warn!(
-                        "{} has inserted, old: {}",
+                        "{} has inserted, old: {} => new: {}",
                         hex_str(item.key()),
-                        old.value().pretty()
+                        old.value().pretty(),
+                        item.value().pretty(),
                     );
                 }
                 num += 1;
@@ -698,9 +699,9 @@ mod utils {
         let dir = temp_dir().join(random::<u64>().to_string() + FILE_SUFFIX);
         let file_name = dir.to_str().unwrap();
         let mut fp = open_synced_file(file_name, true).unwrap();
-        // key_value.sort_by(|a, b| a.cmp(&b.0));
-
+        let mut has = HashSet::new();
         for (i, item) in key_value.iter().enumerate() {
+            assert!(has.insert(item.key().clone()));
             let got = builder.add(item.key(), item.value());
             assert!(got.is_ok());
         }

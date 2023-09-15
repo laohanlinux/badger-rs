@@ -47,7 +47,7 @@ use tokio::sync::{RwLock, RwLockWriteGuard};
 ///
 pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
 /// Prefix for internal keys used by badger.
-pub const _HEAD: &[u8; 11] = b"!bager!head"; // For Storing value offset for replay.
+pub const _HEAD: &[u8; 12] = b"!badger!head"; // For Storing value offset for replay.
 
 pub const KV_WRITE_CH_CAPACITY: usize = 1000;
 
@@ -131,6 +131,7 @@ impl BoxKV {
 }
 
 impl KV {
+    /// Open a data with Options
     pub async fn open(mut opt: Options) -> Result<XArc<KV>> {
         opt.max_batch_size = (15 * opt.max_table_size) / 100;
         opt.max_batch_count = 2 * opt.max_batch_size / Node::size() as u64;

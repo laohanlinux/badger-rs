@@ -733,7 +733,7 @@ impl Xiterator for ConcatIterator {
             .collect::<Vec<_>>()
             .join(",");
         if id.is_empty() {
-            return "iterator_impl_empty".to_owned();
+            return "ConcatIterator_impl_empty".to_owned();
         }
         id
     }
