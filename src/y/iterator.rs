@@ -5,11 +5,12 @@ use byteorder::{ReadBytesExt, WriteBytesExt};
 use log::info;
 
 use std::io::{Cursor, Write};
+use serde::{Deserialize, Serialize};
 
 /// ValueStruct represents the value info that can be associated with a key, but also the internal
 /// Meta field.
 /// |meta|user_meta|cas_counter|value_size|value|
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[repr(C)]
 pub struct ValueStruct {
     pub(crate) meta: u8,
@@ -54,12 +55,13 @@ impl ValueStruct {
 
     #[cfg(test)]
     pub(crate) fn pretty(&self) -> String {
+        use crate::hex_str;
         format!(
             "meta: {}, user_meta: {}, cas: {}, value: {}",
             self.meta,
             self.user_meta,
             self.cas_counter,
-            String::from_utf8_lossy(&self.value)
+            hex_str(&self.value)
         )
     }
 }
@@ -116,3 +118,11 @@ pub trait KeyValue<V> {
     fn key(&self) -> &[u8];
     fn value(&self) -> V;
 }
+
+// impl<T> Iterator for dyn Xiterator<Output=T> {
+//     type Item = T;
+//
+//     fn next(&mut self) -> Option<Self::Item> {
+//         todo!()
+//     }
+// }

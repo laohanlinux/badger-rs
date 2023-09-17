@@ -1,14 +1,14 @@
 use crate::y::{hash, is_eof, Decode, Encode, ValueStruct};
-
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-
+use drop_cell::defer;
 use growable_bloom_filter::GrowableBloom;
 use log::{debug, info};
 use serde_json;
-
 use std::hash::Hasher;
 use std::io::{Cursor, Read, Write};
+use std::time::SystemTime;
 
+// TODO use simd
 #[derive(Clone, Default, Debug)]
 pub(crate) struct Header {
     pub(crate) p_len: u16, // Overlap with base key(Prefix length)
@@ -147,12 +147,6 @@ impl Builder {
     pub fn add(&mut self, key: &[u8], value: &ValueStruct) -> crate::y::Result<()> {
         if self.counter >= Self::RESTART_INTERVAL {
             self.finish_block();
-            debug!(
-                "create new block, base:{:<10}, pre: {:5}, base-key: {:?}",
-                self.base_offset,
-                self.prev_offset,
-                String::from_utf8_lossy(&self.base_key)
-            );
             // Start a new block. Initialize the block.
             self.restarts.push(self.buf.get_ref().len() as u32);
             self.counter = 0;
@@ -169,7 +163,6 @@ impl Builder {
     // FinalSize returns the *rough* final size of the array, counting the header which is not yet written.
     // TODO: Look into why there is a discrepancy. I suspect it is because of Write(empty, empty)
     // at the end. The diff can vary.
-
     // ReachedCapacity returns true if we... roughly (?) reached capacity?
     pub(crate) fn reached_capacity(&self, cap: u64) -> bool {
         let estimate_sz =
@@ -193,19 +186,26 @@ impl Builder {
         wt.write_u32::<BigEndian>(self.restarts.len() as u32)
             .unwrap();
         let out = wt.into_inner();
-        debug!("write restart: {:?}", self.restarts);
         assert_eq!(out.len(), sz);
         out
     }
 
     /// Finishes the table by appending the index.
+    /// TODO Hash should be calc with parallels.
     pub fn finish(&mut self) -> Vec<u8> {
+        let start = SystemTime::now();
+        defer! {
+            let cost = SystemTime::now().duration_since(start).unwrap().as_millis() as u64;
+            crate::event::get_metrics().block_hash_calc_cost.inc_by(cost);
+        }
         let mut bf = GrowableBloom::new(0.01, self.counter);
         loop {
             let kl = self.key_buf.read_u16::<BigEndian>();
             if is_eof(&kl) {
+                // No content, finish
                 break;
             }
+            // Other error, panic it
             if kl.is_err() {
                 panic!("{:?}", &kl.unwrap_err());
             }
@@ -221,7 +221,6 @@ impl Builder {
 
         // Write bloom filter
         let bdata = serde_json::to_vec(&bf).unwrap();
-        println!("{}", serde_json::to_string(&bf).unwrap());
         self.buf.write_all(&bdata).unwrap();
         self.buf.write_u32::<BigEndian>(bdata.len() as u32).unwrap();
         self.buf.get_ref().clone()

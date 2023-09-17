@@ -1,7 +1,7 @@
 use crate::iterator::PreFetchStatus::Prefetched;
 use crate::kv::_BADGER_PREFIX;
 use crate::types::{ArcRW, Channel, Closer, TArcMx, TArcRW};
-use crate::ValueStruct;
+use crate::{hex_str, ValueStruct};
 use crate::{
     kv::KV,
     types::XArc,
@@ -49,10 +49,10 @@ pub(crate) struct KVItemInner {
 impl Display for KVItemInner {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("kv")
-            .field(
-                "key",
-                &format!("{}", String::from_utf8_lossy(&self.key)).as_bytes(),
-            )
+            .field("key", &hex_str(&self.key))
+            .field("meta", &self.meta)
+            .field("user_meta", &self.user_meta)
+            .field("cas", &self.counter())
             .finish()
     }
 }
@@ -78,6 +78,7 @@ impl KVItemInner {
         &self.key
     }
 
+    // Return value
     pub async fn get_value(&self) -> Result<Vec<u8>> {
         let ch = Channel::new(1);
         self.value(|value| {
@@ -103,16 +104,16 @@ impl KVItemInner {
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
-        if self.status.load(Ordering::Relaxed) == Prefetched {
+        if self.status.load(Ordering::Acquire) == Prefetched {
             if self.err.is_err() {
                 return self.err.clone();
             }
             let value = self.value.lock().await;
-            if value.is_empty() {
-                return consumer(&EMPTY_SLICE).await;
+            return if value.is_empty() {
+                consumer(&EMPTY_SLICE).await
             } else {
-                return consumer(&value).await;
-            }
+                consumer(&value).await
+            };
         }
         return self.kv.yield_item_value(self.clone(), consumer).await;
     }
@@ -121,7 +122,7 @@ impl KVItemInner {
         if self.meta == 0 && self.vptr.is_empty() {
             return false;
         }
-        if self.meta & MetaBit::BIT_DELETE.bits() > 0 {
+        if (self.meta & MetaBit::BIT_DELETE.bits()) > 0 {
             return false;
         }
         true
@@ -144,8 +145,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-        .await?;
-        Ok(())
+        .await
     }
 
     // Returns approximate size of the key-value pair.
@@ -202,11 +202,16 @@ pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
 };
 
 // Helps iterating over the KV pairs in a lexicographically sorted order.
+// skiplist,     sst      vlog
+//  |             |        |
+//  |             |        |
+//  IteratorExt  reference
 pub(crate) struct IteratorExt {
     kv: XArc<KV>,
     itr: MergeIterator,
     opt: IteratorOptions,
     item: ArcRW<Option<KVItem>>,
+    // Cache the prefetch keys, not inlcude current value
     data: ArcRW<std::collections::LinkedList<KVItem>>,
 }
 
@@ -239,25 +244,28 @@ impl IteratorExt {
 
     // Rewind the iterator cursor all the wy to zero-th position, which would be the
     // smallest key if iterating forward, and largest if iterating backward. It dows not
-    // keep track of whether the cusor started with a `seek`.
+    // keep track of whether the cursor started with a `seek`.
     pub(crate) async fn rewind(&self) -> Option<KVItem> {
         while let Some(el) = self.data.write().pop_front() {
             // Just cleaner to wait before pushing. No ref counting need.
             el.read().await.wg.wait().await;
         }
-
+        // rewind the iterator
         let mut item = self.itr.rewind();
+        // filter internal data
         while item.is_some() && item.as_ref().unwrap().key().starts_with(_BADGER_PREFIX) {
             item = self.itr.next();
         }
+        // prefetch item.
         self.pre_fetch().await;
+        // return the first el.
         self.item.read().clone()
     }
 
     // Advance the iterator by one. Always check it.valid() after a next ()
     // to ensure you have access to a valid it.item()
     pub(crate) async fn next(&self) -> Option<KVItem> {
-        // Ensure current item
+        // Ensure current item has load
         if let Some(el) = self.item.write().take() {
             el.read().await.wg.wait().await; // Just cleaner to wait before pushing to avoid doing ref counting.
         }
@@ -279,11 +287,15 @@ impl IteratorExt {
         if item.is_none() {
             return None;
         }
-        println!("peek key: {:?}", item);
+
         let xitem = self.new_item();
         self.fill(xitem.clone()).await;
         self.data.write().push_back(xitem.clone());
         Some(xitem)
+    }
+
+    pub(crate) async fn peek(&self) -> Option<KVItem> {
+        self.item.read().clone()
     }
 }
 
@@ -325,12 +337,13 @@ impl IteratorExt {
     }
 
     // Close the iterator, It is important to call this when you're done with iteration.
-    async fn close(&self) -> Result<()> {
+    pub(crate) async fn close(&self) -> Result<()> {
         // TODO: We could handle this error.
         self.kv.vlog.as_ref().unwrap().decr_iterator_count().await?;
         Ok(())
     }
 
+    // fill the value
     async fn fill(&self, item: KVItem) {
         let vs = self.itr.peek().unwrap();
         let vs = vs.value();
@@ -360,6 +373,7 @@ impl IteratorExt {
         }
     }
 
+    // Prefetch load items.
     async fn pre_fetch(&self) {
         let mut pre_fetch_size = 2;
         if self.opt.pre_fetch_values && self.opt.pre_fetch_size > 1 {
@@ -368,24 +382,29 @@ impl IteratorExt {
 
         let itr = &self.itr;
         let mut count = 0;
-        while let Some(item) = itr.next() {
+        while let Some(item) = itr.peek() {
             if item.key().starts_with(crate::kv::_BADGER_PREFIX) {
+                itr.next();
                 continue;
             }
             if item.value().meta & MetaBit::BIT_DELETE.bits() > 0 {
+                itr.next();
                 continue;
             }
             count += 1;
             let xitem = self.new_item();
+            // fill a el from itr.peek
             self.fill(xitem.clone()).await;
             if self.item.read().is_none() {
-                self.item.write().replace(xitem);
+                self.item.write().replace(xitem); // store it
             } else {
+                // push prefetch el into cache queue, Notice it not including current item
                 self.data.write().push_back(xitem);
             }
             if count == pre_fetch_size {
                 break;
             }
+            itr.next();
         }
     }
 }

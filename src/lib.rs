@@ -18,6 +18,9 @@
 #![feature(async_iterator)]
 #![feature(let_chains)]
 #![feature(stmt_expr_attributes)]
+#![feature(backtrace_frames)]
+
+extern crate core;
 
 use std::mem::align_of;
 

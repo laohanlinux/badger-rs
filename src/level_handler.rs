@@ -80,11 +80,45 @@ impl LevelHandler {
     // which are currently being compacted so that we treat them as already having started being
     // compacted (because they have been, yet their size is already counted in get_total_size).
     pub(crate) fn is_compactable(&self, del_size: u64) -> bool {
-        self.get_total_size() - del_size >= self.get_max_total_size()
+        let compactable = self.get_total_size() - del_size >= self.get_max_total_size();
+
+        #[cfg(test)]
+        debug!(
+            "trace level{}, does it compactable, total_size:{}, del_size:{}, max_size:{}, yes: {}",
+            self.level(),
+            self.get_total_size(),
+            del_size,
+            self.get_max_total_size(),
+            compactable,
+        );
+
+        compactable
     }
 
     pub(crate) fn get_total_size(&self) -> u64 {
         self.total_size.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn incr_total_size(&self, n: u64) {
+        let old = self.total_size.fetch_add(n, Ordering::Relaxed);
+        #[cfg(test)]
+        info!(
+            "incr level{} total size: {} => {}",
+            self.level(),
+            old,
+            self.get_total_size()
+        );
+    }
+
+    pub(crate) fn decr_total_size(&self, n: u64) {
+        let old = self.total_size.fetch_sub(n, Ordering::Relaxed);
+        #[cfg(test)]
+        info!(
+            "decr level{} total size: {} => {}",
+            self.level(),
+            old,
+            self.get_total_size()
+        );
     }
 
     pub(crate) fn get_max_total_size(&self) -> u64 {
@@ -93,24 +127,25 @@ impl LevelHandler {
 
     // delete current level's tables of to_del
     pub(crate) fn delete_tables(&self, to_del: Vec<u64>) {
-        let to_del = to_del.iter().map(|id| *id).collect::<HashSet<_>>();
+        let to_del_set = to_del.iter().map(|id| *id).collect::<HashSet<_>>();
         let level = self.level();
         let mut tb_wl = self.tables_wl();
         let before_tids = tb_wl.iter().map(|tb| tb.id()).collect::<Vec<_>>();
         {
             tb_wl.retain_mut(|tb| {
-                if to_del.contains(&tb.id()) {
+                if to_del_set.contains(&tb.id()) {
                     // delete table reference
                     tb.decr_ref();
+                    self.decr_total_size(tb.size() as u64);
                     return false;
                 }
                 true
             });
         }
         let after_tids = tb_wl.iter().map(|tb| tb.id()).collect::<Vec<_>>();
-        info!(
-            "after delete tables level:{},  {:?} => {:?}",
-            level, before_tids, after_tids,
+        warn!(
+            "after delete tables level:{},  {:?} => {:?}, to_del: {:?}",
+            level, before_tids, after_tids, to_del,
         );
     }
 
@@ -138,6 +173,24 @@ impl LevelHandler {
     // Get table read lock guards
     fn tables_rd(&self) -> RwLockReadGuard<'_, RawRwLock, Vec<Table>> {
         self.tables.read()
+    }
+
+    pub(crate) fn debug_tables(&self) {
+        let tw = self.tables_rd();
+        info!(
+            "=============debug tables, level: {}=====================",
+            self.level()
+        );
+        for tb in tw.iter() {
+            info!(
+                "|tid:{}, smallest:{}, biggest:{}, size: {}|",
+                tb.id(),
+                hex_str(tb.smallest()),
+                hex_str(tb.biggest()),
+                tb.size(),
+            );
+        }
+        info!("------------------------end-----------------------------");
     }
 
     // Returns the tables that intersect with key range. Returns a half-interval [left, right).
@@ -182,8 +235,7 @@ impl LevelHandler {
         // TODO Add lock (think of level's sharing lock)
         // Increase total_size first.
         for tb in &new_tables {
-            self.total_size
-                .fetch_add(tb.size() as u64, Ordering::Relaxed);
+            self.incr_total_size(tb.size() as u64);
             // add table reference
             tb.incr_ref();
         }
@@ -198,6 +250,7 @@ impl LevelHandler {
             let level_id = self.level();
             let mut tables_lck = self.tables_wl();
             let old_ids = tables_lck.iter().map(|tb| tb.id()).collect::<Vec<_>>();
+            // TODO FIXME may be it is error.
             tables_lck.retain_mut(|tb| {
                 let left = tb.biggest() <= key_range.left.as_slice();
                 let right = tb.smallest() > key_range.right.as_slice();
@@ -207,19 +260,19 @@ impl LevelHandler {
                     // TODO it should be not a good idea decr reference here, slow lock
                     // decr table reference
                     tb.decr_ref();
-                    self.total_size
-                        .fetch_sub(tb.size() as u64, Ordering::Relaxed);
+                    self.decr_total_size(tb.size() as u64);
                     false
                 }
             });
+            let will_add = new_tables.iter().map(|tb| tb.id()).collect::<Vec<_>>();
             tables_lck.extend(new_tables);
             // TODO avoid resort
             tables_lck.sort_by(|a, b| a.smallest().cmp(b.smallest()));
 
             let new_ids = tables_lck.iter().map(|tb| tb.id()).collect::<Vec<_>>();
             info!(
-                "after replace tables, level:{}, {:?} => {:?}",
-                level_id, old_ids, new_ids
+                "after replace tables, level:{}, will_add:{:?}, {:?} => {:?}",
+                level_id, will_add, old_ids, new_ids
             );
         }
         Ok(())
@@ -234,8 +287,7 @@ impl LevelHandler {
             return false;
         }
         t.incr_ref();
-        self.total_size
-            .fetch_add(t.size() as u64, Ordering::Relaxed);
+        self.incr_total_size(t.size() as u64);
         tw.push(t);
         true
     }
@@ -262,7 +314,7 @@ impl LevelHandler {
                 tb.incr_ref();
                 // check it by bloom filter
                 if tb.does_not_have(key) {
-                    debug!("not contain it, key #{}, st: {}", hex_str(key), tb.id());
+                    //debug!("not contain it, key #{}, st: {}", hex_str(key), tb.id());
                     tb.decr_ref();
                     continue;
                 }
@@ -271,7 +323,6 @@ impl LevelHandler {
                 tb.decr_ref();
                 if let Some(item) = item {
                     if item.key() != key {
-                        //warn!("try it again, key #{}", crate::y::hex_str(key));
                         continue;
                     }
                     return Some(item);
@@ -279,15 +330,21 @@ impl LevelHandler {
             }
             None
         } else {
+            //self.debug_tables();
             let tw = self.tables_rd();
             let ok = tw.binary_search_by(|tb| tb.biggest().cmp(key));
-            if ok.is_err() {
+            // #[cfg(test)]
+            // info!("find key #{} at level{}, {:?}", hex_str(key), self.level(), ok.unwrap_or_else(|n| n));
+
+            let index = ok.unwrap_or_else(|n| n);
+            if index >= tw.len() {
                 // todo add metrics
                 return None;
             }
-            let tb = tw.get(ok.unwrap()).unwrap();
+            let tb = tw.get(index).unwrap();
             tb.incr_ref();
             if tb.does_not_have(key) {
+                //debug!("not contain it, key #{}, st: {}", hex_str(key), tb.id());
                 tb.decr_ref();
                 return None;
             }
@@ -295,7 +352,6 @@ impl LevelHandler {
             let it = IteratorImpl::new(tb.clone(), false);
             let item = it.seek(key);
             tb.decr_ref();
-
             if let Some(item) = item {
                 if item.key() == key {
                     return Some(item);

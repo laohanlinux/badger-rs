@@ -1,6 +1,6 @@
 use atomic::Atomic;
 use chrono::Local;
-use log::{info, kv::source::as_map, kv::Source, Level};
+use log::{info, kv::source::as_map, kv::Source, warn, Level};
 use rand::random;
 use std::collections::HashMap;
 use std::env::temp_dir;
@@ -10,68 +10,65 @@ use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Handle;
+use tokio_metrics::TaskMonitor;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
+use tracing_subscriber::EnvFilter;
 
 #[cfg(test)]
-pub(crate) fn mock_log() {
-    use chrono::Local;
-    use env_logger::Env;
-    use log::kv::source::AsMap;
-    use log::kv::{Error, Key, ToKey, ToValue, Value};
-    use serde::{Deserialize, Serialize};
+pub fn push_log_by_filename(fpath: &str, buf: &[u8]) {
     use std::io::Write;
-
-    #[derive(Serialize, Deserialize)]
-    struct JsonLog {
-        level: log::Level,
-        ts: String,
-        module: String,
-        msg: String,
-        #[serde(skip_serializing_if = "HashMap::is_empty", flatten)]
-        kv: HashMap<String, serde_json::Value>,
-    }
-
-    let env = Env::default()
-        .filter_or("MY_LOG_LEVEL", "error")
-        .write_style_or("MY_LOG_STYLE", "always");
-    let _ = env_logger::Builder::from_env(env)
-        .format(|buf, record| {
-            let mut l = JsonLog {
-                ts: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
-                module: record.file().unwrap_or("unknown").to_string()
-                    + ":"
-                    + &*record.line().unwrap_or(0).to_string(),
-                level: record.level(),
-                msg: record.args().to_string(),
-                kv: Default::default(),
-            };
-            let kv: AsMap<&dyn Source> = as_map(record.key_values());
-            if let Ok(kv) = serde_json::to_string(&kv) {
-                let h: HashMap<String, serde_json::Value> = serde_json::from_str(&kv).unwrap();
-                l.kv.extend(h.into_iter());
-            }
-            writeln!(buf, "{}", serde_json::to_string(&l).unwrap())
-        })
-        .try_init();
-    log::info!( is_ok = true; "start init log");
-    // env_logger::try_init_from_env(env);
+    let mut fp = std::fs::File::options()
+        .write(true)
+        .append(true)
+        .create(true)
+        .open(fpath)
+        .unwrap();
+    fp.write_all(buf).unwrap();
+    fp.write_all(b"\n").unwrap();
 }
 
 #[cfg(test)]
-pub(crate) fn mock_log_terminal() {
-    console_log::init_with_level(Level::Debug);
+pub fn push_log(buf: &[u8], rd: bool) {
+    // #[cfg(test)]
+    // return;
+    use std::io::Write;
+    let mut fpath = "raw_log.log";
+    let mut fp = if !rd {
+        std::fs::File::options()
+            .write(true)
+            .append(true)
+            .create(true)
+            .open(fpath)
+            .unwrap()
+    } else {
+        std::fs::File::options()
+            .write(true)
+            .append(true)
+            .create(true)
+            .open(random_tmp_dir() + "/" + fpath)
+            .unwrap()
+    };
+    fp.write_all(buf).unwrap();
+    fp.write_all(b"\n").unwrap();
+}
+
+#[cfg(test)]
+pub fn remove_push_log() {
+    use std::fs::remove_file;
+    remove_file("raw_log.log");
 }
 
 #[cfg(test)]
 pub(crate) fn tracing_log() {
+    use libc::remove;
     use tracing::{info, Level};
     use tracing_subscriber;
     struct LocalTimer;
 
     impl FormatTime for LocalTimer {
         fn format_time(&self, w: &mut Writer<'_>) -> std::fmt::Result {
-            write!(w, "{}", Local::now().format("%FT%T%.3f"))
+            write!(w, "{}", Local::now().format("%T"))
         }
     }
 
@@ -83,20 +80,38 @@ pub(crate) fn tracing_log() {
         std::process::exit(1);
     }));
 
-    let _ = tracing_log::LogTracer::init();
     let format = tracing_subscriber::fmt::format()
-        // .with_thread_names(true)
+        .with_thread_ids(true)
         .with_level(true)
         .with_target(true)
+        .with_line_number(true)
         .with_timer(LocalTimer);
 
     let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_env_filter(EnvFilter::from_default_env())
         .with_writer(io::stdout)
         .with_ansi(true)
         .event_format(format)
         .try_init();
-    info!("log setting done");
+    remove_push_log();
+    // let recorder = metrics_prometheus::install();
+}
+
+#[cfg(test)]
+pub(crate) async fn start_metrics() -> TaskMonitor {
+    let monitor = tokio_metrics::TaskMonitor::new();
+    // print task metrics every 500ms
+    {
+        let frequency = std::time::Duration::from_millis(500);
+        let monitor = monitor.clone();
+        tokio::spawn(async move {
+            for metrics in monitor.intervals() {
+                warn!("{:?}", metrics);
+                tokio::time::sleep(frequency).await;
+            }
+        });
+    }
+    monitor
 }
 
 pub fn random_tmp_dir() -> String {
@@ -197,4 +212,6 @@ fn tk2() {
         println!("return {}", ret);
     });
     println!("{}", a.load(Ordering::Relaxed));
+
+    use itertools::Merge;
 }

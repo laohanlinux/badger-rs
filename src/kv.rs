@@ -12,7 +12,8 @@ use crate::value_log::{
 use crate::y::{async_sync_directory, create_synced_file, Encode, Result, ValueStruct};
 use crate::Error::{NotFound, Unexpected};
 use crate::{
-    Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager, UniIterator, Xiterator,
+    hex_str, Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager, UniIterator,
+    Xiterator,
 };
 
 use atomic::Atomic;
@@ -33,18 +34,22 @@ use std::io::{Cursor, Write};
 use std::path::Path;
 use std::pin::Pin;
 
+use libc::difftime;
 use rand::random;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use std::{string, vec};
 use tokio::fs::create_dir_all;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
+///
 pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
-// Prefix for internal keys used by badger.
-pub const _HEAD: &[u8; 11] = b"!bager!head"; // For Storing value offset for replay.
+/// Prefix for internal keys used by badger.
+pub const _HEAD: &[u8; 12] = b"!badger!head"; // For Storing value offset for replay.
+
+pub const KV_WRITE_CH_CAPACITY: usize = 1000;
 
 pub struct Closers {
     pub update_size: Closer,
@@ -72,6 +77,7 @@ pub struct KVBuilder {
     kv: BoxKV,
 }
 
+/// Manage key/value
 pub struct KV {
     pub opt: Options,
     pub vlog: Option<ValueLogCore>,
@@ -79,6 +85,10 @@ pub struct KV {
     pub manifest: Arc<RwLock<ManifestFile>>,
     lc: Option<LevelsController>,
     flush_chan: Channel<FlushTask>,
+    pub notify_try_compact_chan: Channel<()>,
+    // Notify zero has compact, so we should try add table into zero tables
+    pub zero_level_compact_chan: Channel<()>,
+    notify_write_request_chan: Channel<()>,
     // write_chan: Channel<Request>,
     dir_lock_guard: File,
     value_dir_guard: File,
@@ -121,15 +131,17 @@ impl BoxKV {
 }
 
 impl KV {
+    /// Open a data with Options
     pub async fn open(mut opt: Options) -> Result<XArc<KV>> {
         opt.max_batch_size = (15 * opt.max_table_size) / 100;
-        opt.max_batch_count = opt.max_batch_size / Node::size() as u64;
+        opt.max_batch_count = 2 * opt.max_batch_size / Node::size() as u64;
         create_dir_all(opt.dir.as_str()).await?;
         create_dir_all(opt.value_dir.as_str()).await?;
         if !(opt.value_log_file_size <= 2 << 30 && opt.value_log_file_size >= 1 << 20) {
             return Err(Error::ValueLogSize);
         }
         let manifest_file = open_or_create_manifest_file(opt.dir.as_str()).await?;
+
         let dir_lock_guard = OpenOptions::new()
             .write(true)
             .append(true)
@@ -159,11 +171,14 @@ impl KV {
             vptr: crossbeam_epoch::Atomic::null(),
             manifest: Arc::new(RwLock::new(manifest_file)),
             lc: None,
-            flush_chan: Channel::new(1),
+            flush_chan: Channel::new(opt.num_mem_tables),
+            notify_try_compact_chan: Channel::new(1),
+            zero_level_compact_chan: Channel::new(3),
+            notify_write_request_chan: Channel::new(3),
             dir_lock_guard,
             value_dir_guard,
             closers,
-            write_ch: Channel::new(1),
+            write_ch: Channel::new(KV_WRITE_CH_CAPACITY),
             last_used_cas_counter: AtomicU64::new(1),
             mem_st_manger: Arc::new(SkipListManager::new(opt.arena_size() as usize)),
             share_lock: tokio::sync::RwLock::new(()),
@@ -174,7 +189,14 @@ impl KV {
         let manifest = out.manifest.clone();
 
         // handle levels_controller
-        let lc = LevelsController::new(manifest.clone(), out.opt.clone()).await?;
+        let lc = LevelsController::new(
+            manifest.clone(),
+            out.notify_try_compact_chan.clone(),
+            out.zero_level_compact_chan.clone(),
+            out.notify_write_request_chan.clone(),
+            out.opt.clone(),
+        )
+        .await?;
         lc.start_compact(out.closers.compactors.clone());
         out.lc.replace(lc);
         let mut vlog = ValueLogCore::default();
@@ -235,6 +257,7 @@ impl KV {
 
         // replay data from vlog
         let mut first = true;
+        let mut count = 0;
         xout.vlog
             .as_ref()
             .unwrap()
@@ -272,7 +295,11 @@ impl KV {
                         cas_counter: entry.get_cas_counter(),
                         value: nv,
                     };
-                    while let Err(_err) = xout.ensure_room_for_write().await {
+                    while let Err(err) = xout.ensure_room_for_write().await {
+                        if count % 1000 == 0 {
+                            info!("No room for write, {}", err);
+                        }
+
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                     xout.must_mt().put(&entry.key, v);
@@ -284,7 +311,7 @@ impl KV {
         replay_closer.signal_and_wait().await;
 
         // Mmap writeable log
-        let max_fid = xout.must_vlog().max_fid.load(Ordering::Relaxed);
+        let max_fid = xout.must_vlog().get_max_fid();
         let lf = xout.must_vlog().pick_log_by_vlog_id(&max_fid).await;
         lf.write()
             .await
@@ -311,6 +338,7 @@ impl KV {
 }
 
 impl KV {
+    /// Walk the directory, return sst and vlog total size
     async fn walk_dir(dir: &str) -> Result<(u64, u64)> {
         let mut lsm_size = 0;
         let mut vlog_size = 0;
@@ -331,29 +359,42 @@ impl KV {
 
     // get returns the value in `mem_table` or disk for given key.
     // Note that value will include meta byte.
+    #[inline]
     pub(crate) fn _get(&self, key: &[u8]) -> Result<ValueStruct> {
         let p = crossbeam_epoch::pin();
         let tables = self.get_mem_tables(&p);
-        // TODO add metrics
-        for tb in tables {
+        // Must decrefernce skiplist
+        let decref_tables = || {
+            tables
+                .iter()
+                .for_each(|tb| unsafe { tb.as_ref().unwrap().decr_ref() })
+        };
+        defer! {decref_tables()};
+
+        crate::event::get_metrics().num_gets.inc(); // TODO add metrics
+
+        for tb in tables.iter() {
             let st = unsafe { tb.as_ref().unwrap() };
             let vs = st.get(key);
+            crate::event::get_metrics().num_mem_tables_gets.inc();
             if vs.is_none() {
                 continue;
             }
             let vs = vs.unwrap();
-            // TODO why
             if vs.meta != 0 || !vs.value.is_empty() {
                 debug!(
-                    "fount from skiplist, st:{}, key #{}, value: {}",
+                    "fount from skiplist, st:{}, key #{}",
                     st.id(),
                     crate::y::hex_str(key),
-                    crate::y::hex_str(&vs.value),
                 );
                 return Ok(vs);
             }
         }
-        warn!("found from disk table, key #{}", crate::y::hex_str(key));
+        info!(
+            "found from disk table, key #{}, {:?}",
+            crate::y::hex_str(key),
+            self.must_lc()
+        );
         self.must_lc().get(key).ok_or(NotFound)
     }
 
@@ -378,9 +419,15 @@ impl KV {
         if reqs.is_empty() {
             return Ok(());
         }
+        let cost = SystemTime::now();
+        defer! {
+            let mills = SystemTime::now().duration_since(cost).unwrap().as_millis();
+            // crate::event::METRIC_WRITE_REQUEST.with_label_values(&["cost", &mills.to_string()]);
+        }
         info!(
-            "write_requests called. Writing to value log, count: {}",
-            reqs.len()
+            "write_requests called. Writing to value log, req_count: {}, entry_total: {}",
+            reqs.len(),
+            reqs.iter().fold(0, |acc, req| acc + req.entries.len()),
         );
 
         // CAS counter for all operations has to go onto value log. Otherwise, if it is just in
@@ -410,6 +457,7 @@ impl KV {
 
         info!("Writing to memory table");
         let mut count = 0;
+        let notify_write_request_chan = self.notify_write_request_chan.rx();
         for mut req in reqs.into_iter() {
             if req.entries.is_empty() {
                 continue;
@@ -417,16 +465,22 @@ impl KV {
             count += req.entries.len();
             while let Err(err) = self.ensure_room_for_write().await {
                 debug!("failed to ensure room for write!, err:{}", err);
-                tokio::time::sleep(Duration::from_millis(10)).await;
-
-                #[cfg(test)]
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {},
+                    _ = notify_write_request_chan.recv() => {
+                        info!("receive a continue event, {}, {}", self.flush_chan.tx().is_full(), self.flush_chan.tx().is_empty());
+                    },
+                }
             }
-            info!("Waiting for write lsm, count {}", count);
+            // warn!("Waiting for write lsm, count {}", count);
             self.update_offset(&mut req.ptrs).await;
             // It should not fail
             self.write_to_lsm(req).await.unwrap();
         }
+        info!(
+            "cost time at write request: {}ms",
+            SystemTime::now().duration_since(cost).unwrap().as_millis()
+        );
         info!("{} entries written", count);
         Ok(())
     }
@@ -524,9 +578,10 @@ impl KV {
                 req_index.push(i);
             }
 
-            if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_count {
+            if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_size {
                 assert!(!self.write_ch.is_close());
-                info!("send tasks to write, entries: {}", req.entries.len());
+                warn!("send tasks to write, entries: {}, count:{}, max_batch_count:{}, size:{}, max_batch_count:{}", req.entries.len(), count, self.opt.max_batch_count, sz, self.opt.max_batch_size);
+                let cost = SystemTime::now();
                 let resp_ch = req.get_resp_channel();
                 self.write_ch.send(req).await.unwrap();
                 {
@@ -539,6 +594,10 @@ impl KV {
                     req = Request::default();
                     req_index.clear();
                 }
+                info!(
+                    "get response: {}ms",
+                    SystemTime::now().duration_since(cost).unwrap().as_millis()
+                );
             }
         }
 
@@ -558,7 +617,7 @@ impl KV {
 
     async fn write_to_lsm(&self, req: Request) -> Result<()> {
         assert_eq!(req.entries.len(), req.ptrs.len());
-        defer! {info!("exit write to lsm")}
+        // defer! {info!("exit write to lsm")}
 
         #[cfg(test)]
         let tid = random::<u32>();
@@ -618,7 +677,7 @@ impl KV {
                 key = _key;
                 value = ValueStruct::new(_value, entry.meta, entry.user_meta, cas);
                 // Will include deletion/tombstone case.
-                info!("Lsm ok, the value not at vlog file");
+                debug!("Lsm ok, the value not at vlog file");
             } else {
                 let ptr = req.ptrs.get(i).unwrap().load(Ordering::Relaxed);
                 let ptr = ptr.unwrap();
@@ -636,7 +695,7 @@ impl KV {
             self.must_mt().put(&key, value);
 
             #[cfg(test)]
-            warn!(
+            debug!(
                 "tid:{}, st:{}, key #{:?}, old_cas:{}, new_cas:{}, check_cas:{}, value #{:?} has inserted into SkipList!!!",
                 tid,
                 self.must_mt().id(),
@@ -654,17 +713,12 @@ impl KV {
     }
 
     async fn ensure_room_for_write(&self) -> Result<()> {
-        defer! {info!("exit ensure room for write!")}
+        // defer! {info!("exit ensure room for write!")}
         // TODO a special global lock for this function
         let _ = self.share_lock.write().await;
         if self.must_mt().mem_size() < self.opt.max_table_size as u32 {
             return Ok(());
         }
-        info!(
-            "flush memory table, {}, {}",
-            self.must_mt().mem_size(),
-            self.opt.max_table_size
-        );
         // A nil mt indicates that KV is being closed.
         assert!(!self.must_mt().empty());
         let flush_task = FlushTask {
@@ -673,7 +727,7 @@ impl KV {
         };
         let ret = self.flush_chan.try_send(flush_task);
         if ret.is_err() {
-            info!("No room for write, {:?}", ret.unwrap_err());
+            //info!("No room for write, {:?}", ret.unwrap_err());
             return Err(Unexpected("No room for write".into()));
         }
 
@@ -711,7 +765,7 @@ impl KV {
         self.vptr.store(Owned::new(ptr), Ordering::Release);
     }
 
-    // Returns the current `mem_tables` and get references.
+    // Returns the current `mem_tables` and get references(here will incr mem table reference).
     fn get_mem_tables<'a>(&'a self, p: &'a crossbeam_epoch::Guard) -> Vec<Shared<'a, SkipList>> {
         self.mem_st_manger.lock_exclusive();
         defer! {self.mem_st_manger.unlock_exclusive()}
@@ -736,7 +790,6 @@ impl KV {
             Err(err) if err.is_not_found() => Ok(false),
             Err(err) => Err(err),
             Ok(value) => {
-                info!("{:?}", value);
                 if value.value.is_empty() && value.meta == 0 {
                     return Ok(false);
                 }
@@ -885,7 +938,7 @@ impl ArcKV {
         self.to_ref().batch_set(entries).await
     }
 
-    /// CompareAndSetAsync is the asynchronous version of CompareAndSet. It accepts a callback function
+    /// Asynchronous version of CompareAndSet. It accepts a callback function
     /// which is called when the CompareAndSet completes. Any error encountered during execution is
     /// passed as an argument to the callback function.
     pub async fn compare_and_set(
@@ -1038,8 +1091,10 @@ impl ArcKV {
     //   }
     //   itr.Close()
     pub(crate) async fn new_iterator(&self, opt: IteratorOptions) -> IteratorExt {
+        // Notice, the iterator is global iterator, so must incr reference for memtable(SikpList), sst(file), vlog(file).
         let p = crossbeam_epoch::pin();
         let tables = self.get_mem_tables(&p);
+        // TODO it should decr at IteratorExt close.
         defer! {
             tables.iter().for_each(|table| unsafe {table.as_ref().unwrap().decr_ref()});
         }
@@ -1053,10 +1108,23 @@ impl ArcKV {
             let iter = Box::new(UniIterator::new(st, opt.reverse));
             itrs.push(iter);
         }
+        // Extend sst.table
         itrs.extend(self.must_lc().as_iterator(opt.reverse));
         let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
         IteratorExt::new(self.clone(), mitr, opt)
     }
+
+    // pub(crate) async fn ext(&self, opt: IteratorOptions) {
+    //     let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+    //     itrs.extend(self.must_lc().as_iterator(false));
+    //     let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
+    //     let itr = IteratorExt::new(self.clone(), mitr, opt);
+    //     itr.rewind();
+    //     while let Some(item) = itr.peek() {
+    //         error!("===> {}", hex_str(item.key()));
+    //         mitr.next();
+    //     }
+    // }
 }
 
 impl ArcKV {
@@ -1068,6 +1136,8 @@ impl ArcKV {
         let has_been_close = lc.has_been_closed();
         let write_ch = self.write_ch.clone();
         let reqs = ArcMx::<Vec<Request>>::new(Mutex::new(vec![]));
+
+        let mut wait_time = tokio::time::interval(Duration::from_millis(10));
         let to_reqs = || {
             let to_reqs = reqs
                 .lock()
@@ -1083,6 +1153,9 @@ impl ArcKV {
                 _ret = has_been_close.recv() => {
                     break;
                 },
+                _ = wait_time.tick() => {
+                    // info!("wait time trigger!, {}", reqs.lock().len());
+                },
                 req = write_ch.recv() => {
                     if req.is_err() {
                         assert!(write_ch.is_close());
@@ -1092,10 +1165,11 @@ impl ArcKV {
                     reqs.lock().push(req.unwrap());
                 }
             }
-
-            let to_reqs = if reqs.lock().len() == 100 {
+            wait_time.reset();
+            let to_reqs = if reqs.lock().len() >= 3 * KV_WRITE_CH_CAPACITY {
                 to_reqs()
             } else {
+                // Try to get next one
                 if let Ok(req) = write_ch.try_recv() {
                     reqs.lock().push(req);
                     vec![]
@@ -1104,6 +1178,7 @@ impl ArcKV {
                 }
             };
 
+            // TODO maybe currently
             if !to_reqs.is_empty() {
                 self.write_requests(to_reqs)
                     .await
@@ -1136,14 +1211,22 @@ impl ArcKV {
         item: KVItemInner,
         mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
-        info!("ready to yield item value from vlog!");
+        info!("ready to yield item:{} value from vlog!", item);
         // no value
         if !item.has_value() {
+            info!(
+                "not found the key:{}, it has not value",
+                hex_str(item.key())
+            );
             return consumer(&[0u8; 0]).await;
         }
 
-        // TODO What is this
         if (item.meta() & MetaBit::BIT_VALUE_POINTER.bits()) == 0 {
+            info!(
+                "not found the key:{}, meta: {} ",
+                hex_str(item.key()),
+                item.meta()
+            );
             return consumer(item.vptr()).await;
         }
         let mut vptr = ValuePointer::default();
@@ -1161,25 +1244,24 @@ pub(crate) async fn write_level0_table(
     f: &mut tokio::fs::File,
 ) -> Result<()> {
     defer! {info!("Finish write level zero table")}
-
-    #[cfg(test)]
-    warn!(
-        "write st into table, st: {}, fpath:{}, {:?}",
-        st.id(),
-        f_name,
-        st.key_values()
-            .iter()
-            .map(|(key, _)| crate::y::hex_str(key))
-            .collect::<Vec<_>>()
-            .join("#")
-    );
-
+    let st_id = st.id();
     let cur = st.new_cursor();
     let mut builder = Builder::default();
     while let Some(_) = cur.next() {
         let key = cur.key();
         let value = cur.value();
         builder.add(key, &value)?;
+        #[cfg(test)]
+        {
+            let s = format!(
+                "{}, {}, {}, {}",
+                f_name,
+                st_id,
+                hex_str(key),
+                value.pretty()
+            );
+            crate::test_util::push_log(s.as_bytes(), false);
+        }
     }
     f.write_all(&builder.finish()).await?;
     Ok(())

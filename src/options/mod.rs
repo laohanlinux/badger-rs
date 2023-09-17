@@ -79,6 +79,7 @@ impl Options {
         entry.key.len() + 16 + META_SIZE + USER_META_SIZE + CAS_SIZE
     }
 
+    /// Return the size of allocator arena
     pub fn arena_size(&self) -> u64 {
         self.max_table_size + self.max_batch_size + self.max_batch_count * (Node::size() as u64)
     }
@@ -102,8 +103,8 @@ impl Default for Options {
             value_log_file_size: 1 << 30,
             num_compactors: 3,
             do_not_compact: false,
-            max_batch_count: 0,
-            max_batch_size: 0,
+            max_batch_count: 200,
+            max_batch_size: 1 << 13,
         }
     }
 }

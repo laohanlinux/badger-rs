@@ -32,6 +32,7 @@ impl Debug for SkipList {
     }
 }
 
+/// Clone not incr SkipList reference
 impl Clone for SkipList {
     fn clone(&self) -> Self {
         let node = self.head.load(Ordering::Relaxed);
@@ -67,13 +68,13 @@ impl SkipList {
 
     /// Increases the reference count
     pub fn incr_ref(&self) {
-        self._ref.fetch_add(1, Ordering::Relaxed);
+        self._ref.fetch_add(1, Ordering::Release);
     }
 
     // Sub crease the reference count, deallocating the skiplist when done using it
     // TODO
     pub fn decr_ref(&self) {
-        self._ref.fetch_sub(1, Ordering::Relaxed);
+        self._ref.fetch_sub(1, Ordering::Release);
     }
 
     fn valid(&self) -> bool {
@@ -228,11 +229,6 @@ impl SkipList {
     }
 
     unsafe fn _put(&self, key: &[u8], v: ValueStruct) {
-        // info!(
-        //     "At SkipList,  sz: {}, cap: {}",
-        //     self.arena.size(),
-        //     self.arena.cap()
-        // );
         // Since we allow overwrite, we may not need to create a new node. We might not even need to
         // increase the height. Let's defer these actions.
         // let mut def_node = &mut Node::default();
@@ -430,7 +426,9 @@ impl SkipList {
 impl Drop for SkipList {
     fn drop(&mut self) {
         let _ref = self._ref.load(Ordering::Relaxed);
-        info!("Drop SkipList, reference: {}", _ref);
+        if _ref == 1 {
+            warn!("Drop SkipList, reference: {}, id:{}", _ref, self.id());
+        }
     }
 }
 
@@ -547,6 +545,7 @@ impl SkipIterator {
 
         let header = itr.st.get_head() as *const Node as *mut Node;
         itr.node.store(header, Ordering::Relaxed);
+        itr.st.incr_ref();
         itr
     }
 
@@ -704,7 +703,6 @@ impl SkipIterator {
 }
 
 mod tests {
-
     use crate::skl::MAX_HEIGHT;
     use crate::{skl::skip::SkipList, Node};
 

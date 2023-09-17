@@ -2,6 +2,7 @@ use crate::hex_str;
 use crate::levels::CompactDef;
 use crate::table::table::Table;
 
+use crate::types::XArc;
 use log::{error, info, warn};
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
@@ -99,7 +100,17 @@ impl CompactStatus {
 
     // Return trur if the level overlap with this, otherwise false
     pub(crate) fn overlaps_with(&self, level: usize, this: &KeyRange) -> bool {
-        self.rl()[level].overlaps_with(this)
+        let cstatus = &self.rl()[level];
+        let overlaps = cstatus.overlaps_with(this);
+        #[cfg(test)]
+        log::info!(
+            "level{} compact status compare, {:?}, dst: {:?}, overlaps: {}",
+            level,
+            cstatus.rl(),
+            this,
+            overlaps
+        );
+        overlaps
     }
 
     // Return level's deleted data count
@@ -127,10 +138,12 @@ impl CompactStatus {
 }
 
 // Every level compacted status(ranges).
+// del_size: all KeyRange size at the level (NOTE: equal LevelCompactStatus.ranges delete size, so after compacting,
+// KeyRange and del_size all be decr)
 #[derive(Clone, Debug)]
 pub(crate) struct LevelCompactStatus {
     ranges: Arc<RwLock<Vec<KeyRange>>>,
-    del_size: Arc<AtomicU64>, // all KeyRange size at the level (NOTE: equal LevelCompactStatus.ranges delete size)
+    del_size: Arc<AtomicU64>,
 }
 
 impl Default for LevelCompactStatus {
@@ -161,12 +174,6 @@ impl Display for LevelCompactStatus {
 impl LevelCompactStatus {
     // returns true if self.ranges and dst has overlap, otherwise returns false
     fn overlaps_with(&self, dst: &KeyRange) -> bool {
-        #[cfg(test)]
-        log::info!(
-            "level compact status compare, {:?}, dst: {:?}",
-            self.rl(),
-            dst
-        );
         self.rl().iter().any(|kr| kr.overlaps_with(dst))
     }
 
@@ -174,7 +181,6 @@ impl LevelCompactStatus {
     pub(crate) fn remove(&self, dst: &KeyRange) -> bool {
         let mut rlock = self.wl();
         let len = rlock.len();
-        //  rlock.retain(|r| r == dst);
         rlock.retain(|r| r != dst);
         len > rlock.len()
     }
@@ -185,15 +191,15 @@ impl LevelCompactStatus {
     }
 
     pub(crate) fn get_del_size(&self) -> u64 {
-        self.del_size.load(Ordering::Relaxed)
+        self.del_size.load(Ordering::Acquire)
     }
 
     fn incr_del_size(&self, n: u64) {
-        self.del_size.fetch_add(n, Ordering::Relaxed);
+        self.del_size.fetch_add(n, Ordering::Release);
     }
 
     fn decr_del_size(&self, n: u64) {
-        self.del_size.fetch_sub(n, Ordering::Relaxed);
+        self.del_size.fetch_sub(n, Ordering::Release);
     }
 
     fn wl(&self) -> RwLockWriteGuard<'_, RawRwLock, Vec<KeyRange>> {
@@ -295,8 +301,7 @@ mod tests {
         }];
         let cd = INFO_RANGE;
         v.retain(|kr| kr != &cd);
-        println!("{:?}, {}", v, cd);
-
+        assert!(v.is_empty());
         let tests = vec![vec![2, 20], vec![30, 50], vec![70, 80]];
 
         let inputs = vec![

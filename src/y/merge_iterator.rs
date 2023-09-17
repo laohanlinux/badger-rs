@@ -1,34 +1,41 @@
-use log::info;
+use log::{info, warn};
 
-use crate::table::iterator::IteratorItem;
+use crate::hex_str;
+use crate::table::iterator::{IteratorImpl, IteratorItem};
 
 use crate::y::iterator::Xiterator;
 use crate::y::KeyValue;
-
+use itertools::Itertools;
 use std::cell::RefCell;
+use std::collections::btree_set::Iter;
+use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::fmt::format;
+use crate::kv::{_BADGER_PREFIX, _HEAD};
 
 /// Cursor of the iterator of merge.
-pub struct MergeIterCursor {
-    pub is_dummy: bool,
-    pub cur_item: Option<IteratorItem>,
-}
-
 pub struct MergeCursor {
+    // At init index is set to MAX
     pub index: usize,
     pub cur_item: Option<IteratorItem>,
 }
 
 impl MergeCursor {
     fn replace(&mut self, index: usize, cur_item: Option<IteratorItem>) {
+        if cur_item.is_some() {
+            assert!(!cur_item.as_ref().unwrap().key().starts_with(_BADGER_PREFIX));
+        }
         self.index = index;
         self.cur_item = cur_item;
     }
 }
 
+/// A iterator for multi iterator merge into one.
 pub struct MergeIterator {
     pub reverse: bool,
-    pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    pub itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
+    pub heap: RefCell<BinaryHeap<IterRef>>,
+    pub heap_flag: RefCell<Vec<bool>>,
 }
 
 impl Xiterator for MergeIterator {
@@ -36,117 +43,51 @@ impl Xiterator for MergeIterator {
 
     fn next(&self) -> Option<Self::Output> {
         if self.itrs.is_empty() {
+            self.set_iter_empty();
             return None;
         }
-        if self.cursor.borrow().index == usize::MAX {
-            for itr in &self.itrs {
-                itr.rewind();
-            }
-            self.cursor.borrow_mut().index = 0;
-        }
-        let mut latest: Option<IteratorItem> = None;
-        let mut index = usize::MAX;
-        let need_cmp = |a: &[u8], b: &[u8]| -> std::cmp::Ordering {
-            if !self.reverse {
-                return a.cmp(b);
-            }
-            b.cmp(a)
-        };
-
-        for (itr_index, itr) in self.itrs.iter().enumerate() {
-            if let Some(item) = itr.peek() {
-                if let Some(have_latest) = &mut latest {
-                    match need_cmp(have_latest.key(), item.key()) {
-                        std::cmp::Ordering::Less => {
-                            // debug!("less");
-                        }
-                        std::cmp::Ordering::Equal => {
-                            // move it
-                            itr.next();
-                            // debug!("equal");
-                        }
-                        std::cmp::Ordering::Greater => {
-                            index = itr_index;
-                            *have_latest = item;
-                            // debug!("greater");
-                        }
-                    }
-                } else {
-                    latest.replace(item);
-                    index = itr_index;
-                    // debug!("None");
-                }
-            }
-        }
-
-        if index != usize::MAX {
-            assert!(latest.is_some());
-            self.cursor.borrow_mut().replace(index, latest);
-            self.itrs.get(index).as_ref().unwrap().next();
-        } else {
-            self.cursor.borrow_mut().index = 0;
-            self.cursor.borrow_mut().cur_item.take();
-        }
-        self.peek()
+        assert_ne!(self.cursor.borrow().index, usize::MAX);
+        self._next()
     }
 
-    /// Notice: 1: Only rewind inner iterators list. Not reverse self.itrs vec sequence, 2: maybe some iterator is empty (Why, TODO)
-    /// TODO: Opz rewind algo
     fn rewind(&self) -> Option<Self::Output> {
         if self.itrs.is_empty() {
+            self.set_iter_empty();
             return None;
         }
-        for itr in self.itrs.iter() {
-            itr.rewind();
-        }
-
-        let mut min_or_max = None;
-        if !self.reverse {
-            min_or_max = self
-                .itrs
-                .iter()
-                .filter(|itr| itr.peek().is_some())
-                .max_by_key(|itr| itr.peek().unwrap().key);
-        } else {
-            min_or_max = self
-                .itrs
-                .iter()
-                .filter(|itr| itr.peek().is_some())
-                .min_by_key(|itr| itr.peek().unwrap().key);
-        }
-        assert!(min_or_max.is_some());
-        let min_or_max = min_or_max.unwrap().peek();
-        if min_or_max.is_none() {
-            assert_eq!(self.count(), 0);
-            return None;
-        }
-
-        let min_or_max_item = min_or_max.unwrap();
-        let mut update = false;
-        let indexes = (0..self.itrs.len()).into_iter().collect::<Vec<_>>();
-
-        for index in indexes {
-            let itr = &self.itrs[index];
-            if let Some(item) = itr.peek() && item.key() == min_or_max_item.key() {
-                if !update {
-                    self.cursor.borrow_mut().replace(index, Some(item));
+        {
+            self.heap.borrow_mut().clear();
+            for (index, itr) in self.itrs.iter().enumerate() {
+                if let Some(item) = itr.rewind() {
+                    while let Some(item) = itr.peek() {
+                        if item.key().starts_with(_BADGER_PREFIX) {
+                            itr.next();
+                            continue;
+                        }
+                        self.push_item_into_heap(index, item);
+                        break;
+                    }
+                } else {
+                    warn!("has a empty iterator, index:{}, id:{}", index, itr.id());
                 }
-                update = true;
-                itr.next();
             }
+            self.set_iter_empty();
         }
-        // #[cfg(test)]
-        // info!("after merge rewind iterator, {:?}", self.peek());
-        self.peek()
+
+        self.next()
     }
 
     fn seek(&self, _key: &[u8]) -> Option<Self::Output> {
         todo!()
     }
 
-    // MayBe we avoid copy!
+    // TODO avoid clone
     fn peek(&self) -> Option<Self::Output> {
         self.cursor.borrow().cur_item.clone()
+    }
+
+    fn id(&self) -> String {
+        format!("{}", self.cursor.borrow().index)
     }
 }
 
@@ -159,6 +100,7 @@ impl std::iter::Iterator for MergeIterator {
 }
 
 impl MergeIterator {
+    #[inline]
     fn count(&self) -> usize {
         let mut count = 0;
         for itr in &self.itrs {
@@ -172,48 +114,139 @@ impl MergeIterator {
         count
     }
 
-    fn find_smallest_or_biggest(&self) -> Option<(usize, Vec<usize>)> {
-        if self.itrs.is_empty() {
-            return None;
-        }
-        let mut latest: Option<IteratorItem> = None;
-        let mut index = usize::MAX;
-        let need_cmp = |a: &[u8], b: &[u8]| -> std::cmp::Ordering {
-            if !self.reverse {
-                return a.cmp(b);
+    pub(crate) fn export_disk(&self) {
+        #[cfg(test)]
+        for itr in self.itrs.iter() {
+            let mut keys = vec![];
+            while let Some(key) = itr.peek() {
+                //keys.push(format!("{},{}", itr.id(), hex_str(key.key())));
+                keys.push(format!("{}", hex_str(key.key())));
+                itr.next();
             }
-            b.cmp(a)
-        };
-        let mut eq_itr = Vec::with_capacity(self.itrs.len());
-        for (itr_index, itr) in self.itrs.iter().enumerate() {
-            if let Some(item) = itr.peek() {
-                if let Some(have_latest) = &mut latest {
-                    match need_cmp(have_latest.key(), item.key()) {
-                        std::cmp::Ordering::Less => {}
-                        std::cmp::Ordering::Equal => {
-                            eq_itr.push(itr_index);
-                        }
-                        std::cmp::Ordering::Greater => {
-                            index = itr_index;
-                            *have_latest = item;
-                        }
+            let buffer = keys.join("#");
+            crate::test_util::push_log_by_filename("merge_iterator.txt", buffer.as_bytes());
+        }
+    }
+
+    pub(crate) fn export_disk_ext(&self) {
+        #[cfg(test)]
+        {
+            for itr in self.itrs.iter() {
+                let mut keys = vec![];
+                let mut has = HashMap::new();
+                while let Some(item) = itr.peek() {
+                    keys.push(item.clone());
+                    tracing_log::log::error!("put {}, cas: {}", hex_str(item.key()), item.value().cas_counter);
+                    itr.next();
+                    if let Some(_old) = has.insert(item.key.clone(), item.clone()) {
+                        panic!("it should be not happen, dump key: {}", hex_str(item.key()));
                     }
-                } else {
-                    latest.replace(item);
-                    index = itr_index;
+                }
+                let buffer = serde_json::to_vec(&keys).unwrap();
+                crate::test_util::push_log_by_filename("test_data/merge_iterator_ext.txt", &buffer);
+            }
+        }
+    }
+
+    fn _next(&self) -> Option<IteratorItem> {
+        // the stack store the index that should be repush to heap
+        let mut stack = vec![];
+        {
+            {
+                let heap = self.heap.borrow_mut();
+                if heap.is_empty() {
+                    self.set_iter_empty();
+                    return None;
                 }
             }
+            let first_el = self.pop_item_from_heap();
+            if first_el.is_none() {
+                self.set_iter_empty();
+                return None;
+            }
+            let first_el = first_el.unwrap();
+            // Move it
+            self.cursor.borrow_mut().replace(first_el.index, Some(first_el.key.clone()));
+            self.itrs.get(first_el.index).unwrap().next();
+            stack.push(first_el.index);
+
+            // move dummp keys
+            loop {
+                let mut heap = self.heap.borrow_mut();
+                let pop = heap.peek();
+                if pop.is_none() {
+                    break;
+                }
+                let pop = pop.unwrap();
+                let pop_key = pop.key.key();
+                let first_key = first_el.key.key();
+                let index = pop.index;
+                // the key not equal the next key.
+                if pop_key != first_key {
+                    break;
+                }
+                // Find the same, pop it
+                heap.pop();
+                stack.push(index);
+                self.itrs.get(index).unwrap().next();
+            }
         }
-        if index != usize::MAX {
-            return Some((index, eq_itr));
+
+        self.init_heap_by_indexes(stack);
+        self.peek()
+    }
+
+    fn set_iter_empty(&self) {
+        self.cursor.borrow_mut().index = 0;
+        self.cursor.borrow_mut().cur_item.take();
+    }
+
+    fn init_heap(&self) {
+        // self.heap.borrow_mut().clear();
+        // Only push has element
+        for (index, itr) in self.itrs.iter().enumerate() {
+            if let Some(item) = itr.peek() {
+                self.push_item_into_heap(index, item);
+            }
+        }
+    }
+
+    fn init_heap_by_indexes(&self, stack: Vec<usize>) {
+        for index in stack {
+            if let Some(item) = self.itrs[index].peek() {
+                self.push_item_into_heap(index, item);
+            }
+        }
+    }
+
+    #[inline]
+    fn push_item_into_heap(&self, index: usize, item: IteratorItem) {
+        if self.heap_flag.borrow()[index] {
+            return;
+        }
+
+        self.heap_flag.borrow_mut()[index] = true;
+        self.heap.borrow_mut().push(IterRef {
+            index,
+            key: item,
+            rev: self.reverse,
+        });
+    }
+
+    #[inline]
+    fn pop_item_from_heap(&self) -> Option<IterRef> {
+        if let Some(item) = self.heap.borrow_mut().pop() {
+            self.heap_flag.borrow_mut()[item.index] = false;
+            return Some(item);
         }
         None
     }
 }
 
+/// A Builder for merge iterator building
 #[derive(Default)]
 pub struct MergeIterOverBuilder {
-    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+    all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     reverse: bool,
 }
 
@@ -223,20 +256,22 @@ impl MergeIterOverBuilder {
         self
     }
 
-    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output=IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
+        iters: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
     ) -> MergeIterOverBuilder {
         self.all.extend(iters);
         self
     }
 
     pub fn build(self) -> MergeIterator {
+        let cap = self.all.len();
+        let flag = vec![false; cap];
         MergeIterator {
             reverse: self.reverse,
             itrs: self.all,
@@ -244,80 +279,60 @@ impl MergeIterOverBuilder {
                 index: usize::MAX,
                 cur_item: None,
             }),
+            heap_flag: RefCell::new(flag),
+            heap: RefCell::new(BinaryHeap::with_capacity(cap)),
         }
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct IterRef {
+    index: usize,
+    key: IteratorItem,
+    rev: bool,
+}
+
+impl Ord for IterRef {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if !self.rev {
+            if self.key.key() == other.key.key() {
+                return other.index.cmp(&self.index);
+            }
+            other.key.key().cmp(&self.key.key())
+        } else {
+            if self.key.key() == other.key.key() {
+                return other.index.cmp(&self.index);
+            }
+            self.key.key().cmp(&other.key.key())
+        }
+    }
+}
+
+impl PartialOrd for IterRef {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for IterRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index && self.key.key() == other.key.key()
+    }
+}
+
+impl Eq for IterRef {}
+
 #[cfg(test)]
 mod tests {
     use std::fmt;
+    use tracing::info;
 
     use crate::{
-        table::iterator::IteratorItem, types::TArcMx, KeyValue, MergeIterOverBuilder, SkipList,
-        UniIterator, ValueStruct, Xiterator,
+        hex_str, table::iterator::IteratorItem, types::TArcMx, KeyValue, MergeIterOverBuilder,
+        SkipList, UniIterator, ValueStruct, Xiterator,
     };
 
-    #[test]
-    fn merge_iter_element() {
-        #[derive(Debug)]
-        struct TestIterator {
-            key: Vec<u8>,
-        }
-
-        impl fmt::Display for TestIterator {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "key: {}", String::from_utf8_lossy(&self.key))
-            }
-        }
-
-        impl Xiterator for TestIterator {
-            type Output = IteratorItem;
-
-            fn next(&self) -> Option<Self::Output> {
-                self.peek()
-            }
-
-            fn rewind(&self) -> Option<Self::Output> {
-                self.peek()
-            }
-
-            fn seek(&self, key: &[u8]) -> Option<Self::Output> {
-                self.peek()
-            }
-
-            fn peek(&self) -> Option<Self::Output> {
-                Some(IteratorItem::new(self.key.clone(), ValueStruct::default()))
-            }
-        }
-
-        impl KeyValue<ValueStruct> for TestIterator {
-            fn key(&self) -> &[u8] {
-                &self.key
-            }
-
-            fn value(&self) -> ValueStruct {
-                todo!()
-            }
-        }
-
-        let t1 = Box::new(TestIterator {
-            key: b"abd".to_vec(),
-        });
-        let t2 = Box::new(TestIterator {
-            key: b"abc".to_vec(),
-        });
-        let t3 = Box::new(TestIterator {
-            key: b"abc".to_vec(),
-        });
-        let t4 = Box::new(TestIterator {
-            key: b"abc".to_vec(),
-        });
-
-        let builder = MergeIterOverBuilder::default().add_batch(vec![t3, t1, t4, t2]);
-        let miter = builder.build();
-        miter.next();
-        assert_eq!(miter.peek().unwrap().key(), b"abc");
-    }
+    use super::IterRef;
 
     #[tokio::test]
     async fn merge_iter_skip() {
@@ -365,9 +380,9 @@ mod tests {
                 .add(Box::new(UniIterator::new(st3.clone(), false)));
             let miter = builder.build();
             assert!(miter.peek().is_none());
-            let mut count = 0;
+            miter.rewind();
+            let mut count = 1;
             while let Some(value) = miter.next() {
-                // info!("{}", String::from_utf8_lossy(value.key()));
                 let expect = keys.lock().await;
                 let expect = expect.get(count).unwrap();
                 assert_eq!(value.key(), expect);
@@ -385,7 +400,8 @@ mod tests {
                 .add(Box::new(UniIterator::new(st3, true)));
             let miter = builder.build();
             assert!(miter.peek().is_none());
-            let mut count = 0;
+            miter.rewind();
+            let mut count = 1;
             keys.lock().await.sort_by(|a, b| b.cmp(a));
             while let Some(value) = miter.next() {
                 // info!("{}", String::from_utf8_lossy(value.key()));
@@ -428,9 +444,11 @@ mod tests {
             let keys = keys.clone().into_iter().unique().collect::<Vec<_>>();
             let miter = builder.build();
             assert!(miter.peek().is_none());
-            let mut count = 0;
+            let key = miter.rewind();
+            let mut count = 1;
+            assert_eq!(hex_str(key.as_ref().unwrap().key()), hex_str(&keys[0]));
             while let Some(value) = miter.next() {
-                // info!("{}", String::from_utf8_lossy(value.key()));
+                 log::info!("{}", String::from_utf8_lossy(value.key()));
                 let expect = keys.get(count).unwrap();
                 assert_eq!(value.key(), expect);
                 count += 1;
@@ -448,14 +466,54 @@ mod tests {
             let keys = keys.into_iter().unique().collect::<Vec<_>>();
             let miter = builder.build();
             assert!(miter.peek().is_none());
-            let mut count = 0;
+            let mut count = 1;
+            miter.rewind();
             while let Some(value) = miter.next() {
-                // info!("{}", String::from_utf8_lossy(value.key()));
                 let expect = keys.get(count).unwrap();
                 assert_eq!(value.key(), expect);
                 count += 1;
             }
             assert_eq!(count, keys.len());
         }
+    }
+
+    #[tokio::test]
+    async fn heap_iter() {
+        let build_key = |key: Vec<u8>| -> IteratorItem {
+            IteratorItem {
+                key,
+                value: ValueStruct::default(),
+            }
+        };
+        let elements = vec![
+            IterRef {
+                index: 10,
+                key: build_key(b"40".to_vec()),
+                rev: false,
+            },
+            IterRef {
+                index: 20,
+                key: build_key(b"59".to_vec()),
+                rev: false,
+            },
+            IterRef {
+                index: 9,
+                key: build_key(b"40".to_vec()),
+                rev: false,
+            },
+            IterRef {
+                index: 7,
+                key: build_key(b"41".to_vec()),
+                rev: false,
+            },
+        ];
+
+        let mut heap = std::collections::BinaryHeap::new();
+        for el in elements {
+            heap.push(std::cmp::Reverse(el));
+        }
+        crate::test_util::tracing_log();
+        let first = heap.pop().unwrap();
+        log::info!("{:?}", first);
     }
 }

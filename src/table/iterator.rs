@@ -9,6 +9,7 @@ use std::cell::{RefCell, RefMut};
 
 use std::fmt::Formatter;
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::ptr::slice_from_raw_parts;
 
@@ -171,7 +172,7 @@ impl BlockIterator {
                 .borrow_mut()
                 .extend_from_slice(&self.data[*pos as usize..(*pos + h.k_len as u32) as usize]);
         }
-        // drop pos advoid to borrow twice
+        // drop pos avoid to borrow twice
         drop(pos);
         let (key, value) = self.parse_kv(&h);
         Some(BlockIteratorItem { key, value })
@@ -217,12 +218,13 @@ impl BlockIterator {
         Some(BlockIteratorItem { key, value })
     }
 
+    #[inline]
     fn parse_kv(&self, h: &Header) -> (Vec<u8>, &[u8]) {
         let mut pos = self.pos.borrow_mut();
         let mut key = vec![0u8; (h.p_len + h.k_len) as usize];
-        key[..h.p_len as usize].copy_from_slice(&self.base_key.borrow()[..h.p_len as usize]);
+        key[..h.p_len as usize].clone_from_slice(&self.base_key.borrow()[..h.p_len as usize]);
         key[h.p_len as usize..]
-            .copy_from_slice(&self.data[*pos as usize..*pos as usize + h.k_len as usize]);
+            .clone_from_slice(&self.data[*pos as usize..*pos as usize + h.k_len as usize]);
         *pos += h.k_len as u32;
         assert!(
             *pos as usize + h.v_len as usize <= self.data.len(),
@@ -243,7 +245,7 @@ impl BlockIterator {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IteratorItem {
     pub key: Vec<u8>,
     pub value: ValueStruct,
@@ -251,7 +253,6 @@ pub struct IteratorItem {
 
 impl fmt::Display for IteratorItem {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        // write!(f, "key: {}, value: {:?}", String::from_utf8_lossy(self.key.as_slice()), self.value())
         write!(f, "key: {:?}, value: {:?}", self.key, self.value())
     }
 }
@@ -280,12 +281,14 @@ pub struct IteratorImpl {
     // Internally, Iterator is bidirectional. However, we only expose the
     // unidirectional functionality for now.
     reversed: bool,
+    id: u64,
 }
 
 impl fmt::Display for IteratorImpl {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let _bi = self.bi.borrow().as_ref().map(|b| format!("{}", b)).unwrap();
         f.debug_struct("IteratorImpl")
+            .field("id", &self.id)
             .field("bpos", &self.bpos.borrow())
             .field("bi", &self.bi.borrow().is_some())
             .field("reverse", &self.reversed)
@@ -336,12 +339,18 @@ impl Xiterator for IteratorImpl {
     fn id(&self) -> String {
         format!("iteratorImpl_{}", self.table.id())
     }
+
+    /// TODO maybe use Drop to decr reference
+    fn close(&self) {
+        self.table.decr_ref();
+    }
 }
 
 impl IteratorImpl {
     pub fn new(table: Table, reversed: bool) -> IteratorImpl {
         table.incr_ref(); // Important
         let itr = IteratorImpl {
+            id: table.id(),
             table,
             bpos: RefCell::new(0),
             bi: RefCell::new(None),
@@ -400,7 +409,6 @@ impl IteratorImpl {
 
         // not found
         let idx = idx.err().unwrap();
-        // info!("block_index {:?}, {:?}", idx, self.table.block_index);
         if idx == 0 {
             return self.seek_helper(idx as isize, key);
         }
@@ -558,7 +566,6 @@ impl IteratorImpl {
     fn get_bi_by_bpos(&self, bpos: isize) -> RefMut<'_, Option<BlockIterator>> {
         assert!(bpos >= 0);
         let block = self.table.block(bpos as usize).unwrap();
-        // info!("===>{:?}, {:?}", bpos, block);
         let mut bi = self.bi.borrow_mut();
         let it = BlockIterator::new(block.data);
         *bi = Some(it);
@@ -669,7 +676,6 @@ impl Xiterator for ConcatIterator {
         }
         for itr in self.iters.iter() {
             itr.reset();
-            debug!("rewind iterator");
         }
         // 2: reset iterator of current table
         self.get_cur().unwrap().rewind()
@@ -727,7 +733,7 @@ impl Xiterator for ConcatIterator {
             .collect::<Vec<_>>()
             .join(",");
         if id.is_empty() {
-            return "iterator_impl_empty".to_owned();
+            return "ConcatIterator_impl_empty".to_owned();
         }
         id
     }

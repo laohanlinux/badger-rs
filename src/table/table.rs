@@ -28,6 +28,7 @@ use log::{debug, info, warn};
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::FileExt;
 
+use drop_cell::defer;
 use std::str::pattern::Pattern;
 
 pub(crate) const FILE_SUFFIX: &str = ".sst";
@@ -88,10 +89,13 @@ pub struct TableCore {
     table_size: usize,
     pub(crate) block_index: Vec<KeyOffset>,
     loading_mode: FileLoadingMode,
-    _mmap: Option<MmapMut>, // Memory mapped.
+    _mmap: Option<MmapMut>,
+    // Memory mapped.
     // The following are initialized once and const.
-    smallest: Vec<u8>, // smallest keys.
-    biggest: Vec<u8>,  // biggest keys.
+    smallest: Vec<u8>,
+    // smallest keys.
+    biggest: Vec<u8>,
+    // biggest keys.
     id: u64,
     bf: GrowableBloom,
 }
@@ -101,7 +105,11 @@ impl TableCore {
     // entry.  Returns a table with one reference count on it (decrementing which may delete the file!
     // -- consider t.Close() instead).  The fd has to writeable because we call Truncate on it before
     // deleting.
-    pub fn open_table(mut fd: File, filename: &str, loading_mode: FileLoadingMode) -> Result<Self> {
+    pub(crate) fn open_table(
+        mut fd: File,
+        filename: &str,
+        loading_mode: FileLoadingMode,
+    ) -> Result<Self> {
         let file_sz = fd.seek(SeekFrom::End(0)).or_else(Err)?;
         fd.seek(SeekFrom::Start(0)).or_else(Err)?;
         let id = parse_file_id(filename)?;
@@ -136,6 +144,7 @@ impl TableCore {
         let table_ref = Table::new(table);
         let biggest = {
             let iter1 = super::iterator::IteratorImpl::new(table_ref.clone(), true);
+            defer! {iter1.close()};
             iter1
                 .rewind()
                 .map(|item| item.key().to_vec())
@@ -145,6 +154,7 @@ impl TableCore {
 
         let smallest = {
             let iter1 = super::iterator::IteratorImpl::new(table_ref.clone(), false);
+            defer! {iter1.close()};
             iter1
                 .rewind()
                 .map(|item| item.key().to_vec())
@@ -160,11 +170,36 @@ impl TableCore {
 
     // increments the refcount (having to do with whether the file should be deleted)
     pub(crate) fn incr_ref(&self) {
-        self._ref.fetch_add(1, Ordering::Relaxed);
+        use std::backtrace::Backtrace;
+        let count = self._ref.fetch_add(1, Ordering::Release);
+        let buf = format!(
+            "incr {} table count {} => {}",
+            self.id,
+            count,
+            self.get_ref()
+        );
+        // info!("{}", buf);
+        //
+        // info!(
+        //     "BackTrace at table incr reference: {}",
+        //     Backtrace::force_capture()
+        // );
+        //push_log(buf.as_bytes(), false);
     }
     // decrements the refcount and possibly deletes the table
     pub(crate) fn decr_ref(&self) {
-        self._ref.fetch_sub(1, Ordering::Relaxed);
+        let count = self._ref.fetch_sub(1, Ordering::Release);
+        let buf = format!(
+            "decr {} table count {} => {}",
+            self.id,
+            count,
+            self.get_ref()
+        );
+        //push_log(buf.as_bytes(), false);
+    }
+
+    pub(crate) fn get_ref(&self) -> i32 {
+        self._ref.load(Ordering::Acquire)
     }
 }
 
@@ -211,8 +246,6 @@ impl TableCore {
         for i in 0..restarts_len as usize {
             offsets[i] = buf.read_u32::<BigEndian>().unwrap();
         }
-
-        // println!("restart {:?}", offsets);
         // The last offset stores the end of the last block.
         for i in 0..offsets.len() {
             let offset = {
@@ -319,7 +352,7 @@ impl TableCore {
 
 impl Drop for TableCore {
     fn drop(&mut self) {
-        dbg!(self._ref.load(Ordering::Relaxed));
+        let _ref = self.get_ref();
         // We can safely delete this file, because for all the current files, we always have
         // at least one reference pointing to them.
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -330,12 +363,18 @@ impl Drop for TableCore {
                 .flush()
                 .expect("failed to mmap")
         }
-        // It's necessary to delete windows files
-        // This is very important to let the FS know that the file is deleted.
-        #[cfg(not(test))]
-        self.fd.set_len(0).expect("can not truncate file to 0");
-        #[cfg(not(test))]
-        remove_file(Path::new(&self.file_name)).expect("fail to remove file");
+        if _ref == 1 {
+            // It's necessary to delete windows files
+            // This is very important to let the FS know that the file is deleted.
+            // #[cfg(not(test))]
+            self.fd.set_len(0).expect("can not truncate file to 0");
+            // #[cfg(not(test))]
+            remove_file(Path::new(&self.file_name)).expect("fail to remove file");
+            warn!(
+                "Drop table: {}, reference: {}, disk: {}",
+                self.id, _ref, self.file_name
+            );
+        }
     }
 }
 

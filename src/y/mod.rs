@@ -5,18 +5,25 @@ mod metrics;
 
 pub use codec::{AsyncEncDec, Decode, Encode};
 pub use iterator::*;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use libc::O_DSYNC;
 use log::error;
 use memmap::MmapMut;
 pub use merge_iterator::*;
+use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 
 use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{ErrorKind, Write};
 
-use std::{cmp, io};
+use std::backtrace::Backtrace;
+use std::{array, cmp, io};
 use thiserror::Error;
+use tracing::info;
+
+#[cfg(any(target_os = "windows"))]
+use winapi::um::winbase;
 
 pub const EMPTY_SLICE: Vec<u8> = vec![];
 
@@ -182,6 +189,8 @@ pub fn is_existing<T>(ret: &io::Result<T>) -> bool {
     }
 }
 
+// TODO add SIMD hash
+#[inline]
 pub fn hash(buffer: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::default();
     hasher.write(buffer);
@@ -273,6 +282,7 @@ pub(crate) fn slice_cmp_gte(a: &[u8], b: &[u8]) -> cmp::Ordering {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn open_existing_synced_file(file_name: &str, synced: bool) -> Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     if synced {
@@ -291,13 +301,28 @@ pub(crate) fn open_existing_synced_file(file_name: &str, synced: bool) -> Result
     }
 }
 
+#[cfg(any(target_os = "windows"))]
+pub(crate) fn open_existing_synced_file(file_name: &str, synced: bool) -> Result<File> {
+    use std::fs::OpenOptions;
+    use std::os::windows::prelude::*;
+    use winapi::um::winbase;
+    if synced {
+        File::options()
+            .write(true)
+            .read(true)
+            // .custom_flags(winbase::FILE_FLAG_WRITE_THROUGH)
+            .open(file_name)
+            .map_err(|err| err.into())
+    } else {
+        File::options()
+            .write(true)
+            .read(true)
+            .open(file_name)
+            .map_err(|err| err.into())
+    }
+}
+
 pub(crate) fn create_synced_file(file_name: &str, _synce: bool) -> Result<File> {
-    // use std::os::unix::fs::OpenOptionsExt;
-    // let mut flags = libc::O_RDWR | libc::O_CREAT | libc::O_EXCL;
-    // if synce {
-    //     // flags |= datasyncFileFlag;
-    // }
-    // File::options().custom_flags(flags).open(file_name).map_err(|err| err.into())
     OpenOptions::new()
         .write(true)
         .read(true)
@@ -327,6 +352,7 @@ pub(crate) fn hex_str(buf: &[u8]) -> String {
     String::from_utf8(buf.to_vec()).unwrap_or_else(|_| "Sorry, Hex String Failed!!!".to_string())
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn dsync() {
     use std::fs::OpenOptions;
@@ -334,28 +360,59 @@ fn dsync() {
 
     let mut options = OpenOptions::new();
     options.write(true);
-    // if cfg!(unix) {
+
     options.custom_flags(libc::O_WRONLY);
-    // }
     let file = options.open("foo.txt");
     println!("{:?}", file.err());
 }
 
-#[test]
-fn clone_error() {
-    #[derive(Debug, Error, Clone)]
-    pub enum Error {
-        #[error(transparent)]
-        StdIO(#[from] eieio::Error),
-        #[error("Hello")]
-        Hello,
-    }
-    let err = Error::StdIO(eieio::Error::from(io::ErrorKind::AlreadyExists));
-    match err {
-        Error::StdIO(err) => {
-            let ioerr = io::Error::from(err.kind());
-            println!("{}", ioerr);
+/// find a value in array with binary search
+pub fn binary_search<T: Ord, F>(array: &[T], f: F) -> Option<usize>
+where
+    F: Fn(&T) -> Ordering,
+{
+    let mut low = 0;
+    let mut high = array.len() - 1;
+    while low <= high {
+        let mid = (low + high) / 2;
+        match f(&array[mid]) {
+            Ordering::Equal => return Some(mid),
+            Ordering::Less => {
+                low = mid + 1;
+            }
+            Ordering::Greater => {
+                if mid <= 0 {
+                    break;
+                }
+                high = mid - 1;
+            }
         }
-        _ => {}
+    }
+
+    None
+}
+
+#[test]
+fn print_backtrace() {
+    let buffer = Backtrace::force_capture();
+    let mut frames = buffer.frames();
+    if frames.len() > 5 {
+        frames = &frames[0..5];
+    }
+    for frame in frames {
+        info!("{:?}", frame)
+    }
+}
+
+#[test]
+fn binary_search_test() {
+    let v = &[1, 2, 3, 4, 5];
+    for t in v {
+        let ok = binary_search(v, |v| v.cmp(t)).unwrap();
+        assert!(v[ok].eq(t));
+    }
+    for t in &[0, 6, 7] {
+        let ok = binary_search(v, |v| v.cmp(t));
+        assert!(ok.is_none());
     }
 }
