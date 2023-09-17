@@ -105,7 +105,11 @@ impl TableCore {
     // entry.  Returns a table with one reference count on it (decrementing which may delete the file!
     // -- consider t.Close() instead).  The fd has to writeable because we call Truncate on it before
     // deleting.
-    pub fn open_table(mut fd: File, filename: &str, loading_mode: FileLoadingMode) -> Result<Self> {
+    pub(crate) fn open_table(
+        mut fd: File,
+        filename: &str,
+        loading_mode: FileLoadingMode,
+    ) -> Result<Self> {
         let file_sz = fd.seek(SeekFrom::End(0)).or_else(Err)?;
         fd.seek(SeekFrom::Start(0)).or_else(Err)?;
         let id = parse_file_id(filename)?;
@@ -242,8 +246,6 @@ impl TableCore {
         for i in 0..restarts_len as usize {
             offsets[i] = buf.read_u32::<BigEndian>().unwrap();
         }
-
-        // println!("restart {:?}", offsets);
         // The last offset stores the end of the last block.
         for i in 0..offsets.len() {
             let offset = {

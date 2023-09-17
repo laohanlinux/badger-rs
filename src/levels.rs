@@ -547,13 +547,13 @@ impl LevelsController {
             // Create iterators across all the tables involved first.
             let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
             if l == 0 {
-                log::error!(
-                    "REVER the table, {:?}",
+                info!(
+                    "reverse the table, {:?}",
                     top_tables.iter().map(|tb| tb.id()).collect::<Vec<_>>()
                 );
                 top_tables.reverse();
-                log::error!(
-                    "after REVER the table, {:?}",
+                info!(
+                    "after reverse the table, {:?}",
                     top_tables.iter().map(|tb| tb.id()).collect::<Vec<_>>()
                 );
             } else {
@@ -579,8 +579,8 @@ impl LevelsController {
             let mut count = 0;
             let cur = tokio::runtime::Handle::current();
             loop {
-                #[cfg(test)]
-                let mut keys = vec![];
+                // #[cfg(test)]
+                // let mut keys = vec![];
                 let start_time = SystemTime::now();
                 let mut builder = Builder::default();
                 while let Some(value) = mitr.peek() {
@@ -591,23 +591,23 @@ impl LevelsController {
                         break;
                     }
 
-                    #[cfg(test)]
-                    {
-                        error!("merge, mitr{}, key {}", mitr.id(), hex_str(value.key()));
-                        {
-                            crate::test_util::push_log(
-                                format!(
-                                    "tid:{}, mitr:{}, key:{}",
-                                    tid,
-                                    mitr.id(),
-                                    hex_str(value.key())
-                                )
-                                .as_bytes(),
-                                false,
-                            );
-                        }
-                        keys.push(value.key().to_vec());
-                    }
+                    // #[cfg(test)]
+                    // {
+                    //     // error!("merge, mitr{}, key {}", mitr.id(), hex_str(value.key()));
+                    //     {
+                    //         crate::test_util::push_log(
+                    //             format!(
+                    //                 "tid:{}, mitr:{}, key:{}",
+                    //                 tid,
+                    //                 mitr.id(),
+                    //                 hex_str(value.key())
+                    //             )
+                    //             .as_bytes(),
+                    //             false,
+                    //         );
+                    //     }
+                    //     keys.push(value.key().to_vec());
+                    // }
                 }
                 if builder.is_zero_bytes() {
                     warn!("Builder is empty");
@@ -625,11 +625,11 @@ impl LevelsController {
 
                 let dir = self.opt.dir.clone();
                 let file_name = new_file_name(file_id, &dir);
-                #[cfg(test)]
-                {
-                    let str = keys.into_iter().map(|key| hex_str(&key)).join(",");
-                    debug!("Save keys into {} {}", file_name, str);
-                }
+                // #[cfg(test)]
+                // {
+                //     let str = keys.into_iter().map(|key| hex_str(&key)).join(",");
+                //     debug!("Save keys into {} {}", file_name, str);
+                // }
                 let worker = g.worker();
                 let tx = tx.clone();
                 let loading_mode = self.opt.table_loading_mode;

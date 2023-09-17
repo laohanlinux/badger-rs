@@ -23,7 +23,7 @@ fn get_test_option(dir: &str) -> Options {
     let mut opt = Options::default();
     opt.max_table_size = 1 << 15; // Force more compaction.
     opt.level_one_size = 4 << 15; // Force more compaction.
-    opt.dir = Box::new(dir.clone().to_string());
+    opt.dir = Box::new(dir.to_string());
     opt.value_dir = Box::new(dir.to_string());
     opt
 }
@@ -182,7 +182,7 @@ async fn t_concurrent_write() {
     let mut i = 0;
     while let Some(item) = itr.peek().await {
         let kv_item = item.read().await;
-        count_set.insert(hex_str(kv_item.key().clone()));
+        count_set.insert(hex_str(kv_item.key()));
         let expect = String::from_utf8_lossy(keys.get(i).unwrap());
         let got = String::from_utf8_lossy(kv_item.key());
         assert_eq!(expect, got);
@@ -202,7 +202,6 @@ async fn t_kv_cas() {
     tracing_log();
     let n = 299;
     let kv = build_kv().await;
-    let opt = kv.opt.clone();
     let entries = (0..n)
         .into_iter()
         .map(|i| {
@@ -242,7 +241,7 @@ async fn t_kv_cas() {
     for i in 0..n {
         let key = i.to_string().into_bytes();
         let value = (i + 100).to_string().into_bytes();
-        let mut cc = items[i].get_cas_counter();
+        let cc = items[i].get_cas_counter();
         let ret = kv.compare_and_set(key, value, cc + 1).await.unwrap_err();
         assert_eq!(ret.to_string(), Error::ValueCasMisMatch.to_string());
         assert_eq!(kv.to_ref().get_last_used_cas_counter() as usize, n + i + 1);

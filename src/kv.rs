@@ -938,7 +938,7 @@ impl ArcKV {
         self.to_ref().batch_set(entries).await
     }
 
-    /// CompareAndSetAsync is the asynchronous version of CompareAndSet. It accepts a callback function
+    /// Asynchronous version of CompareAndSet. It accepts a callback function
     /// which is called when the CompareAndSet completes. Any error encountered during execution is
     /// passed as an argument to the callback function.
     pub async fn compare_and_set(

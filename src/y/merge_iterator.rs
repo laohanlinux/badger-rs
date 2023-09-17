@@ -59,7 +59,14 @@ impl Xiterator for MergeIterator {
             self.heap.borrow_mut().clear();
             for (index, itr) in self.itrs.iter().enumerate() {
                 if let Some(item) = itr.rewind() {
-                    self.push_item_into_heap(index, item);
+                    while let Some(item) = itr.peek() {
+                        if item.key().starts_with(_BADGER_PREFIX) {
+                            itr.next();
+                            continue;
+                        }
+                        self.push_item_into_heap(index, item);
+                        break;
+                    }
                 } else {
                     warn!("has a empty iterator, index:{}, id:{}", index, itr.id());
                 }
@@ -160,11 +167,6 @@ impl MergeIterator {
             let first_el = first_el.unwrap();
             // Move it
             self.cursor.borrow_mut().replace(first_el.index, Some(first_el.key.clone()));
-            // self.cursor.borrow_mut().index = first_el.index;
-            // self.cursor
-            //     .borrow_mut()
-            //     .cur_item
-            //     .replace(first_el.key.clone());
             self.itrs.get(first_el.index).unwrap().next();
             stack.push(first_el.index);
 
@@ -446,7 +448,7 @@ mod tests {
             let mut count = 1;
             assert_eq!(hex_str(key.as_ref().unwrap().key()), hex_str(&keys[0]));
             while let Some(value) = miter.next() {
-                // log::info!("{}", String::from_utf8_lossy(value.key()));
+                 log::info!("{}", String::from_utf8_lossy(value.key()));
                 let expect = keys.get(count).unwrap();
                 assert_eq!(value.key(), expect);
                 count += 1;

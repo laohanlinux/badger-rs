@@ -1033,7 +1033,7 @@ impl ValueLogCore {
         self.garbage_ch.send(()).await.unwrap();
     }
 
-    // only one gc worker
+    /// only one gc worker
     pub async fn trigger_gc(&self, gc_threshold: f64) -> Result<()> {
         return match self.garbage_ch.try_send(()) {
             Ok(()) => {
@@ -1045,6 +1045,7 @@ impl ValueLogCore {
         };
     }
 
+    /// Running Gc
     pub async fn do_run_gc(&self, gc_threshold: f64) -> Result<()> {
         #[derive(Debug, Default)]
         struct Reason {
@@ -1173,16 +1174,8 @@ impl ValueLogCore {
     }
 }
 
+#[doc(hidden)]
 struct PickVlogsGuardsReadLock<'a> {
     vlogs: tokio::sync::RwLockReadGuard<'a, HashMap<u32, TArcRW<LogFile>>>,
     fids: Vec<u32>,
-}
-
-#[test]
-fn it() {
-    // let mut buffer = Cursor::new(Vec::with_capacity(1<<10));
-    // buffer.write(b"hello").unwrap();
-    // println!("{:?}", buffer.get_ref());
-    // buffer.get_mut().clear();
-    // println!("{:?}", buffer.get_ref());
 }

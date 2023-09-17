@@ -118,3 +118,11 @@ pub trait KeyValue<V> {
     fn key(&self) -> &[u8];
     fn value(&self) -> V;
 }
+
+// impl<T> Iterator for dyn Xiterator<Output=T> {
+//     type Item = T;
+//
+//     fn next(&mut self) -> Option<Self::Item> {
+//         todo!()
+//     }
+// }
