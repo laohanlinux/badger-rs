@@ -28,12 +28,16 @@ impl MergeCursor {
         self.index = index;
         self.cur_item = cur_item;
     }
+
+    fn get_item(&self) -> Option<&IteratorItem> {
+        return self.cur_item.as_ref();
+    }
 }
 
 /// A iterator for multi iterator merge into one.
 pub struct MergeIterator {
     pub reverse: bool,
-    pub itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    pub itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     pub cursor: RefCell<MergeCursor>,
     pub heap: RefCell<BinaryHeap<IterRef>>,
     pub heap_flag: RefCell<Vec<bool>>,
@@ -137,11 +141,6 @@ impl MergeIterator {
                 let mut has = HashMap::new();
                 while let Some(item) = itr.peek() {
                     keys.push(item.clone());
-                    tracing_log::log::error!(
-                        "put {}, cas: {}",
-                        hex_str(item.key()),
-                        item.value().cas_counter
-                    );
                     itr.next();
                     if let Some(_old) = has.insert(item.key.clone(), item.clone()) {
                         panic!("it should be not happen, dump key: {}", hex_str(item.key()));
@@ -164,24 +163,29 @@ impl MergeIterator {
                     return None;
                 }
             }
+            // Pop the first element
             let first_el = self.pop_item_from_heap();
             if first_el.is_none() {
                 self.set_iter_empty();
                 return None;
             }
             let first_el = first_el.unwrap();
-            // Move it
             self.cursor
                 .borrow_mut()
                 .replace(first_el.index, Some(first_el.key.clone()));
+            // Move the iterator
             self.itrs.get(first_el.index).unwrap().next();
             stack.push(first_el.index);
 
             #[cfg(test)]
-            error!("Find the target, index: {}", first_el.index);
+            info!(
+                "Find the target, key: {}, index: {}",
+                hex_str(self.cursor.borrow().get_item().unwrap().key()),
+                first_el.index
+            );
             // move dump keys
             loop {
-                let mut heap = self.heap.borrow_mut();
+                let heap = self.heap.borrow_mut();
                 let peek = heap.peek();
                 if peek.is_none() {
                     break;
@@ -196,9 +200,12 @@ impl MergeIterator {
                 }
                 // Find the same, pop it
                 #[cfg(test)]
-                error!("Find a same value, {}", hex_str(pop_key));
-                heap.pop();
+                info!("Find a same value, {}", hex_str(pop_key));
+                drop(heap);
+                self.pop_item_from_heap();
+
                 stack.push(index);
+                // Move same key iterator
                 self.itrs.get(index).unwrap().next();
             }
         }
@@ -257,7 +264,7 @@ impl MergeIterator {
 /// A Builder for merge iterator building
 #[derive(Default)]
 pub struct MergeIterOverBuilder {
-    all: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+    all: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     reverse: bool,
 }
 
@@ -267,14 +274,14 @@ impl MergeIterOverBuilder {
         self
     }
 
-    pub fn add(mut self, x: Box<dyn Xiterator<Output=IteratorItem>>) -> MergeIterOverBuilder {
+    pub fn add(mut self, x: Box<dyn Xiterator<Output = IteratorItem>>) -> MergeIterOverBuilder {
         self.all.push(x);
         self
     }
 
     pub fn add_batch(
         mut self,
-        iters: Vec<Box<dyn Xiterator<Output=IteratorItem>>>,
+        iters: Vec<Box<dyn Xiterator<Output = IteratorItem>>>,
     ) -> MergeIterOverBuilder {
         self.all.extend(iters);
         self
@@ -312,6 +319,7 @@ impl Ord for IterRef {
             other.key.key().cmp(&self.key.key())
         } else {
             if self.key.key() == other.key.key() {
+                // NOTICE that
                 return other.index.cmp(&self.index);
             }
             self.key.key().cmp(&other.key.key())
@@ -335,8 +343,8 @@ impl Eq for IterRef {}
 
 #[cfg(test)]
 mod tests {
-    use std::fmt;
     use log::{error, warn};
+    use std::fmt;
     use tracing::info;
 
     use crate::{
@@ -430,63 +438,90 @@ mod tests {
     async fn merge_iter_random() {
         use itertools::Itertools;
         crate::test_util::tracing_log();
-        let st1 = SkipList::new(1 << 20);
-        let st2 = SkipList::new(1 << 20);
-        let st3 = SkipList::new(1 << 20);
-        let mut keys = vec![];
-        for i in 0..10000 {
-            let key = rand::random::<usize>() % 10000;
-            let key = format!("k{:05}", key).into_bytes().to_vec();
-            keys.push(key.clone());
-            if i % 3 == 0 {
-                st1.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
-            } else if i % 3 == 1 {
-                st2.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
-            } else {
-                st3.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
-            }
-        }
-        keys.sort();
-        let mut keys = keys.clone().into_iter().unique().collect::<Vec<_>>();
 
-        {
-            let builder = MergeIterOverBuilder::default()
-                .add(Box::new(UniIterator::new(st1.clone(), false)))
-                .add(Box::new(UniIterator::new(st2.clone(), false)))
-                .add(Box::new(UniIterator::new(st3.clone(), false)));
-            let miter = builder.build();
-            assert!(miter.peek().is_none());
-            error!("{:?}", keys.iter().map(|key| hex_str(key)).join(","));
-            let key = miter.rewind();
-            let mut count = 1;
-            assert_eq!(hex_str(key.as_ref().unwrap().key()), hex_str(&keys[0]));
-            while let Some(value) = miter.next() {
-                error!("{}", hex_str(value.key()));
-                let expect = keys.get(count).unwrap();
-                assert_eq!(value.key(), expect, "{} not equal {}", hex_str(value.key()), hex_str(expect));
-                count += 1;
+        for _ in 0..100 {
+            let st1 = SkipList::new(1 << 20);
+            let st2 = SkipList::new(1 << 20);
+            let st3 = SkipList::new(1 << 20);
+            let mut keys = vec![];
+            for i in 0..10000 {
+                let key = rand::random::<usize>() % 10000;
+                let key = format!("k{:05}", key).into_bytes().to_vec();
+                keys.push(key.clone());
+                if (i % 3) == 0 {
+                    st1.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
+                } else if (i % 3) == 1 {
+                    st2.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
+                } else {
+                    st3.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
+                }
             }
-            assert_eq!(count, keys.len());
-        }
+            keys.sort();
+            let mut keys = keys.clone().into_iter().unique().collect::<Vec<_>>();
+            let pretty_st = |st: SkipList| {
+                let mut keys = vec![];
+                let cur = st.new_cursor();
+                while let Some(item) = cur.next() {
+                    let key = item.key(&st.arena);
+                    keys.push(key);
+                }
+                error!(
+                    "{}",
+                    keys[0..10].into_iter().map(|key| hex_str(key)).join(",")
+                );
+            };
+            {
+                pretty_st(st1.clone());
+                pretty_st(st2.clone());
+                pretty_st(st3.clone());
+                error!(
+                    "sort keys: {}",
+                    keys[0..10].iter().map(|key| hex_str(key)).join(",")
+                );
+            }
+            {
+                let builder = MergeIterOverBuilder::default()
+                    .add(Box::new(UniIterator::new(st1.clone(), false)))
+                    .add(Box::new(UniIterator::new(st2.clone(), false)))
+                    .add(Box::new(UniIterator::new(st3.clone(), false)));
+                let miter = builder.build();
+                assert!(miter.peek().is_none());
+                let key = miter.rewind();
+                let mut count = 1;
+                assert_eq!(hex_str(key.as_ref().unwrap().key()), hex_str(&keys[0]));
+                while let Some(value) = miter.next() {
+                    let expect = keys.get(count).unwrap();
+                    assert_eq!(
+                        value.key(),
+                        expect,
+                        "{} not equal {}",
+                        hex_str(value.key()),
+                        hex_str(expect)
+                    );
+                    count += 1;
+                }
+                assert_eq!(count, keys.len());
+            }
 
-        {
-            let builder = MergeIterOverBuilder::default()
-                .reverse(true)
-                .add(Box::new(UniIterator::new(st1.clone(), true)))
-                .add(Box::new(UniIterator::new(st2.clone(), true)))
-                .add(Box::new(UniIterator::new(st3.clone(), true)));
-            keys.sort_by(|a, b| b.cmp(a));
-            let keys = keys.into_iter().unique().collect::<Vec<_>>();
-            let miter = builder.build();
-            assert!(miter.peek().is_none());
-            let mut count = 1;
-            miter.rewind();
-            while let Some(value) = miter.next() {
-                let expect = keys.get(count).unwrap();
-                assert_eq!(value.key(), expect);
-                count += 1;
+            {
+                let builder = MergeIterOverBuilder::default()
+                    .reverse(true)
+                    .add(Box::new(UniIterator::new(st1.clone(), true)))
+                    .add(Box::new(UniIterator::new(st2.clone(), true)))
+                    .add(Box::new(UniIterator::new(st3.clone(), true)));
+                keys.sort_by(|a, b| b.cmp(a));
+                let keys = keys.into_iter().unique().collect::<Vec<_>>();
+                let miter = builder.build();
+                assert!(miter.peek().is_none());
+                let mut count = 1;
+                miter.rewind();
+                while let Some(value) = miter.next() {
+                    let expect = keys.get(count).unwrap();
+                    assert_eq!(value.key(), expect);
+                    count += 1;
+                }
+                assert_eq!(count, keys.len());
             }
-            assert_eq!(count, keys.len());
         }
     }
 

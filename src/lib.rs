@@ -19,8 +19,7 @@
 #![feature(let_chains)]
 #![feature(stmt_expr_attributes)]
 #![feature(backtrace_frames)]
-
-extern crate core;
+#![feature(binary_heap_into_iter_sorted)]
 
 use std::mem::align_of;
 
