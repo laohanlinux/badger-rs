@@ -3,6 +3,7 @@ use log::{info, warn};
 use crate::hex_str;
 use crate::table::iterator::{IteratorImpl, IteratorItem};
 
+use crate::kv::{_BADGER_PREFIX, _HEAD};
 use crate::y::iterator::Xiterator;
 use crate::y::KeyValue;
 use itertools::Itertools;
@@ -10,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::btree_set::Iter;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt::format;
-use crate::kv::{_BADGER_PREFIX, _HEAD};
+use tracing::error;
 
 /// Cursor of the iterator of merge.
 pub struct MergeCursor {
@@ -136,7 +137,11 @@ impl MergeIterator {
                 let mut has = HashMap::new();
                 while let Some(item) = itr.peek() {
                     keys.push(item.clone());
-                    tracing_log::log::error!("put {}, cas: {}", hex_str(item.key()), item.value().cas_counter);
+                    tracing_log::log::error!(
+                        "put {}, cas: {}",
+                        hex_str(item.key()),
+                        item.value().cas_counter
+                    );
                     itr.next();
                     if let Some(_old) = has.insert(item.key.clone(), item.clone()) {
                         panic!("it should be not happen, dump key: {}", hex_str(item.key()));
@@ -166,18 +171,22 @@ impl MergeIterator {
             }
             let first_el = first_el.unwrap();
             // Move it
-            self.cursor.borrow_mut().replace(first_el.index, Some(first_el.key.clone()));
+            self.cursor
+                .borrow_mut()
+                .replace(first_el.index, Some(first_el.key.clone()));
             self.itrs.get(first_el.index).unwrap().next();
             stack.push(first_el.index);
 
-            // move dummp keys
+            #[cfg(test)]
+            error!("Find the target, index: {}", first_el.index);
+            // move dump keys
             loop {
                 let mut heap = self.heap.borrow_mut();
-                let pop = heap.peek();
-                if pop.is_none() {
+                let peek = heap.peek();
+                if peek.is_none() {
                     break;
                 }
-                let pop = pop.unwrap();
+                let pop = peek.unwrap();
                 let pop_key = pop.key.key();
                 let first_key = first_el.key.key();
                 let index = pop.index;
@@ -186,6 +195,8 @@ impl MergeIterator {
                     break;
                 }
                 // Find the same, pop it
+                #[cfg(test)]
+                error!("Find a same value, {}", hex_str(pop_key));
                 heap.pop();
                 stack.push(index);
                 self.itrs.get(index).unwrap().next();
@@ -325,6 +336,7 @@ impl Eq for IterRef {}
 #[cfg(test)]
 mod tests {
     use std::fmt;
+    use log::{error, warn};
     use tracing::info;
 
     use crate::{
@@ -434,23 +446,24 @@ mod tests {
                 st3.put(&key, ValueStruct::new(vec![1, 23], 0, 9, 0))
             }
         }
+        keys.sort();
+        let mut keys = keys.clone().into_iter().unique().collect::<Vec<_>>();
 
         {
             let builder = MergeIterOverBuilder::default()
                 .add(Box::new(UniIterator::new(st1.clone(), false)))
                 .add(Box::new(UniIterator::new(st2.clone(), false)))
                 .add(Box::new(UniIterator::new(st3.clone(), false)));
-            keys.sort();
-            let keys = keys.clone().into_iter().unique().collect::<Vec<_>>();
             let miter = builder.build();
             assert!(miter.peek().is_none());
+            error!("{:?}", keys.iter().map(|key| hex_str(key)).join(","));
             let key = miter.rewind();
             let mut count = 1;
             assert_eq!(hex_str(key.as_ref().unwrap().key()), hex_str(&keys[0]));
             while let Some(value) = miter.next() {
-                 log::info!("{}", String::from_utf8_lossy(value.key()));
+                error!("{}", hex_str(value.key()));
                 let expect = keys.get(count).unwrap();
-                assert_eq!(value.key(), expect);
+                assert_eq!(value.key(), expect, "{} not equal {}", hex_str(value.key()), hex_str(expect));
                 count += 1;
             }
             assert_eq!(count, keys.len());

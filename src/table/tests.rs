@@ -419,7 +419,8 @@ mod utils {
         let miter = MergeIterOverBuilder::default()
             .add_batch(vec![itr1, itr2])
             .build();
-        let item = miter.next().unwrap();
+        // TODO maybe next
+        let item = miter.rewind().unwrap();
         assert_eq!(item.key(), b"k1");
         let item = miter.next().unwrap();
         assert_eq!(item.key(), b"k2");
@@ -547,7 +548,7 @@ mod utils {
             .build();
         let itr = IteratorImpl::new(f1, false);
         let mitr = MergeIterOverBuilder::default().add(Box::new(itr)).build();
-        assert_eq!(mitr.next().unwrap().key(), b"k1");
+        assert_eq!(mitr.rewind().unwrap().key(), b"k1");
         assert_eq!(mitr.next().unwrap().key(), b"k2");
         assert!(mitr.next().is_none());
 
