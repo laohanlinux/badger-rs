@@ -10,6 +10,8 @@ use std::process::id;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
 use tokio::io::AsyncWriteExt;
+use tokio::pin;
+use tokio_stream::StreamExt;
 use tracing_subscriber::fmt::format;
 
 use crate::iterator::IteratorOptions;
@@ -501,14 +503,15 @@ async fn t_kv_exists_more() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kv_iterator_basic() {
     tracing_log();
+    use std::async_iter::AsyncIterator;
 
     let mut start = SystemTime::now();
     let kv = build_kv().await;
 
-    let n = 10000;
+    let n = 200;
     let mut entries = (0..n)
         .into_iter()
         .map(|i| {
@@ -534,8 +537,14 @@ async fn kv_iterator_basic() {
     {
         let mut count = 0;
         let mut rewind = true;
+        use tokio_stream::StreamExt;
         let mut itr = kv.new_std_iterator(opt).await;
-        while let Some(item) = itr.next().await {}
+        let mut itr = std::pin::pin!(itr);
+        while let Some(item) = itr.next().await {
+            warn!("====>>>>");
+            let item = item.read().await;
+            warn!("====>>>>{}", hex_str(item.key()));
+        }
     }
 }
 

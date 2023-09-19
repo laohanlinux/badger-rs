@@ -19,6 +19,7 @@ use std::pin::{pin, Pin};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
+use log::warn;
 use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -226,7 +227,7 @@ pub(crate) struct IteratorExt {
 //     }
 // }
 
-impl std::async_iter::AsyncIterator for IteratorExt {
+impl futures_core::Stream for IteratorExt {
     type Item = KVItem;
 
     fn poll_next(
@@ -237,12 +238,23 @@ impl std::async_iter::AsyncIterator for IteratorExt {
             let mut has_rewind = self.has_rewind.write();
             if !*has_rewind {
                 *has_rewind = true;
+                self.itr.rewind();
             }
         }
+
         match Pin::new(&mut pin!(self.next())).poll(cx) {
-            std::task::Poll::Pending => std::task::Poll::Pending,
-            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-            std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
+            std::task::Poll::Pending => {
+                warn!("<<<<Pending>>>>>");
+                std::task::Poll::Pending
+            },
+            std::task::Poll::Ready(None) => {
+                warn!("<<<<None>>>>>");
+                std::task::Poll::Ready(None)
+            },
+            std::task::Poll::Ready(t) => {
+                warn!("<<<<Ready>>>>>");
+                std::task::Poll::Ready(t)
+            },
         }
     }
 }
@@ -263,7 +275,7 @@ impl IteratorExt {
         kv: XArc<KV>,
         itr: MergeIterator,
         opt: IteratorOptions,
-    ) -> Box<dyn std::async_iter::AsyncIterator<Item = KVItem>> {
+    ) -> Box<dyn futures_core::Stream<Item = KVItem>> {
         let itr = Self::new(kv, itr, opt);
         Box::new(itr)
     }
