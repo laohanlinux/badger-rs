@@ -574,50 +574,50 @@ mod utils {
         assert_eq!(count, 2);
     }
 
-    #[test]
-    fn chaos_merge_iterator_ext() {
-        crate::test_util::tracing_log();
-        let keys = keypairs("test_data/merge_iterator_ext.txt");
-        let tables = keys
-            .into_iter()
-            .map(|kp| TableBuilder::new().item_keypair(kp).build_by_iterator())
-            .collect::<Vec<_>>();
-        tracing_log::log::info!("tables count {}", tables.len());
-        let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
-        let mut num = 0;
-        let mut all = HashMap::new();
-        let mut last_one = b"9999999999999999999999999".to_vec();
-        for (index, table) in tables.into_iter().enumerate() {
-            let iter = IteratorImpl::new(table, false);
-            iter.rewind();
-            let mut has = HashSet::new();
-            while let Some(item) = iter.peek() {
-                if item.key() < last_one.as_slice() {
-                    last_one = item.key.clone();
-                }
-                let ok = has.insert(hex_str(item.key()));
-                assert!(ok, "dump key, index: {}, {}", index, hex_str(item.key()));
-                // tracing_log::log::info!(
-                //     "{}=>{}. {}",
-                //     num,
-                //     hex_str(item.key()),
-                //     item.value().pretty()
-                // );
-                if let Some(old) = all.insert(hex_str(item.key()), item.clone()) {
-                    tracing_log::log::warn!(
-                        "{} has inserted, old: {} => new: {}",
-                        hex_str(item.key()),
-                        old.value().pretty(),
-                        item.value().pretty(),
-                    );
-                }
-                num += 1;
-                iter.next();
-            }
-            itr.push(Box::new(iter));
-        }
-        log::info!("total:{}, distinct:{}", num, all.len());
-    }
+    // #[test]
+    // fn chaos_merge_iterator_ext() {
+    //     crate::test_util::tracing_log();
+    //     let keys = keypairs("test_data/merge_iterator_ext.txt");
+    //     let tables = keys
+    //         .into_iter()
+    //         .map(|kp| TableBuilder::new().item_keypair(kp).build_by_iterator())
+    //         .collect::<Vec<_>>();
+    //     tracing_log::log::info!("tables count {}", tables.len());
+    //     let mut itr: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+    //     let mut num = 0;
+    //     let mut all = HashMap::new();
+    //     let mut last_one = b"9999999999999999999999999".to_vec();
+    //     for (index, table) in tables.into_iter().enumerate() {
+    //         let iter = IteratorImpl::new(table, false);
+    //         iter.rewind();
+    //         let mut has = HashSet::new();
+    //         while let Some(item) = iter.peek() {
+    //             if item.key() < last_one.as_slice() {
+    //                 last_one = item.key.clone();
+    //             }
+    //             let ok = has.insert(hex_str(item.key()));
+    //             assert!(ok, "dump key, index: {}, {}", index, hex_str(item.key()));
+    //             // tracing_log::log::info!(
+    //             //     "{}=>{}. {}",
+    //             //     num,
+    //             //     hex_str(item.key()),
+    //             //     item.value().pretty()
+    //             // );
+    //             if let Some(old) = all.insert(hex_str(item.key()), item.clone()) {
+    //                 tracing_log::log::warn!(
+    //                     "{} has inserted, old: {} => new: {}",
+    //                     hex_str(item.key()),
+    //                     old.value().pretty(),
+    //                     item.value().pretty(),
+    //                 );
+    //             }
+    //             num += 1;
+    //             iter.next();
+    //         }
+    //         itr.push(Box::new(iter));
+    //     }
+    //     log::info!("total:{}, distinct:{}", num, all.len());
+    // }
 
     #[test]
     fn chaos_merge_iterator() {

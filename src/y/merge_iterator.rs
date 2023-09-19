@@ -465,7 +465,7 @@ mod tests {
                     let key = item.key(&st.arena);
                     keys.push(key);
                 }
-                error!(
+                info!(
                     "{}",
                     keys[0..10].into_iter().map(|key| hex_str(key)).join(",")
                 );
@@ -474,7 +474,7 @@ mod tests {
                 pretty_st(st1.clone());
                 pretty_st(st2.clone());
                 pretty_st(st3.clone());
-                error!(
+                info!(
                     "sort keys: {}",
                     keys[0..10].iter().map(|key| hex_str(key)).join(",")
                 );

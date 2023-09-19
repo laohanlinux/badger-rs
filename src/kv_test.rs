@@ -347,7 +347,7 @@ async fn t_kv_exists() {
 async fn t_kv_get_more() {
     tracing_log();
     let kv = build_kv().await;
-    let n = 2000;
+    let n = 10000;
     let m = 100;
     // first version
     let mut entries = (0..n)
@@ -385,7 +385,8 @@ async fn t_kv_get_more() {
     for chunk in entries.chunks(m) {
         kv.batch_set(chunk.to_vec()).await;
     }
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(kv.must_lc().validate().is_ok());
+
     for entry in &entries {
         let got = kv.get(entry.key.as_ref()).await;
         assert!(
@@ -401,6 +402,140 @@ async fn t_kv_get_more() {
             "#{}",
             hex_str(entry.key.as_ref())
         );
+    }
+
+    // "Delete" key.
+    entries.iter_mut().for_each(|entry| {
+        entry.user_meta = 3;
+        entry.meta = MetaBit::BIT_DELETE.bits();
+        entry.value = b"Hiz".to_vec();
+    });
+
+    for chunk in entries.chunks(m) {
+        kv.batch_set(chunk.to_vec()).await;
+    }
+    assert!(kv.must_lc().validate().is_ok());
+
+    for entry in &entries {
+        let got = kv.get(entry.key.as_ref()).await;
+        assert!(
+            got.is_err(),
+            "{}, value is =>{}",
+            hex_str(entry.key.as_ref()),
+            hex_str(&got.unwrap()),
+        );
+        //let value = got.into_err();
+    }
+}
+
+// Put a lot of data to move some data to disk.
+// WARNING: This test might take a while but it should pass!
+#[tokio::test]
+async fn t_kv_exists_more() {
+    tracing_log();
+
+    let mut start = SystemTime::now();
+    let kv = build_kv().await;
+
+    let n = 10000;
+    let m = 100;
+    // first version
+    let mut entries = (0..n)
+        .into_iter()
+        .map(|i| i.to_string().as_bytes().to_vec())
+        .map(|key| {
+            Entry::default()
+                .key(key.clone())
+                .value(key.clone())
+                .user_meta(1)
+        })
+        .collect::<Vec<_>>();
+    for chunk in entries.chunks(m) {
+        let ret = kv
+            .batch_set(chunk.into_iter().map(|entry| entry.clone()).collect())
+            .await;
+        let pass = ret.into_iter().all(|ret| ret.is_ok());
+        assert!(pass);
+    }
+    assert!(kv.must_lc().validate().is_ok());
+
+    for entry in &entries {
+        let got = kv.exists(entry.key.as_ref()).await;
+        assert!(got.is_ok());
+        assert!(got.unwrap());
+    }
+
+    let got = kv.exists(b"not-exists").await;
+    assert!(got.is_ok());
+    assert!(!got.unwrap());
+
+    info!(
+        "after check exists, cost {}ms",
+        SystemTime::now().duration_since(start).unwrap().as_millis()
+    );
+
+    // "Delete" key.
+    entries.iter_mut().for_each(|entry| {
+        entry.user_meta = 3;
+        entry.meta = MetaBit::BIT_DELETE.bits();
+    });
+
+    for chunk in entries.chunks(m) {
+        kv.batch_set(chunk.to_vec()).await;
+    }
+    assert!(kv.must_lc().validate().is_ok());
+    info!(
+        "after deleted, cost {}ms",
+        SystemTime::now().duration_since(start).unwrap().as_millis()
+    );
+
+    for entry in &entries {
+        let got = kv.exists(entry.key.as_ref()).await;
+        assert!(got.is_ok());
+        assert!(!got.unwrap());
+    }
+
+    info!(
+        "Done and closing, cost {}ms",
+        SystemTime::now().duration_since(start).unwrap().as_millis()
+    );
+}
+
+#[tokio::test]
+async fn kv_iterator_basic() {
+    tracing_log();
+
+    let mut start = SystemTime::now();
+    let kv = build_kv().await;
+
+    let n = 10000;
+    let mut entries = (0..n)
+        .into_iter()
+        .map(|i| {
+            (
+                format!("{:09}", i).as_bytes().to_vec(),
+                format!("{:025}", i).as_bytes().to_vec(),
+            )
+        })
+        .map(|(key, value)| Entry::default().key(key).value(value).user_meta(1))
+        .collect::<Vec<_>>();
+    for entry in entries.iter() {
+        kv.set(entry.key.clone(), entry.value.clone(), 0)
+            .await
+            .unwrap();
+    }
+    assert!(kv.must_lc().validate().is_ok());
+
+    let mut opt = IteratorOptions::default();
+    opt.pre_fetch_values = true;
+    opt.pre_fetch_size = 10;
+
+    let itr = kv.new_iterator(opt).await;
+    {
+        let mut count = 0;
+        let mut rewind = true;
+        let mut itr = kv.new_std_iterator(opt).await;
+        while let Some(item) = itr.next().await {}
     }
 }
 

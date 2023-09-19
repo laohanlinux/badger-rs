@@ -1,3 +1,4 @@
+#![feature(async_iterator)]
 #![feature(pointer_byte_offsets)]
 #![feature(sync_unsafe_cell)]
 #![feature(associated_type_defaults)]
@@ -15,7 +16,6 @@
 #![feature(slice_take)]
 #![feature(arc_into_inner)]
 #![feature(async_closure)]
-#![feature(async_iterator)]
 #![feature(let_chains)]
 #![feature(stmt_expr_attributes)]
 #![feature(backtrace_frames)]

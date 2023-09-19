@@ -14,7 +14,7 @@ use atomic::Atomic;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
 
-use std::pin::Pin;
+use std::pin::{pin, Pin};
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -186,6 +186,7 @@ impl KVItemInner {
 }
 
 // Used to set options when iterating over Badger key-value stores.
+#[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct IteratorOptions {
     // Indicates whether we should prefetch values during iteration and store them.
     pub(crate) pre_fetch_values: bool,
@@ -213,6 +214,37 @@ pub(crate) struct IteratorExt {
     item: ArcRW<Option<KVItem>>,
     // Cache the prefetch keys, not inlcude current value
     data: ArcRW<std::collections::LinkedList<KVItem>>,
+    has_rewind: ArcRW<bool>,
+}
+
+// impl IntoIterator for IteratorExt {
+//     type Item = KVItem;
+//     type IntoIter = dyn Iterator<Item=Self::Item>;
+//
+//     fn into_iter(self) -> Box<Self::IntoIter> {
+//         self.
+//     }
+// }
+
+impl std::async_iter::AsyncIterator for IteratorExt {
+    type Item = KVItem;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        {
+            let mut has_rewind = self.has_rewind.write();
+            if !*has_rewind {
+                *has_rewind = true;
+            }
+        }
+        match Pin::new(&mut pin!(self.next())).poll(cx) {
+            std::task::Poll::Pending => std::task::Poll::Pending,
+            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+            std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
+        }
+    }
 }
 
 impl IteratorExt {
@@ -223,9 +255,18 @@ impl IteratorExt {
             itr,
             data: ArcRW::default(),
             item: Arc::new(Default::default()),
+            has_rewind: ArcRW::default(),
         }
     }
 
+    pub(crate) async fn new_async_iterator(
+        kv: XArc<KV>,
+        itr: MergeIterator,
+        opt: IteratorOptions,
+    ) -> Box<dyn std::async_iter::AsyncIterator<Item = KVItem>> {
+        let itr = Self::new(kv, itr, opt);
+        Box::new(itr)
+    }
     // Seek to the provided key if present. If absent, if would seek to the next smallest key
     // greater than provided if iterating in the forward direction. Behavior would be reversed is
     // iterating backwards.
@@ -262,8 +303,7 @@ impl IteratorExt {
         self.item.read().clone()
     }
 
-    // Advance the iterator by one. Always check it.valid() after a next ()
-    // to ensure you have access to a valid it.item()
+    // Advance the iterator by one (*NOTICE*: must be rewind when you call self.next())
     pub(crate) async fn next(&self) -> Option<KVItem> {
         // Ensure current item has load
         if let Some(el) = self.item.write().take() {
