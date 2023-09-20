@@ -382,19 +382,15 @@ impl KV {
             }
             let vs = vs.unwrap();
             if vs.meta != 0 || !vs.value.is_empty() {
-                debug!(
-                    "fount from skiplist, st:{}, key #{}",
-                    st.id(),
-                    crate::y::hex_str(key),
-                );
                 return Ok(vs);
             }
         }
-        info!(
-            "found from disk table, key #{}, {:?}",
-            crate::y::hex_str(key),
-            self.must_lc()
-        );
+        //#[cfg(test)]
+        //info!(
+        //  "found from disk table, key #{}, {:?}",
+        // crate::y::hex_str(key),
+        // self.must_lc()
+        //);
         self.must_lc().get(key).ok_or(NotFound)
     }
 
@@ -891,14 +887,11 @@ impl ArcKV {
     /// Return a value that will async load value, if want not return value, should be `exists`
     pub async fn get(&self, key: &[u8]) -> Result<Vec<u8>> {
         let got = self._get(key)?;
+        if got.meta == MetaBit::BIT_DELETE.bits() {
+            return Err(Error::NotFound);
+        }
         let inner = KVItemInner::new(key.to_vec(), got, self.clone());
         inner.get_value().await
-    }
-
-    pub(crate) async fn get_with_ext(&self, key: &[u8]) -> Result<KVItem> {
-        let got = self._get(key)?;
-        let inner = KVItemInner::new(key.to_vec(), got, self.clone());
-        Ok(TArcRW::new(tokio::sync::RwLock::new(inner)))
     }
 
     /// Set sets the provided value for a given key. If key is not present, it is created. If it is
@@ -999,135 +992,6 @@ impl ArcKV {
         self.must_vlog().trigger_gc(discard_ratio).await
     }
 
-    /// Closes a KV. It's crucial to call it to ensure all the pending updates
-    /// make their way to disk.
-    pub async fn close(&self) -> Result<()> {
-        info!("Closing database");
-        // Stop value GC first;
-        self.to_ref().closers.value_gc.signal_and_wait().await;
-        // Stop writes next.
-        self.to_ref().closers.writes.signal_and_wait().await;
-
-        // Now close the value log.
-        self.must_vlog().close().await?;
-
-        // Make sure that block writer is done pushing stuff into memtable!
-        // Otherwise, you will have a race condition: we are trying to flush memtables
-        // and remove them completely, while the block / memtable writer is still trying
-        // to push stuff into the memtable. This will also resolve the value
-        // offset problem: as we push into memtable, we update value offsets there.
-        if !self.must_mt().empty() {
-            info!("Flushing memtable!");
-            let _ = self.share_lock.write().await;
-            let vptr = unsafe {
-                self.vptr
-                    .load(Ordering::Relaxed, &crossbeam_epoch::pin())
-                    .as_ref()
-                    .clone()
-                    .unwrap()
-                    .clone()
-            };
-            assert!(!self.mem_st_manger.mt_ref(&crossbeam_epoch::pin()).is_null());
-            self.flush_chan
-                .send(FlushTask {
-                    mt: Some(self.mem_st_manger.mt_clone()),
-                    vptr,
-                })
-                .await
-                .unwrap();
-            self.mem_st_manger.swap_st(self.opt.clone());
-            info!("Pushed to flush chan");
-        }
-
-        // Tell flusher to quit.
-        self.flush_chan
-            .send(FlushTask {
-                mt: None,
-                vptr: ValuePointer::default(),
-            })
-            .await
-            .unwrap();
-        self.closers.mem_table.signal_and_wait().await;
-        info!("Memtable flushed!");
-
-        self.closers.compactors.signal_and_wait().await;
-        info!("Compaction finished!");
-
-        self.must_lc().close()?;
-
-        info!("Waiting for closer");
-        self.closers.update_size.signal_and_wait().await;
-
-        self.dir_lock_guard.unlock()?;
-        self.value_dir_guard.unlock()?;
-
-        self.manifest.write().await.close();
-        // Fsync directions to ensure that lock file, and any other removed files whose directory
-        // we haven't specifically fsynced, are guaranteed to have their directory entry removal
-        // persisted to disk.
-        async_sync_directory(self.opt.dir.clone().to_string()).await?;
-        async_sync_directory(self.opt.value_dir.clone().to_string()).await?;
-        Ok(())
-    }
-
-    // NewIterator returns a new iterator. Depending upon the options, either only keys, or both
-    // key-value pairs would be fetched. The keys are returned in lexicographically sorted order.
-    // Usage:
-    //   opt := badger.DefaultIteratorOptions
-    //   itr := kv.NewIterator(opt)
-    //   for itr.Rewind(); itr.Valid(); itr.Next() {
-    //     item := itr.Item()
-    //     key := item.Key()
-    //     var val []byte
-    //     err = item.Value(func(v []byte) {
-    //         val = make([]byte, len(v))
-    // 	       copy(val, v)
-    //     }) 	// This could block while value is fetched from value log.
-    //          // For key only iteration, set opt.PrefetchValues to false, and don't call
-    //          // item.Value(func(v []byte)).
-    //
-    //     // Remember that both key, val would become invalid in the next iteration of the loop.
-    //     // So, if you need access to them outside, copy them or parse them.
-    //   }
-    //   itr.Close()
-    pub(crate) async fn new_iterator(&self, opt: IteratorOptions) -> IteratorExt {
-        // Notice, the iterator is global iterator, so must incr reference for memtable(SikpList), sst(file), vlog(file).
-        let p = crossbeam_epoch::pin();
-        let tables = self.get_mem_tables(&p);
-        // TODO it should decr at IteratorExt close.
-        defer! {
-            tables.iter().for_each(|table| unsafe {table.as_ref().unwrap().decr_ref()});
-        }
-        // add vlog reference.
-        self.must_vlog().incr_iterator_count();
-
-        // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
-        for tb in tables.clone() {
-            let st = unsafe { tb.as_ref().unwrap().clone() };
-            let iter = Box::new(UniIterator::new(st, opt.reverse));
-            itrs.push(iter);
-        }
-        // Extend sst.table
-        itrs.extend(self.must_lc().as_iterator(opt.reverse));
-        let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
-        IteratorExt::new(self.clone(), mitr, opt)
-    }
-
-    // pub(crate) async fn ext(&self, opt: IteratorOptions) {
-    //     let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
-    //     itrs.extend(self.must_lc().as_iterator(false));
-    //     let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
-    //     let itr = IteratorExt::new(self.clone(), mitr, opt);
-    //     itr.rewind();
-    //     while let Some(item) = itr.peek() {
-    //         error!("===> {}", hex_str(item.key()));
-    //         mitr.next();
-    //     }
-    // }
-}
-
-impl ArcKV {
     async fn do_writes(&self, lc: Closer, without_close_write_ch: bool) {
         info!("start do writes task!");
         defer! {info!("exit writes task!")}
@@ -1205,13 +1069,137 @@ impl ArcKV {
         }
     }
 
+    /// Closes a KV. It's crucial to call it to ensure all the pending updates
+    /// make their way to disk.
+    pub async fn close(&self) -> Result<()> {
+        info!("Closing database");
+        // Stop value GC first;
+        self.to_ref().closers.value_gc.signal_and_wait().await;
+        // Stop writes next.
+        self.to_ref().closers.writes.signal_and_wait().await;
+
+        // Now close the value log.
+        self.must_vlog().close().await?;
+
+        // Make sure that block writer is done pushing stuff into memtable!
+        // Otherwise, you will have a race condition: we are trying to flush memtables
+        // and remove them completely, while the block / memtable writer is still trying
+        // to push stuff into the memtable. This will also resolve the value
+        // offset problem: as we push into memtable, we update value offsets there.
+        if !self.must_mt().empty() {
+            info!("Flushing memtable!");
+            let _ = self.share_lock.write().await;
+            let vptr = unsafe {
+                self.vptr
+                    .load(Ordering::Relaxed, &crossbeam_epoch::pin())
+                    .as_ref()
+                    .clone()
+                    .unwrap()
+                    .clone()
+            };
+            assert!(!self.mem_st_manger.mt_ref(&crossbeam_epoch::pin()).is_null());
+            self.flush_chan
+                .send(FlushTask {
+                    mt: Some(self.mem_st_manger.mt_clone()),
+                    vptr,
+                })
+                .await
+                .unwrap();
+            self.mem_st_manger.swap_st(self.opt.clone());
+            info!("Pushed to flush chan");
+        }
+
+        // Tell flusher to quit.
+        self.flush_chan
+            .send(FlushTask {
+                mt: None,
+                vptr: ValuePointer::default(),
+            })
+            .await
+            .unwrap();
+        self.closers.mem_table.signal_and_wait().await;
+        info!("Memtable flushed!");
+
+        self.closers.compactors.signal_and_wait().await;
+        info!("Compaction finished!");
+
+        self.must_lc().close()?;
+
+        info!("Waiting for closer");
+        self.closers.update_size.signal_and_wait().await;
+
+        self.dir_lock_guard.unlock()?;
+        self.value_dir_guard.unlock()?;
+
+        self.manifest.write().await.close();
+        // Fsync directions to ensure that lock file, and any other removed files whose directory
+        // we haven't specifically fsynced, are guaranteed to have their directory entry removal
+        // persisted to disk.
+        async_sync_directory(self.opt.dir.clone().to_string()).await?;
+        async_sync_directory(self.opt.value_dir.clone().to_string()).await?;
+        Ok(())
+    }
+}
+
+impl ArcKV {
+    // NewIterator returns a new iterator. Depending upon the options, either only keys, or both
+    // key-value pairs would be fetched. The keys are returned in lexicographically sorted order.
+    // Usage:
+    //   opt := badger.DefaultIteratorOptions
+    //   itr := kv.NewIterator(opt)
+    //   for itr.Rewind(); itr.Valid(); itr.Next() {
+    //     item := itr.Item()
+    //     key := item.Key()
+    //     var val []byte
+    //     err = item.Value(func(v []byte) {
+    //         val = make([]byte, len(v))
+    // 	       copy(val, v)
+    //     }) 	// This could block while value is fetched from value log.
+    //          // For key only iteration, set opt.PrefetchValues to false, and don't call
+    //          // item.Value(func(v []byte)).
+    //
+    //     // Remember that both key, val would become invalid in the next iteration of the loop.
+    //     // So, if you need access to them outside, copy them or parse them.
+    //   }
+    //   itr.Close()
+    pub(crate) async fn new_iterator(&self, opt: IteratorOptions) -> IteratorExt {
+        // Notice, the iterator is global iterator, so must incr reference for memtable(SikpList), sst(file), vlog(file).
+        let p = crossbeam_epoch::pin();
+        let tables = self.get_mem_tables(&p);
+        // TODO it should decr at IteratorExt close.
+        defer! {
+            tables.iter().for_each(|table| unsafe {table.as_ref().unwrap().decr_ref()});
+        }
+        // add vlog reference.
+        self.must_vlog().incr_iterator_count();
+
+        // Create iterators across all the tables involved first.
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        for tb in tables.clone() {
+            let st = unsafe { tb.as_ref().unwrap().clone() };
+            let iter = Box::new(UniIterator::new(st, opt.reverse));
+            itrs.push(iter);
+        }
+        // Extend sst.table
+        itrs.extend(self.must_lc().as_iterator(opt.reverse));
+        let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
+        IteratorExt::new(self.clone(), mitr, opt)
+    }
+
+    pub(crate) async fn new_std_iterator(
+        &self,
+        opt: IteratorOptions,
+    ) -> impl futures_core::Stream<Item = KVItem> {
+        let mut itr = self.new_iterator(opt).await;
+        itr
+    }
     // asyn yield item value from ValueLog
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
         mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
-        info!("ready to yield item:{} value from vlog!", item);
+        //info!("ready to yield item:{} value from vlog!", item);
         // no value
         if !item.has_value() {
             info!(
@@ -1234,6 +1222,11 @@ impl ArcKV {
         let vlog = self.must_vlog();
         vlog.async_read(&vptr, consumer).await?;
         Ok(())
+    }
+    pub(crate) async fn get_with_ext(&self, key: &[u8]) -> Result<KVItem> {
+        let got = self._get(key)?;
+        let inner = KVItemInner::new(key.to_vec(), got, self.clone());
+        Ok(TArcRW::new(tokio::sync::RwLock::new(inner)))
     }
 }
 

@@ -454,7 +454,7 @@ impl Display for SkipList {
     }
 }
 
-// A unidirectional memetable iterator. It is a thin wrapper around
+// A unidirectional meme-table iterator. It is a thin wrapper around
 // `Iterator`. We like to keep `Iterator` as before, because it is more powerful and
 // we might support bidirectional iterations in the  future.
 pub struct UniIterator {

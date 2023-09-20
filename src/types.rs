@@ -82,7 +82,6 @@ impl<T> Channel<T> {
 
     /// close *Channel*, Sender will be consumed
     pub fn close(&self) {
-        info!("close channel");
         if let Some(tx) = &self.tx {
             tx.close();
         }
@@ -138,16 +137,19 @@ pub struct Closer {
     name: String,
     closed: Channel<()>,
     wait: Arc<AtomicIsize>,
+    disable_log: bool,
 }
 
 impl Drop for Closer {
     fn drop(&mut self) {
         assert!(self.wait.load(Ordering::Relaxed) >= 0, "Sanity check!");
-        info!(
-            "Worker-{}-{} exited",
-            self.name,
-            self.wait.load(Ordering::Relaxed)
-        );
+        if !self.disable_log {
+            info!(
+                "Worker-{}-{} exited",
+                self.name,
+                self.wait.load(Ordering::Relaxed)
+            );
+        }
     }
 }
 
@@ -157,9 +159,16 @@ impl Closer {
         let close = Closer {
             name,
             closed: Channel::new(1),
+            disable_log: false,
             wait: Arc::from(AtomicIsize::new(0)),
         };
         close
+    }
+
+    pub fn new_without_log(name: String) -> Self {
+        let mut closer = Self::new(name);
+        closer.disable_log = true;
+        closer
     }
 
     /// Incr delta to the WaitGroup.

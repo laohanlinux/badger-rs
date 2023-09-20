@@ -8,7 +8,7 @@ use async_channel::Sender;
 use byteorder::{BigEndian, ReadBytesExt};
 use drop_cell::defer;
 use either::Either;
-use log::info;
+use log::{debug, info};
 use memmap::{Mmap, MmapMut};
 
 use std::fmt::{Debug, Formatter};
@@ -259,7 +259,8 @@ impl LogFile {
 
     // Acquire lock on mmap if you are calling this.
     pub(crate) fn read(&self, p: &ValuePointer) -> Result<&[u8]> {
-        info!(
+        #[cfg(test)]
+        debug!(
             "ready to read bytes from mmap, {}, {:?}",
             self._mmap.as_ref().unwrap().is_left(),
             p

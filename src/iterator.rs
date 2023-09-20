@@ -14,8 +14,9 @@ use atomic::Atomic;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
 
-use std::pin::Pin;
+use std::pin::{pin, Pin};
 
+use log::{error, warn};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
@@ -186,6 +187,7 @@ impl KVItemInner {
 }
 
 // Used to set options when iterating over Badger key-value stores.
+#[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct IteratorOptions {
     // Indicates whether we should prefetch values during iteration and store them.
     pub(crate) pre_fetch_values: bool,
@@ -213,6 +215,40 @@ pub(crate) struct IteratorExt {
     item: ArcRW<Option<KVItem>>,
     // Cache the prefetch keys, not inlcude current value
     data: ArcRW<std::collections::LinkedList<KVItem>>,
+    has_rewind: ArcRW<bool>,
+}
+
+/// TODO FIXME
+impl futures_core::Stream for IteratorExt {
+    type Item = KVItem;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        warn!("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
+        let mut has_rewind = self.has_rewind.write();
+        if !*has_rewind {
+            *has_rewind = true;
+            match Pin::new(&mut pin!(self.rewind())).poll(cx) {
+                std::task::Poll::Pending => {
+                    warn!("<<<<Pending>>>>>");
+                    std::task::Poll::Pending
+                }
+                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+                std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
+            }
+        } else {
+            match Pin::new(&mut pin!(self.next())).poll(cx) {
+                std::task::Poll::Pending => {
+                    warn!("<<<<Pending>>>>>");
+                    std::task::Poll::Pending
+                }
+                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+                std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
+            }
+        }
+    }
 }
 
 impl IteratorExt {
@@ -223,9 +259,18 @@ impl IteratorExt {
             itr,
             data: ArcRW::default(),
             item: Arc::new(Default::default()),
+            has_rewind: ArcRW::default(),
         }
     }
 
+    pub(crate) async fn new_async_iterator(
+        kv: XArc<KV>,
+        itr: MergeIterator,
+        opt: IteratorOptions,
+    ) -> Box<dyn futures_core::Stream<Item = KVItem>> {
+        let itr = Self::new(kv, itr, opt);
+        Box::new(itr)
+    }
     // Seek to the provided key if present. If absent, if would seek to the next smallest key
     // greater than provided if iterating in the forward direction. Behavior would be reversed is
     // iterating backwards.
@@ -251,19 +296,21 @@ impl IteratorExt {
             el.read().await.wg.wait().await;
         }
         // rewind the iterator
+        // rewind, next, rewind?, thie item is who!
         let mut item = self.itr.rewind();
         // filter internal data
         while item.is_some() && item.as_ref().unwrap().key().starts_with(_BADGER_PREFIX) {
             item = self.itr.next();
         }
+        // Before every rewind, the item will be reset to None
+        self.item.write().take();
         // prefetch item.
         self.pre_fetch().await;
         // return the first el.
         self.item.read().clone()
     }
 
-    // Advance the iterator by one. Always check it.valid() after a next ()
-    // to ensure you have access to a valid it.item()
+    // Advance the iterator by one (*NOTICE*: must be rewind when you call self.next())
     pub(crate) async fn next(&self) -> Option<KVItem> {
         // Ensure current item has load
         if let Some(el) = self.item.write().take() {
