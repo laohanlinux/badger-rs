@@ -1,4 +1,4 @@
-use log::{info, warn};
+use log::{debug, info, warn};
 
 use crate::hex_str;
 use crate::table::iterator::{IteratorImpl, IteratorItem};
@@ -58,10 +58,12 @@ impl Xiterator for MergeIterator {
     fn rewind(&self) -> Option<Self::Output> {
         if self.itrs.is_empty() {
             self.set_iter_empty();
+            warn!("no found any iterator!");
             return None;
         }
         {
-            self.heap.borrow_mut().clear();
+            // Before every rewind, all flags will be resetted
+            self.reset();
             for (index, itr) in self.itrs.iter().enumerate() {
                 if let Some(item) = itr.rewind() {
                     while let Some(item) = itr.peek() {
@@ -117,6 +119,15 @@ impl MergeIterator {
             }
         }
         count
+    }
+
+    fn reset(&self) {
+        self.cursor.borrow_mut().replace(usize::MAX, None);
+        self.heap.borrow_mut().clear();
+        self.heap_flag
+            .borrow_mut()
+            .iter_mut()
+            .for_each(|flag| *flag = false);
     }
 
     pub(crate) fn export_disk(&self) {
@@ -178,7 +189,7 @@ impl MergeIterator {
             stack.push(first_el.index);
 
             #[cfg(test)]
-            info!(
+            debug!(
                 "Find the target, key: {}, index: {}",
                 hex_str(self.cursor.borrow().get_item().unwrap().key()),
                 first_el.index

@@ -511,15 +511,13 @@ async fn kv_iterator_basic() {
     let mut start = SystemTime::now();
     let kv = build_kv().await;
 
-    let n = 200;
+    let n = 10000;
+
+    let bkey = |i: usize| format!("{:09}", i).as_bytes().to_vec();
+    let bvalue = |i: usize| format!("{:025}", i).as_bytes().to_vec();
     let mut entries = (0..n)
         .into_iter()
-        .map(|i| {
-            (
-                format!("{:09}", i).as_bytes().to_vec(),
-                format!("{:025}", i).as_bytes().to_vec(),
-            )
-        })
+        .map(|i| (bkey(i), bvalue(i)))
         .map(|(key, value)| Entry::default().key(key).value(value).user_meta(1))
         .collect::<Vec<_>>();
     for entry in entries.iter() {
@@ -537,14 +535,42 @@ async fn kv_iterator_basic() {
     {
         let mut count = 0;
         let mut rewind = true;
-        use tokio_stream::StreamExt;
-        let mut itr = kv.new_std_iterator(opt).await;
-        let mut itr = std::pin::pin!(itr);
-        while let Some(item) = itr.next().await {
-            warn!("====>>>>");
-            let item = item.read().await;
-            warn!("====>>>>{}", hex_str(item.key()));
+        info!("Startinh first basic iteration");
+        let itr = kv.new_iterator(opt).await;
+        itr.rewind().await;
+        while let Some(item) = itr.peek().await {
+            let rd_item = item.read().await;
+            let key = rd_item.key();
+            if rewind && count == 5000 {
+                // Rewind would be skip /heap/key, and it.next() would be skip 0.
+                count = 0;
+                let _ = itr.rewind().await.unwrap();
+                rewind = false;
+                continue;
+            }
+            assert_eq!(
+                hex_str(key),
+                hex_str(&bkey(count)),
+                "count = {}, rewind = {}",
+                count,
+                rewind
+            );
+            let val = rd_item.get_value().await.unwrap();
+            assert_eq!(hex_str(&val), hex_str(&bvalue(count)));
+            count += 1;
+            itr.next().await;
         }
+        assert_eq!(count, entries.len());
+        // use tokio_stream::StreamExt;
+        // let mut itr = kv.new_std_iterator(opt).await;
+        // let mut itr = std::pin::pin!(itr);
+        // let mut n = 0;
+        // while let Some(item) = itr.next().await {
+        //    n += 1;
+        //  warn!("====>>>>, {}", n);
+        // let item = item.read().await;
+        // warn!("====>>>>{}", hex_str(item.key()));
+        //}
     }
 }
 

@@ -1199,7 +1199,7 @@ impl ArcKV {
         item: KVItemInner,
         mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
-        info!("ready to yield item:{} value from vlog!", item);
+        //info!("ready to yield item:{} value from vlog!", item);
         // no value
         if !item.has_value() {
             info!(

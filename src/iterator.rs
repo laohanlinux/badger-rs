@@ -16,10 +16,10 @@ use std::future::Future;
 
 use std::pin::{pin, Pin};
 
+use log::{error, warn};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
-use log::warn;
 use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -218,15 +218,7 @@ pub(crate) struct IteratorExt {
     has_rewind: ArcRW<bool>,
 }
 
-// impl IntoIterator for IteratorExt {
-//     type Item = KVItem;
-//     type IntoIter = dyn Iterator<Item=Self::Item>;
-//
-//     fn into_iter(self) -> Box<Self::IntoIter> {
-//         self.
-//     }
-// }
-
+/// TODO FIXME
 impl futures_core::Stream for IteratorExt {
     type Item = KVItem;
 
@@ -234,27 +226,27 @@ impl futures_core::Stream for IteratorExt {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        {
-            let mut has_rewind = self.has_rewind.write();
-            if !*has_rewind {
-                *has_rewind = true;
-                self.itr.rewind();
+        warn!("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
+        let mut has_rewind = self.has_rewind.write();
+        if !*has_rewind {
+            *has_rewind = true;
+            match Pin::new(&mut pin!(self.rewind())).poll(cx) {
+                std::task::Poll::Pending => {
+                    warn!("<<<<Pending>>>>>");
+                    std::task::Poll::Pending
+                }
+                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+                std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
             }
-        }
-
-        match Pin::new(&mut pin!(self.next())).poll(cx) {
-            std::task::Poll::Pending => {
-                warn!("<<<<Pending>>>>>");
-                std::task::Poll::Pending
-            },
-            std::task::Poll::Ready(None) => {
-                warn!("<<<<None>>>>>");
-                std::task::Poll::Ready(None)
-            },
-            std::task::Poll::Ready(t) => {
-                warn!("<<<<Ready>>>>>");
-                std::task::Poll::Ready(t)
-            },
+        } else {
+            match Pin::new(&mut pin!(self.next())).poll(cx) {
+                std::task::Poll::Pending => {
+                    warn!("<<<<Pending>>>>>");
+                    std::task::Poll::Pending
+                }
+                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+                std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
+            }
         }
     }
 }
@@ -304,11 +296,14 @@ impl IteratorExt {
             el.read().await.wg.wait().await;
         }
         // rewind the iterator
+        // rewind, next, rewind?, thie item is who!
         let mut item = self.itr.rewind();
         // filter internal data
         while item.is_some() && item.as_ref().unwrap().key().starts_with(_BADGER_PREFIX) {
             item = self.itr.next();
         }
+        // Before every rewind, the item will be reset to None
+        self.item.write().take();
         // prefetch item.
         self.pre_fetch().await;
         // return the first el.

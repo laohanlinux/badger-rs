@@ -736,7 +736,6 @@ impl ValueLogCore {
         let buffer = buffer.read(&vp)?;
         let mut h = Header::default();
         h.dec(&mut Cursor::new(&buffer[0..Header::encoded_size()]))?;
-        info!("read content: {:?}", buffer);
         if (h.meta & MetaBit::BIT_DELETE.bits()) != 0 {
             // Tombstone key
             consumer(&EMPTY_SLICE).await
@@ -766,8 +765,9 @@ impl ValueLogCore {
                     continue;
                 }
 
-                info!(
-                    "Write a # {:?} => {} into vlog file, offset: {}, meta:{}",
+                #[cfg(test)]
+                debug!(
+                    "Write # {:?} => {} into vlog file, offset: {}, meta:{}",
                     hex_str(entry.entry().key.as_ref()),
                     hex_str(entry.entry().value.as_ref()),
                     self.buf.read().await.get_ref().len()
