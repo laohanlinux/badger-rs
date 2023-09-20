@@ -65,7 +65,7 @@ impl Xiterator for MergeIterator {
             // Before every rewind, all flags will be resetted
             self.reset();
             for (index, itr) in self.itrs.iter().enumerate() {
-                if let Some(item) = itr.rewind() {
+                if itr.rewind().is_some() {
                     while let Some(item) = itr.peek() {
                         if item.key().starts_with(_BADGER_PREFIX) {
                             itr.next();
@@ -85,7 +85,14 @@ impl Xiterator for MergeIterator {
     }
 
     fn seek(&self, _key: &[u8]) -> Option<Self::Output> {
-        todo!()
+        self.reset();
+        for (index, itr) in self.itrs.iter().enumerate() {
+            if let Some(item) = itr.seek(_key) {
+                self.push_item_into_heap(index, item);
+            }
+        }
+        self.set_iter_empty();
+        self.next()
     }
 
     // TODO avoid clone

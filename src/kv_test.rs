@@ -506,16 +506,14 @@ async fn t_kv_exists_more() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kv_iterator_basic() {
     tracing_log();
-    use std::async_iter::AsyncIterator;
-
-    let mut start = SystemTime::now();
+    let start = SystemTime::now();
     let kv = build_kv().await;
 
     let n = 10000;
 
     let bkey = |i: usize| format!("{:09}", i).as_bytes().to_vec();
     let bvalue = |i: usize| format!("{:025}", i).as_bytes().to_vec();
-    let mut entries = (0..n)
+    let entries = (0..n)
         .into_iter()
         .map(|i| (bkey(i), bvalue(i)))
         .map(|(key, value)| Entry::default().key(key).value(value).user_meta(1))
@@ -531,12 +529,11 @@ async fn kv_iterator_basic() {
     opt.pre_fetch_values = true;
     opt.pre_fetch_size = 10;
 
-    let itr = kv.new_iterator(opt).await;
     {
+        let itr = kv.new_iterator(opt).await;
         let mut count = 0;
         let mut rewind = true;
         info!("Startinh first basic iteration");
-        let itr = kv.new_iterator(opt).await;
         itr.rewind().await;
         while let Some(item) = itr.peek().await {
             let rd_item = item.read().await;
@@ -572,10 +569,28 @@ async fn kv_iterator_basic() {
         // warn!("====>>>>{}", hex_str(item.key()));
         //}
     }
+
+    {
+        info!("Starting second basic iteration");
+        let mut idx = 5030;
+        let start = bkey(idx);
+        let itr = kv.new_iterator(opt).await;
+        itr.seek(&start).await.unwrap();
+        while let Some(item) = itr.peek().await {
+            let item = item.read().await;
+            assert_eq!(hex_str(&bkey(idx)), hex_str(item.key()));
+            assert_eq!(
+                hex_str(&bvalue(idx)),
+                hex_str(&item.get_value().await.unwrap())
+            );
+            idx += 1;
+            itr.next().await;
+        }
+    }
 }
 
 async fn build_kv() -> XArc<KV> {
-    use crate::test_util::{random_tmp_dir, tracing_log};
+    use crate::test_util::random_tmp_dir;
     tracing_log();
     let dir = random_tmp_dir();
     let kv = KV::open(get_test_option(&dir)).await;
