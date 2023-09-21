@@ -9,7 +9,7 @@ use crate::types::{ArcMx, Channel, Closer, TArcRW, XArc, XWeak};
 use crate::value_log::{
     Entry, EntryType, MetaBit, Request, ValueLogCore, ValuePointer, MAX_KEY_SIZE,
 };
-use crate::y::{async_sync_directory, create_synced_file, Encode, Result, ValueStruct};
+use crate::y::{async_sync_directory, create_synced_file, Encode, Result, sync_directory, ValueStruct};
 use crate::Error::{NotFound, Unexpected};
 use crate::{
     hex_str, Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager, UniIterator,
@@ -112,7 +112,7 @@ unsafe impl Sync for KV {}
 
 impl Drop for KV {
     fn drop(&mut self) {
-        info!("Drop kv");
+        warn!("Drop kv");
     }
 }
 

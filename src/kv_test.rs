@@ -575,7 +575,7 @@ async fn kv_iterator_basic() {
         let mut idx = 5030;
         let start = bkey(idx);
         let itr = kv.new_iterator(opt).await;
-        itr.seek(&start).await.unwrap();
+        let seek_got = itr.seek(&start).await.unwrap();
         while let Some(item) = itr.peek().await {
             let item = item.read().await;
             assert_eq!(hex_str(&bkey(idx)), hex_str(item.key()));
@@ -587,6 +587,55 @@ async fn kv_iterator_basic() {
             itr.next().await;
         }
     }
+}
+
+#[tokio::test]
+async fn t_kv_load() {
+    tracing_log();
+    let start = SystemTime::now();
+    let kv = build_kv().await;
+
+    let n = 10000;
+
+    let bkey = |i: usize| format!("{:09}", i).as_bytes().to_vec();
+    let bvalue = |i: usize| format!("{:025}", i).as_bytes().to_vec();
+    let entries = (0..n)
+        .into_iter()
+        .map(|i| (bkey(i), bvalue(i)))
+        .map(|(key, value)| Entry::default().key(key).value(value).user_meta(1))
+        .collect::<Vec<_>>();
+    for entry in entries.iter() {
+        kv.set(entry.key.clone(), entry.value.clone(), 0)
+            .await
+            .unwrap();
+    }
+
+    assert!(kv.must_lc().validate().is_ok());
+
+    kv.close().await.unwrap();
+    let mut fids = kv.must_lc().get_all_fids();
+    let dir = kv.opt.dir.clone();
+
+    // Check that files are garbage collected.
+    let mut disk_fids = crate::table::table::get_id_map(dir.as_str())
+        .into_iter()
+        .collect::<Vec<_>>();
+    fids.sort();
+    disk_fids.sort();
+    assert_eq!(fids, disk_fids);
+}
+
+#[tokio::test]
+async fn t_kv_iterator_deleted() {
+    tracing_log();
+    let start = SystemTime::now();
+    let kv = build_kv().await;
+    kv.set(b"key1".to_vec(), b"Value1".to_vec(), 0x00).await.unwrap();
+    kv.set(b"key2".to_vec(), b"Value2".to_vec(), 0x00).await.unwrap();
+
+    let mut opt = IteratorOptions::default();
+    opt.pre_fetch_size = 10;
+    let itr = kv.new_iterator(opt).await;
 }
 
 async fn build_kv() -> XArc<KV> {

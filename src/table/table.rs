@@ -144,23 +144,25 @@ impl TableCore {
         let table_ref = Table::new(table);
         let biggest = {
             let iter1 = super::iterator::IteratorImpl::new(table_ref.clone(), true);
-            defer! {iter1.close()};
+            defer! {iter1.close()}
+            ;
             iter1
                 .rewind()
                 .map(|item| item.key().to_vec())
                 .or_else(|| Some(vec![]))
         }
-        .unwrap();
+            .unwrap();
 
         let smallest = {
             let iter1 = super::iterator::IteratorImpl::new(table_ref.clone(), false);
-            defer! {iter1.close()};
+            defer! {iter1.close()}
+            ;
             iter1
                 .rewind()
                 .map(|item| item.key().to_vec())
                 .or_else(|| Some(vec![]))
         }
-        .unwrap();
+            .unwrap();
         let mut tc = table_ref.to_inner().unwrap();
         tc.biggest = biggest;
         tc.smallest = smallest;
@@ -342,7 +344,7 @@ impl TableCore {
                 "Unable to load file in memory, Table faile: {}",
                 self.filename()
             )
-            .into());
+                .into());
         }
         // todo stats
         self._mmap = Some(_mmap);
@@ -364,15 +366,16 @@ impl Drop for TableCore {
                 .expect("failed to mmap")
         }
         if _ref == 1 {
+            let sz = self.fd.metadata().unwrap().len();
             // It's necessary to delete windows files
             // This is very important to let the FS know that the file is deleted.
-            // #[cfg(not(test))]
+            //#[cfg(not(test))]
             self.fd.set_len(0).expect("can not truncate file to 0");
-            // #[cfg(not(test))]
+            //#[cfg(not(test))]
             remove_file(Path::new(&self.file_name)).expect("fail to remove file");
             warn!(
-                "Drop table: {}, reference: {}, disk: {}",
-                self.id, _ref, self.file_name
+                "Drop table: {}, sz:{}, reference: {}, disk: {}",
+                self.id, sz, _ref, self.file_name
             );
         }
     }

@@ -271,6 +271,7 @@ impl IteratorExt {
         let itr = Self::new(kv, itr, opt);
         Box::new(itr)
     }
+
     // Seek to the provided key if present. If absent, if would seek to the next smallest key
     // greater than provided if iterating in the forward direction. Behavior would be reversed is
     // iterating backwards.
@@ -282,6 +283,7 @@ impl IteratorExt {
             if el.key().starts_with(_BADGER_PREFIX) {
                 continue;
             }
+            break;
         }
         self.pre_fetch().await;
         self.item.read().clone()

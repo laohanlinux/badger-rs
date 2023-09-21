@@ -161,6 +161,19 @@ impl LevelsController {
         self.cleanup_levels()
     }
 
+    pub(crate) fn get_all_fids(&self) -> Vec<u64> {
+        let file_ids = self
+            .levels
+            .iter()
+            .map(|lc| {
+                let tb = lc.tables.read();
+                tb.iter().map(|tb| tb.id()).collect::<Vec<_>>()
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        file_ids
+    }
+
     // returns the found value if any. If not found, we return nil.
     pub(crate) fn get(&self, key: &[u8]) -> Option<ValueStruct> {
         // It's important that we iterate the levels from 0 on upward.  The reason is, if we iterated
@@ -424,7 +437,7 @@ impl LevelsController {
 
     // async to add level0 table
     pub(crate) async fn add_level0_table(&self, table: Table) -> Result<()> {
-        defer! {info!("Finish add level0 table")}
+        defer! {warn!("Finish add level0 table, fid: {}", table.id())}
         // We update the manifest _before_ the table becomes part of a levelHandler, because at that
         // point it could get used in some compaction.  This ensures the manifest file gets updated in
         // the proper order. (That means this update happens before that of some compaction which
