@@ -630,12 +630,80 @@ async fn t_kv_iterator_deleted() {
     tracing_log();
     let start = SystemTime::now();
     let kv = build_kv().await;
-    kv.set(b"key1".to_vec(), b"Value1".to_vec(), 0x00).await.unwrap();
-    kv.set(b"key2".to_vec(), b"Value2".to_vec(), 0x00).await.unwrap();
+    kv.set(b"Key1".to_vec(), b"Value1".to_vec(), 0x00)
+        .await
+        .unwrap();
+    kv.set(b"Key2".to_vec(), b"Value2".to_vec(), 0x00)
+        .await
+        .unwrap();
 
     let mut opt = IteratorOptions::default();
     opt.pre_fetch_size = 10;
     let itr = kv.new_iterator(opt).await;
+    let mut wb = vec![];
+    let prefix = b"Key";
+    itr.seek(prefix).await;
+    while let Some(item) = itr.peek().await {
+        let key = item.read().await.key().to_vec();
+        if !key.starts_with(prefix) {
+            break;
+        }
+        let entry = Entry::default().key(key).meta(MetaBit::BIT_DELETE.bits());
+        wb.push(entry);
+        itr.next().await;
+    }
+    assert_eq!(2, wb.len());
+    let ret = kv.batch_set(wb).await;
+    for res in &ret {
+        assert!(res.is_ok());
+    }
+
+    for prefetch in [true, false] {
+        let mut opt = IteratorOptions::default();
+        opt.pre_fetch_values = prefetch;
+        let idx_it = kv.new_iterator(opt).await;
+        let mut est_size = 0;
+        let mut idx_keys = vec![];
+        idx_it.seek(prefix).await;
+        while let Some(item) = idx_it.peek().await {
+            let item = item.read().await;
+            let key = item.key().to_vec();
+            est_size += item.estimated_size();
+            if !key.starts_with(prefix) {
+                break;
+            }
+
+            idx_keys.push(hex_str(&key));
+            info!("{}", item);
+            idx_it.next().await;
+        }
+
+        assert_eq!(0, idx_keys.len());
+        assert_eq!(0, est_size);
+    }
+}
+
+#[tokio::test]
+async fn t_delete_without_sync_write() {
+    tracing_log();
+    let start = SystemTime::now();
+    let kv = build_kv().await;
+    let key = b"k1".to_vec();
+    kv.set(
+        key.clone(),
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890".to_vec(),
+        0x00,
+    )
+    .await
+    .unwrap();
+    let opt = kv.opt.clone();
+    kv.delete(&key).await.unwrap();
+    kv.close().await.expect("TODO: panic message");
+    drop(kv);
+    // Reopen kv, it should failed
+    {
+        KV::open(opt).await.unwrap();
+    }
 }
 
 async fn build_kv() -> XArc<KV> {

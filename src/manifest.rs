@@ -6,7 +6,7 @@ use crate::y::{hex_str, is_eof, open_existing_synced_file, sync_directory};
 use crate::Error::{BadMagic, Unexpected};
 use crate::Result;
 use drop_cell::defer;
-use log::info;
+use log::{info, warn};
 
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
@@ -453,6 +453,7 @@ pub(crate) async fn help_open_or_create_manifest_file(
             return Err(err);
         }
         // open exist Manifest
+        warn!("not manifest file: {}", dir);
         let mt = TArcRW::new(RwLock::new(Manifest::new()));
         let (fp, net_creations) = mt.read().await.help_rewrite(dir).await?;
         assert_eq!(net_creations, 0);
