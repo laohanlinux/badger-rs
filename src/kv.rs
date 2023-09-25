@@ -235,7 +235,7 @@ impl KV {
             Ok(item) => item,
         };
         let value = &item.value;
-        assert!(item.value.is_empty() || item.value == _HEAD.to_vec());
+        assert!(item.value.is_empty() || item.value == _HEAD.to_vec(), "got value {:?}", item);
         // lastUsedCasCounter will either be the value stored in !badger!head, or some subsequently
         // written value log entry that we replay.  (Subsequent value log entries might be _less_
         // than lastUsedCasCounter, if there was value log gc so we have to max() values while
@@ -363,7 +363,7 @@ impl KV {
     pub(crate) fn _get(&self, key: &[u8]) -> Result<ValueStruct> {
         let p = crossbeam_epoch::pin();
         let tables = self.get_mem_tables(&p);
-        // Must decrefernce skiplist
+        // Must dereference skip list
         let decref_tables = || {
             tables
                 .iter()

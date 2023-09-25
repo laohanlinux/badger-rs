@@ -282,7 +282,7 @@ impl Manifest {
     /// truncated at that point before further appends are made (if there is a partial entry after
     /// that). In normal conditions, trunc_offset is the file size.
     pub async fn replay_manifest_file(fp: &mut tokio::fs::File) -> Result<(Manifest, usize)> {
-        let mut magic = vec![0u8; 4];
+        let mut magic = vec![0; 4];
         if fp.read(&mut magic).await? != 4 {
             return Err(BadMagic);
         }
@@ -348,6 +348,7 @@ impl Manifest {
         let crc32 = crc32fast::hash(&*mf_buffer);
         wt.write_u32(crc32).await?;
         wt.write_all(&*mf_buffer).await?;
+        wt.flush().await?;
         fp.write_all(&*wt.into_inner()).await?;
         fp.flush().await?;
         fp.sync_all().await?;
@@ -444,16 +445,15 @@ pub(crate) async fn help_open_or_create_manifest_file(
     deletions_threshold: u32,
 ) -> Result<ManifestFile> {
     let fpath = Path::new(dir).join(MANIFEST_FILENAME);
-    let fpath = fpath.to_str();
+    let fpath = fpath.to_str().unwrap();
     // We explicitly sync in add_changes, outside the lock.
-    let fp = open_existing_synced_file(fpath.unwrap(), true);
+    let fp = open_existing_synced_file(fpath, true);
     if fp.is_err() {
         let err = fp.unwrap_err();
         if !err.is_io_existing() {
             return Err(err);
         }
         // open exist Manifest
-        warn!("not manifest file: {}", dir);
         let mt = TArcRW::new(RwLock::new(Manifest::new()));
         let (fp, net_creations) = mt.read().await.help_rewrite(dir).await?;
         assert_eq!(net_creations, 0);
@@ -465,9 +465,9 @@ pub(crate) async fn help_open_or_create_manifest_file(
         };
         return Ok(mf);
     }
-    let mut fp = fp.unwrap();
-    let mut fp = tokio::fs::File::from_std(fp);
+    let mut fp = tokio::fs::File::from_std(fp.unwrap());
     let (mf, trunc_offset) = Manifest::replay_manifest_file(&mut fp).await?;
+    warn!("Succeed to replay manifest file, trunc offset: {}", trunc_offset);
     // Truncate file so we don't have a half-written entry at the end.
     fp.set_len(trunc_offset as u64).await?;
     fp.seek(SeekFrom::Start(0)).await?;

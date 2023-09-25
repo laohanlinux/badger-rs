@@ -280,6 +280,7 @@ async fn t_kv_cas() {
 
 #[tokio::test]
 async fn t_kv_get() {
+    tracing_log();
     let kv = build_kv().await;
     kv.set(b"key1".to_vec(), b"value1".to_vec(), 0x08)
         .await
@@ -558,16 +559,6 @@ async fn kv_iterator_basic() {
             itr.next().await;
         }
         assert_eq!(count, entries.len());
-        // use tokio_stream::StreamExt;
-        // let mut itr = kv.new_std_iterator(opt).await;
-        // let mut itr = std::pin::pin!(itr);
-        // let mut n = 0;
-        // while let Some(item) = itr.next().await {
-        //    n += 1;
-        //  warn!("====>>>>, {}", n);
-        // let item = item.read().await;
-        // warn!("====>>>>{}", hex_str(item.key()));
-        //}
     }
 
     {
@@ -698,6 +689,7 @@ async fn t_delete_without_sync_write() {
     .unwrap();
     let opt = kv.opt.clone();
     kv.delete(&key).await.unwrap();
+    assert!(kv.get_with_ext(&key).await.is_err());
     kv.close().await.expect("TODO: panic message");
     drop(kv);
     // Reopen kv, it should failed

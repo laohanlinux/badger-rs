@@ -11,7 +11,7 @@ use crate::{
 
 use atomic::Atomic;
 
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 
 use std::pin::{pin, Pin};
@@ -20,6 +20,7 @@ use log::{error, warn};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
+use thiserror::__private::AsDisplay;
 use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -48,6 +49,17 @@ pub(crate) struct KVItemInner {
 }
 
 impl Display for KVItemInner {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("kv")
+            .field("key", &hex_str(&self.key))
+            .field("meta", &self.meta)
+            .field("user_meta", &self.user_meta)
+            .field("cas", &self.counter())
+            .finish()
+    }
+}
+
+impl Debug for KVItemInner {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("kv")
             .field("key", &hex_str(&self.key))
