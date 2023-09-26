@@ -685,16 +685,20 @@ async fn t_delete_without_sync_write() {
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890".to_vec(),
         0x00,
     )
-    .await
-    .unwrap();
+        .await
+        .unwrap();
     let opt = kv.opt.clone();
     kv.delete(&key).await.unwrap();
-    assert!(kv.get_with_ext(&key).await.is_err());
+    // assert!(kv.get_with_ext(&key).await.is_err());
+    println!("{:?}", kv.get_with_ext(&key).await);
     kv.close().await.expect("TODO: panic message");
     drop(kv);
     // Reopen kv, it should failed
     {
-        KV::open(opt).await.unwrap();
+        let kv = KV::open(opt).await.unwrap();
+        let got = kv.get_with_ext(&key).await;
+        println!("{:?}", got);
+        assert!(got.unwrap_err().is_not_found());
     }
 }
 

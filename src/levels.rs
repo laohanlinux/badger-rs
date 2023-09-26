@@ -184,19 +184,6 @@ impl LevelsController {
         for h in self.levels.iter() {
             h.lock_shared();
             if let Some(item) = h.get(key) {
-                // #[cfg(test)]
-                // {
-                //     if item.key() != key {
-                //         error!("{} not equal {}", hex_str(key), hex_str(item.key()));
-                //     }
-                //     assert_eq!(
-                //         key,
-                //         item.key(),
-                //         "{} not equal {}",
-                //         hex_str(key),
-                //         hex_str(item.key())
-                //     );
-                // }
                 h.unlock_shared();
                 return Some(item.value().clone());
             }

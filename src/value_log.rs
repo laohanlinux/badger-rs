@@ -1179,3 +1179,16 @@ struct PickVlogsGuardsReadLock<'a> {
     vlogs: tokio::sync::RwLockReadGuard<'a, HashMap<u32, TArcRW<LogFile>>>,
     fids: Vec<u32>,
 }
+
+#[test]
+fn t_value_vptr_size() {
+
+    let mut vpr = ValuePointer::default();
+    vpr.len = 75;
+    vpr.fid = 0;
+    vpr.offset = 0;
+    let mut buffer = std::io::Cursor::new(vec![0u8; ValuePointer::value_pointer_encoded_size()]);
+    let sz = vpr.enc(&mut buffer).unwrap();
+    println!("{}", sz);
+    println!("{:?}", buffer.into_inner());
+}

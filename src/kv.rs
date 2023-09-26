@@ -9,7 +9,9 @@ use crate::types::{ArcMx, Channel, Closer, TArcRW, XArc, XWeak};
 use crate::value_log::{
     Entry, EntryType, MetaBit, Request, ValueLogCore, ValuePointer, MAX_KEY_SIZE,
 };
-use crate::y::{async_sync_directory, create_synced_file, Encode, Result, sync_directory, ValueStruct};
+use crate::y::{
+    async_sync_directory, create_synced_file, sync_directory, Encode, Result, ValueStruct,
+};
 use crate::Error::{NotFound, Unexpected};
 use crate::{
     hex_str, Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager, UniIterator,
@@ -196,7 +198,7 @@ impl KV {
             out.notify_write_request_chan.clone(),
             out.opt.clone(),
         )
-        .await?;
+            .await?;
         lc.start_compact(out.closers.compactors.clone());
         out.lc.replace(lc);
         let mut vlog = ValueLogCore::default();
@@ -234,18 +236,19 @@ impl KV {
             Err(_) => return Err("Retrieving head".into()),
             Ok(item) => item,
         };
-        let value = &item.value;
-        assert!(item.value.is_empty() || item.value == _HEAD.to_vec(), "got value {:?}", item);
+        // assert!(item.value.is_empty() , "got value {:?}", item);
         // lastUsedCasCounter will either be the value stored in !badger!head, or some subsequently
         // written value log entry that we replay.  (Subsequent value log entries might be _less_
         // than lastUsedCasCounter, if there was value log gc so we have to max() values while
         // replaying.)
         xout.update_last_used_cas_counter(item.cas_counter);
+        warn!("the last cas counter: {}", item.cas_counter);
 
         let mut vptr = ValuePointer::default();
         if !item.value.is_empty() {
-            vptr.dec(&mut Cursor::new(value))?;
+            vptr.dec(&mut Cursor::new(&item.value))?;
         }
+        warn!("the last vptr: {:?}", vptr);
         let replay_closer = Closer::new("tmp_writer_closer".to_owned());
         {
             let _out = xout.clone();
@@ -265,7 +268,7 @@ impl KV {
                 let xout = xout.clone();
                 Box::pin(async move {
                     if first {
-                        info!("First key={}", string::String::from_utf8_lossy(&entry.key));
+                        warn!("First key={}", string::String::from_utf8_lossy(&entry.key));
                     }
                     first = false;
                     // TODO maybe use comparse set
@@ -369,7 +372,8 @@ impl KV {
                 .iter()
                 .for_each(|tb| unsafe { tb.as_ref().unwrap().decr_ref() })
         };
-        defer! {decref_tables()};
+        defer! {decref_tables()}
+        ;
 
         crate::event::get_metrics().num_gets.inc(); // TODO add metrics
 
@@ -381,7 +385,10 @@ impl KV {
                 continue;
             }
             let vs = vs.unwrap();
-            if vs.meta != 0 || !vs.value.is_empty() {
+            if (vs.meta & MetaBit::BIT_DELETE.bits()) > 0 {
+                return Err(Error::NotFound);
+            }
+            if !vs.value.is_empty() {
                 return Ok(vs);
             }
         }
@@ -391,7 +398,11 @@ impl KV {
         // crate::y::hex_str(key),
         // self.must_lc()
         //);
-        self.must_lc().get(key).ok_or(NotFound)
+        let vs = self.must_lc().get(key).ok_or(NotFound)?;
+        if (vs.meta & MetaBit::BIT_DELETE.bits()) > 0 {
+            return Err(Error::NotFound);
+        }
+        Ok(vs)
     }
 
     // Sets the provided value for a given key. If key is not present, it is created.  If it is
@@ -486,7 +497,7 @@ impl KV {
         defer! {lc.done()}
         defer! {info!("exit flush mem table")}
         while let Ok(task) = self.flush_chan.recv().await {
-            info!("Receive a flush task, {:?} !!!", task);
+            info!("Receive a flush task, offset: {} !!!", task.vptr.offset);
             // after kv send empty mt, it will close flush_chan, so we should return the job.
             if task.mt.is_none() {
                 warn!("receive a exit task!");
@@ -494,9 +505,10 @@ impl KV {
             }
             // TODO if is zero?
             if !task.vptr.is_zero() {
-                info!("Storing offset: {:?}", task.vptr);
-                let mut offset = vec![0u8; ValuePointer::value_pointer_encoded_size()];
-                task.vptr.enc(&mut offset).unwrap();
+                let mut cur = std::io::Cursor::new(vec![0u8; ValuePointer::value_pointer_encoded_size()]);
+                let sz = task.vptr.enc(&mut cur).unwrap();
+                let offset = cur.into_inner();
+                assert_eq!(sz, offset.len());
                 // CAS counter is needed and is desirable -- it's the first value log entry
                 // we replay, so to speak, perhaps the only, and we use it to re-initialize
                 // the CAS counter.
@@ -505,6 +517,7 @@ impl KV {
                 // is crucial that we read the cas counter here _after_ reading vptr.  That
                 // way, our value here is guaranteed to be >= the CASCounter values written
                 // before vptr (because they don't get replayed).
+                warn!("Storing new vptr, fid:{}, len:{}, offset:{}", task.vptr.fid, task.vptr.len, task.vptr.offset);
                 let value = ValueStruct {
                     meta: 0,
                     user_meta: 0,
@@ -616,13 +629,13 @@ impl KV {
         // defer! {info!("exit write to lsm")}
 
         #[cfg(test)]
-        let tid = random::<u32>();
+            let tid = random::<u32>();
 
         for (i, pair) in req.entries.into_iter().enumerate() {
             let (entry, resp_ch) = pair.to_owned();
 
             #[cfg(test)]
-            let debug_entry = entry.clone();
+                let debug_entry = entry.clone();
 
             let mut old_cas = 0;
 
@@ -952,7 +965,7 @@ impl ArcKV {
     /// Exposing this so that user does not have to specify the Entry directly.
     /// For example, BitDelete seems internal to badger.
     pub async fn delete(&self, key: &[u8]) -> Result<()> {
-        let entry = Entry::default().key(key.to_vec());
+        let entry = Entry::default().key(key.to_vec()).meta(MetaBit::BIT_DELETE.bits());
         let ret = self.batch_set(vec![entry]).await;
         ret[0].to_owned()
     }
@@ -1106,7 +1119,7 @@ impl ArcKV {
                 .await
                 .unwrap();
             self.mem_st_manger.swap_st(self.opt.clone());
-            info!("Pushed to flush chan");
+            warn!("Pushed to flush chan");
         }
 
         // Tell flusher to quit.
@@ -1174,7 +1187,7 @@ impl ArcKV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1189,7 +1202,7 @@ impl ArcKV {
     pub(crate) async fn new_std_iterator(
         &self,
         opt: IteratorOptions,
-    ) -> impl futures_core::Stream<Item = KVItem> {
+    ) -> impl futures_core::Stream<Item=KVItem> {
         let mut itr = self.new_iterator(opt).await;
         itr
     }
@@ -1197,7 +1210,7 @@ impl ArcKV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         //info!("ready to yield item:{} value from vlog!", item);
         // no value

@@ -20,7 +20,6 @@ use log::{error, warn};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
-use thiserror::__private::AsDisplay;
 use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
