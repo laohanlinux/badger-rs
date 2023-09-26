@@ -143,6 +143,13 @@ impl Error {
             _ => false,
         }
     }
+
+    pub fn is_exists(&self) -> bool {
+        match self {
+            Error::ValueKeyExists => true,
+            _ => false,
+        }
+    }
 }
 
 impl From<&'static str> for Error {

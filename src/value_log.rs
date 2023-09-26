@@ -38,15 +38,13 @@ use crate::log_file::LogFile;
 use crate::options::Options;
 
 use crate::types::{Channel, Closer, TArcRW};
-use crate::y::{
-    create_synced_file, hex_str, open_existing_synced_file, sync_directory, Decode, Encode,
-};
+use crate::y::{create_synced_file, open_existing_synced_file, sync_directory, Decode, Encode};
 use crate::Error::Unexpected;
-use crate::{Error, Result, EMPTY_SLICE};
+use crate::{hex_str, Error, Result, EMPTY_SLICE};
 
-/// Values have their first byte being byteData or byteDelete. This helps us distinguish between
-/// a key that has never been seen and a key that has been explicitly deleted.
 bitflags! {
+    /// Values have their first byte being byteData or byteDelete. This helps us distinguish between
+    /// a key that has never been seen and a key that has been explicitly deleted.
     pub struct MetaBit: u8{
         /// Set if the key has been deleted.
         const BIT_DELETE = 1;
@@ -1182,7 +1180,6 @@ struct PickVlogsGuardsReadLock<'a> {
 
 #[test]
 fn t_value_vptr_size() {
-
     let mut vpr = ValuePointer::default();
     vpr.len = 75;
     vpr.fid = 0;

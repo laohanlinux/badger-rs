@@ -1,12 +1,9 @@
 use awaitgroup::WaitGroup;
 use drop_cell::defer;
-use itertools::Itertools;
-use log::kv::ToValue;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use std::collections::HashSet;
 use std::env::temp_dir;
 use std::io::{Read, Write};
-use std::process::id;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
 use tokio::io::AsyncWriteExt;
@@ -421,13 +418,7 @@ async fn t_kv_get_more() {
 
     for entry in &entries {
         let got = kv.get(entry.key.as_ref()).await;
-        assert!(
-            got.is_err(),
-            "{}, value is =>{}",
-            hex_str(entry.key.as_ref()),
-            hex_str(&got.unwrap()),
-        );
-        //let value = got.into_err();
+        assert!(got.unwrap_err().is_not_found());
     }
 }
 
@@ -436,8 +427,7 @@ async fn t_kv_get_more() {
 #[tokio::test]
 async fn t_kv_exists_more() {
     tracing_log();
-
-    let mut start = SystemTime::now();
+    let start = SystemTime::now();
     let kv = build_kv().await;
 
     let n = 10000;
@@ -507,7 +497,6 @@ async fn t_kv_exists_more() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kv_iterator_basic() {
     tracing_log();
-    let start = SystemTime::now();
     let kv = build_kv().await;
 
     let n = 10000;
@@ -566,7 +555,7 @@ async fn kv_iterator_basic() {
         let mut idx = 5030;
         let start = bkey(idx);
         let itr = kv.new_iterator(opt).await;
-        let seek_got = itr.seek(&start).await.unwrap();
+        let _ = itr.seek(&start).await.unwrap();
         while let Some(item) = itr.peek().await {
             let item = item.read().await;
             assert_eq!(hex_str(&bkey(idx)), hex_str(item.key()));
@@ -583,7 +572,6 @@ async fn kv_iterator_basic() {
 #[tokio::test]
 async fn t_kv_load() {
     tracing_log();
-    let start = SystemTime::now();
     let kv = build_kv().await;
 
     let n = 10000;
@@ -619,7 +607,6 @@ async fn t_kv_load() {
 #[tokio::test]
 async fn t_kv_iterator_deleted() {
     tracing_log();
-    let start = SystemTime::now();
     let kv = build_kv().await;
     kv.set(b"Key1".to_vec(), b"Value1".to_vec(), 0x00)
         .await
@@ -665,7 +652,6 @@ async fn t_kv_iterator_deleted() {
             }
 
             idx_keys.push(hex_str(&key));
-            info!("{}", item);
             idx_it.next().await;
         }
 
@@ -677,7 +663,6 @@ async fn t_kv_iterator_deleted() {
 #[tokio::test]
 async fn t_delete_without_sync_write() {
     tracing_log();
-    let start = SystemTime::now();
     let kv = build_kv().await;
     let key = b"k1".to_vec();
     kv.set(
@@ -685,21 +670,47 @@ async fn t_delete_without_sync_write() {
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890".to_vec(),
         0x00,
     )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
     let opt = kv.opt.clone();
     kv.delete(&key).await.unwrap();
-    // assert!(kv.get_with_ext(&key).await.is_err());
-    println!("{:?}", kv.get_with_ext(&key).await);
     kv.close().await.expect("TODO: panic message");
     drop(kv);
     // Reopen kv, it should failed
     {
         let kv = KV::open(opt).await.unwrap();
         let got = kv.get_with_ext(&key).await;
-        println!("{:?}", got);
         assert!(got.unwrap_err().is_not_found());
     }
+}
+
+#[tokio::test]
+async fn t_kv_set_if_absent() {
+    tracing_log();
+    let kv = build_kv().await;
+    let key = b"k1".to_vec();
+    let got = kv
+        .set_if_ab_sent(key.clone(), b"value".to_vec(), 0x00)
+        .await;
+    assert!(got.is_ok());
+
+    let got = kv
+        .set_if_ab_sent(key.clone(), b"value2".to_vec(), 0x00)
+        .await;
+    assert!(got.unwrap_err().is_exists());
+}
+
+#[tokio::test]
+async fn t_kv_pid_file() {
+    tracing_log();
+    let kv1 = build_kv().await;
+    let kv2 = KV::open(kv1.opt.clone()).await;
+    let err = kv2.unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("Another program process is using the Badger databse"));
+    kv1.close().await.unwrap();
+    drop(kv1);
 }
 
 async fn build_kv() -> XArc<KV> {

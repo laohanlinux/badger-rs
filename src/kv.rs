@@ -118,6 +118,12 @@ impl Drop for KV {
     }
 }
 
+impl std::fmt::Debug for KV {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        return Ok(());
+    }
+}
+
 pub struct BoxKV {
     pub kv: *const KV,
 }
@@ -142,22 +148,29 @@ impl KV {
         if !(opt.value_log_file_size <= 2 << 30 && opt.value_log_file_size >= 1 << 20) {
             return Err(Error::ValueLogSize);
         }
-        let manifest_file = open_or_create_manifest_file(opt.dir.as_str()).await?;
-
         let dir_lock_guard = OpenOptions::new()
             .write(true)
             .append(true)
             .create(true)
             .open(Path::new(opt.dir.as_str()).join("dir_lock_guard.lock"))?;
+        dir_lock_guard.try_lock_exclusive().map_err(|_| {
+            crate::Error::Unexpected(
+                "Another program process is using the Badger databse".to_owned(),
+            )
+        })?;
 
-        dir_lock_guard.lock_exclusive()?;
         let value_dir_guard = OpenOptions::new()
             .write(true)
             .append(true)
             .create(true)
             .open(Path::new(opt.value_dir.as_str()).join("value_dir_guard.lock"))?;
+        value_dir_guard.try_lock_exclusive().map_err(|_| {
+            crate::Error::Unexpected(
+                "Anthoer program process is using the Bader databse".to_owned(),
+            )
+        })?;
+        let manifest_file = open_or_create_manifest_file(opt.dir.as_str()).await?;
 
-        value_dir_guard.lock_exclusive()?;
         let closers = Closers {
             update_size: Closer::new("update_size".to_owned()),
             compactors: Closer::new("compactors".to_owned()),
@@ -198,7 +211,7 @@ impl KV {
             out.notify_write_request_chan.clone(),
             out.opt.clone(),
         )
-            .await?;
+        .await?;
         lc.start_compact(out.closers.compactors.clone());
         out.lc.replace(lc);
         let mut vlog = ValueLogCore::default();
@@ -372,8 +385,7 @@ impl KV {
                 .iter()
                 .for_each(|tb| unsafe { tb.as_ref().unwrap().decr_ref() })
         };
-        defer! {decref_tables()}
-        ;
+        defer! {decref_tables()};
 
         crate::event::get_metrics().num_gets.inc(); // TODO add metrics
 
@@ -505,7 +517,8 @@ impl KV {
             }
             // TODO if is zero?
             if !task.vptr.is_zero() {
-                let mut cur = std::io::Cursor::new(vec![0u8; ValuePointer::value_pointer_encoded_size()]);
+                let mut cur =
+                    std::io::Cursor::new(vec![0u8; ValuePointer::value_pointer_encoded_size()]);
                 let sz = task.vptr.enc(&mut cur).unwrap();
                 let offset = cur.into_inner();
                 assert_eq!(sz, offset.len());
@@ -517,7 +530,10 @@ impl KV {
                 // is crucial that we read the cas counter here _after_ reading vptr.  That
                 // way, our value here is guaranteed to be >= the CASCounter values written
                 // before vptr (because they don't get replayed).
-                warn!("Storing new vptr, fid:{}, len:{}, offset:{}", task.vptr.fid, task.vptr.len, task.vptr.offset);
+                warn!(
+                    "Storing new vptr, fid:{}, len:{}, offset:{}",
+                    task.vptr.fid, task.vptr.len, task.vptr.offset
+                );
                 let value = ValueStruct {
                     meta: 0,
                     user_meta: 0,
@@ -629,13 +645,13 @@ impl KV {
         // defer! {info!("exit write to lsm")}
 
         #[cfg(test)]
-            let tid = random::<u32>();
+        let tid = random::<u32>();
 
         for (i, pair) in req.entries.into_iter().enumerate() {
             let (entry, resp_ch) = pair.to_owned();
 
             #[cfg(test)]
-                let debug_entry = entry.clone();
+            let debug_entry = entry.clone();
 
             let mut old_cas = 0;
 
@@ -965,7 +981,9 @@ impl ArcKV {
     /// Exposing this so that user does not have to specify the Entry directly.
     /// For example, BitDelete seems internal to badger.
     pub async fn delete(&self, key: &[u8]) -> Result<()> {
-        let entry = Entry::default().key(key.to_vec()).meta(MetaBit::BIT_DELETE.bits());
+        let entry = Entry::default()
+            .key(key.to_vec())
+            .meta(MetaBit::BIT_DELETE.bits());
         let ret = self.batch_set(vec![entry]).await;
         ret[0].to_owned()
     }
@@ -1187,7 +1205,7 @@ impl ArcKV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1202,7 +1220,7 @@ impl ArcKV {
     pub(crate) async fn new_std_iterator(
         &self,
         opt: IteratorOptions,
-    ) -> impl futures_core::Stream<Item=KVItem> {
+    ) -> impl futures_core::Stream<Item = KVItem> {
         let mut itr = self.new_iterator(opt).await;
         itr
     }
@@ -1210,7 +1228,7 @@ impl ArcKV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         //info!("ready to yield item:{} value from vlog!", item);
         // no value
