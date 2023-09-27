@@ -585,7 +585,7 @@ impl KV {
         let mut res = vec![Ok(()); entries.len()];
         let mut req = Request::default();
         let mut req_index = vec![];
-
+        // packet entries into internal request message and filter invalid entry.
         for (i, entry) in entries.into_iter().enumerate() {
             if entry.key.len() > MAX_KEY_SIZE {
                 res[i] = Err("Key too big".into());
@@ -608,6 +608,7 @@ impl KV {
                 warn!("send tasks to write, entries: {}, count:{}, max_batch_count:{}, size:{}, max_batch_count:{}", req.entries.len(), count, self.opt.max_batch_count, sz, self.opt.max_batch_size);
                 let cost = SystemTime::now();
                 let resp_ch = req.get_resp_channel();
+                // batch process requests
                 self.write_ch.send(req).await.unwrap();
                 {
                     count = 0;
@@ -626,6 +627,7 @@ impl KV {
             }
         }
 
+        // process remaining requests
         if !req.entries.is_empty() {
             let resp_ch = req.get_resp_channel();
             self.write_ch.send(req).await.unwrap();
@@ -771,18 +773,22 @@ impl KV {
     }
 
     async fn update_offset(&self, ptrs: &mut Vec<Arc<Atomic<Option<ValuePointer>>>>) {
+        #[cfg(test)]
+        warn!("Ready to update offset");
         let mut ptr = ValuePointer::default();
         for tmp_ptr in ptrs.iter().rev() {
-            let tmp_ptr = tmp_ptr.load(Ordering::Relaxed);
+            let tmp_ptr = tmp_ptr.load(Ordering::Acquire);
             if tmp_ptr.is_none() || tmp_ptr.unwrap().is_zero() {
                 continue;
             }
             ptr = tmp_ptr.unwrap();
-            info!("Update offset, value pointer: {:?}", ptr);
+            warn!("Update offset, value pointer: {:?}", ptr);
             break;
         }
 
         if ptr.is_zero() {
+            #[cfg(test)]
+            warn!("ptr is null");
             return;
         }
 
@@ -853,7 +859,7 @@ impl KV {
 
     fn must_vptr(&self) -> ValuePointer {
         let p = crossbeam_epoch::pin();
-        let ptr = self.vptr.load(Ordering::Relaxed, &p);
+        let ptr = self.vptr.load(Ordering::Acquire, &p);
         if ptr.is_null() {
             return ValuePointer::default();
         }
@@ -1120,14 +1126,8 @@ impl ArcKV {
         if !self.must_mt().empty() {
             info!("Flushing memtable!");
             let _ = self.share_lock.write().await;
-            let vptr = unsafe {
-                self.vptr
-                    .load(Ordering::Relaxed, &crossbeam_epoch::pin())
-                    .as_ref()
-                    .clone()
-                    .unwrap()
-                    .clone()
-            };
+            // TODO
+            let vptr = self.must_vptr();
             assert!(!self.mem_st_manger.mt_ref(&crossbeam_epoch::pin()).is_null());
             self.flush_chan
                 .send(FlushTask {

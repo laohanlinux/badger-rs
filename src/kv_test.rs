@@ -733,11 +733,14 @@ async fn t_kv_big_key_value_pairs() {
         .key(big_key.clone())
         .value(big_value.clone());
     let res = kv.batch_set(vec![entry1, entry2]).await;
-
     let first_res = res[0].clone();
     let second_res = res[1].clone();
     assert!(first_res.is_ok());
+    assert!(second_res.unwrap_err().to_string().starts_with("Key"));
 
+    // make sure e1 was actually set:
+    let item = kv.get(&small).await.unwrap();
+    assert_eq!(&item, &small);
     kv.close().await.unwrap();
 }
 
