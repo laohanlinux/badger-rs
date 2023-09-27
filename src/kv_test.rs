@@ -14,7 +14,7 @@ use tracing_subscriber::fmt::format;
 use crate::iterator::IteratorOptions;
 use crate::test_util::{push_log, remove_push_log, tracing_log};
 use crate::types::{TArcMx, XArc};
-use crate::value_log::{Entry, MetaBit};
+use crate::value_log::{Entry, MetaBit, MAX_KEY_SIZE};
 use crate::y::hex_str;
 use crate::{kv::KV, options::Options, Error};
 
@@ -711,6 +711,34 @@ async fn t_kv_pid_file() {
         .contains("Another program process is using the Badger databse"));
     kv1.close().await.unwrap();
     drop(kv1);
+}
+
+#[tokio::test]
+async fn t_kv_big_key_value_pairs() {
+    tracing_log();
+    let kv = build_kv().await;
+    let big_key = vec![0u8; MAX_KEY_SIZE + 1];
+    let big_value = vec![0u8; kv.opt.value_log_file_size as usize + 1];
+    let small = vec![0u8; 10];
+    let got = kv.set(big_key.clone(), small.clone(), 0x00).await;
+    let err = got.unwrap_err();
+    assert!(err.to_string().starts_with("Key"));
+
+    let got = kv.set(small.clone(), big_value.clone(), 0x00).await;
+    let err = got.unwrap_err();
+    assert!(err.to_string().starts_with("Value"));
+
+    let entry1 = Entry::default().key(small.clone()).value(small.clone());
+    let entry2 = Entry::default()
+        .key(big_key.clone())
+        .value(big_value.clone());
+    let res = kv.batch_set(vec![entry1, entry2]).await;
+
+    let first_res = res[0].clone();
+    let second_res = res[1].clone();
+    assert!(first_res.is_ok());
+
+    kv.close().await.unwrap();
 }
 
 async fn build_kv() -> XArc<KV> {
