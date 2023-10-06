@@ -16,7 +16,7 @@ use std::future::Future;
 
 use std::pin::{pin, Pin};
 
-use log::{error, warn};
+use log::warn;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};

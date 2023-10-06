@@ -744,6 +744,88 @@ async fn t_kv_big_key_value_pairs() {
     kv.close().await.unwrap();
 }
 
+#[tokio::test]
+async fn t_kv_iterator_prefetch_size() {
+    tracing_log();
+    let kv = build_kv().await;
+    let bkey = |i: usize| format!("{:09}", i).as_bytes().to_vec();
+    let bvalue = |i: usize| format!("{:025}", i).as_bytes().to_vec();
+
+    let n = 100;
+    let entries = (0..n)
+        .into_iter()
+        .map(|i| (bkey(i), bvalue(i)))
+        .map(|(key, value)| Entry::default().key(key).value(value).user_meta(1))
+        .collect::<Vec<_>>();
+    for entry in entries.iter() {
+        kv.set(entry.key.clone(), entry.value.clone(), 0)
+            .await
+            .unwrap();
+    }
+
+    for prefetch_size in [-10, 0, 1, 10] {
+        let mut opt = IteratorOptions::default();
+        opt.pre_fetch_values = true;
+        opt.pre_fetch_size = prefetch_size;
+        let itr = kv.new_iterator(opt).await;
+        itr.rewind().await;
+        let mut count = 0;
+        while itr.peek().await.is_some() {
+            count += 1;
+            itr.next().await;
+        }
+        assert_eq!(count, n);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn t_kv_get_set_race() {
+    use rand::{thread_rng, Rng};
+    tracing_log();
+    let mut rng = thread_rng();
+    let mut arr = [0u8; 4096];
+    rng.fill(&mut arr);
+    let kv = build_kv().await;
+    let mut wg = awaitgroup::WaitGroup::new();
+    let num_op = 1000;
+    let data = TArcMx::new(tokio::sync::Mutex::new(arr));
+
+    let worker = wg.worker();
+    let ndata = data.clone();
+    let mut key_ch = crate::types::Channel::new(1);
+    let key_tx = key_ch.tx();
+    {
+        let kv = kv.clone();
+        tokio::spawn(async move {
+            for i in 0..num_op {
+                let key = format!("{}", i);
+                let data = ndata.lock().await.clone().to_vec();
+                kv.set(key.clone().into_bytes(), data, 0x0).await.unwrap();
+                key_tx.send(key.into_bytes()).await.unwrap();
+                info!("Put Some");
+            }
+            worker.done();
+            key_tx.close();
+        });
+    }
+
+    let worker = wg.worker();
+    let key_rx = key_ch.rx();
+
+    {
+        let kv = kv.clone();
+        tokio::spawn(async move {
+            while let Ok(key) = key_rx.recv().await {
+                kv.get(&key).await.unwrap();
+                info!("Try again!");
+            }
+            worker.done();
+        });
+    }
+    wg.wait().await;
+    kv.close().await.expect("TODO: panic message");
+}
+
 async fn build_kv() -> XArc<KV> {
     use crate::test_util::random_tmp_dir;
     tracing_log();
