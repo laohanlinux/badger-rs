@@ -1,7 +1,7 @@
 use crate::iterator::PreFetchStatus::Prefetched;
 use crate::kv::_BADGER_PREFIX;
 use crate::types::{ArcRW, Channel, Closer, TArcMx, TArcRW};
-use crate::{hex_str, ValueStruct};
+use crate::{DB2, hex_str, ValueStruct};
 use crate::{
     kv::KV,
     types::XArc,

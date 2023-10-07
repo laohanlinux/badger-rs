@@ -124,7 +124,7 @@ impl std::fmt::Debug for KV {
     }
 }
 
-pub struct BoxKV {
+pub(crate) struct BoxKV {
     pub kv: *const KV,
 }
 
@@ -211,7 +211,7 @@ impl KV {
             out.notify_write_request_chan.clone(),
             out.opt.clone(),
         )
-        .await?;
+            .await?;
         lc.start_compact(out.closers.compactors.clone());
         out.lc.replace(lc);
         let mut vlog = ValueLogCore::default();
@@ -385,7 +385,8 @@ impl KV {
                 .iter()
                 .for_each(|tb| unsafe { tb.as_ref().unwrap().decr_ref() })
         };
-        defer! {decref_tables()};
+        defer! {decref_tables()}
+        ;
 
         crate::event::get_metrics().num_gets.inc(); // TODO add metrics
 
@@ -647,13 +648,13 @@ impl KV {
         // defer! {info!("exit write to lsm")}
 
         #[cfg(test)]
-        let tid = random::<u32>();
+            let tid = random::<u32>();
 
         for (i, pair) in req.entries.into_iter().enumerate() {
             let (entry, resp_ch) = pair.to_owned();
 
             #[cfg(test)]
-            let debug_entry = entry.clone();
+                let debug_entry = entry.clone();
 
             let mut old_cas = 0;
 
@@ -882,11 +883,397 @@ impl KV {
 
 pub type WeakKV = XWeak<KV>;
 
-pub type ArcKV = XArc<KV>;
 
-impl ArcKV {
+pub struct DB2(XArc<KV>);
+
+impl Clone for DB2 {
+    fn clone(&self) -> Self {
+        DB2(self.0.clone())
+    }
+}
+
+// impl DB2 {
+//     /// Async open a KV db
+//     pub async fn open(op: Options) -> Result<DB> {
+//         KV::open(op).await
+//     }
+//
+//     /// data size stats
+//     /// TODO
+//     pub async fn spawn_update_size(&self) {
+//         let lc = self.closers.update_size.spawn();
+//         defer! {lc.done()}
+//
+//         let mut tk = tokio::time::interval(tokio::time::Duration::from_secs(5 * 60));
+//         let dir = self.opt.dir.clone();
+//         let vdir = self.opt.value_dir.clone();
+//         loop {
+//             let c = lc.has_been_closed();
+//             tokio::select! {
+//                 _ = tk.tick() => {
+//                     info!("ready to update size");
+//                     // If value directory is different from dir, we'd have to do another walk.
+//                     let (_lsm_sz, _vlog_sz) = KV::walk_dir(dir.as_str()).await.unwrap();
+//                     if dir != vdir {
+//                          let (_, _vlog_sz) = KV::walk_dir(dir.as_str()).await.unwrap();
+//                     }
+//                 },
+//                 _ = c.recv() => {return;},
+//             }
+//         }
+//     }
+//
+//     pub async fn manifest_wl(&self) -> RwLockWriteGuard<'_, ManifestFile> {
+//         self.manifest.write().await
+//     }
+//
+//     /// Return a value that will async load value, if want not return value, should be `exists`
+//     pub async fn get(&self, key: &[u8]) -> Result<Vec<u8>> {
+//         let got = self._get(key)?;
+//         if got.meta == MetaBit::BIT_DELETE.bits() {
+//             return Err(Error::NotFound);
+//         }
+//         let inner = KVItemInner::new(key.to_vec(), got, self.clone());
+//         inner.get_value().await
+//     }
+//
+//     /// Set sets the provided value for a given key. If key is not present, it is created. If it is
+//     /// present, the existing value is overwritten with the one provided.
+//     /// Along with key and value, Set can also take an optional userMeta byte. This byte is stored
+//     /// alongside the key, and can be used as an aid to interpret the value or store other contextual
+//     /// bits corresponding to the key-value pair.
+//     pub async fn set(&self, key: Vec<u8>, value: Vec<u8>, user_meta: u8) -> Result<()> {
+//         self.to_ref().set(key, value, user_meta).await
+//     }
+//
+//     /// Sets value of key if key is not present.
+//     /// If it is present, it returns the key_exists error.
+//     /// TODO it should be atomic operate
+//     pub async fn set_if_ab_sent(&self, key: Vec<u8>, value: Vec<u8>, user_meta: u8) -> Result<()> {
+//         let exists = self.exists(&key).await?;
+//         // found the key, return key_exists
+//         if exists {
+//             return Err(Error::ValueKeyExists);
+//         }
+//         let entry = Entry::default()
+//             .key(key)
+//             .value(value)
+//             .user_meta(user_meta)
+//             .meta(MetaBit::BIT_SET_IF_ABSENT.bits());
+//         let ret = self.batch_set(vec![entry]).await;
+//         ret[0].to_owned()
+//     }
+//
+//     /// Return Ok(true) if key exists, Ok(false) if key not exists, Otherwise Err(err) if happen some error.
+//     pub async fn exists(&self, key: &[u8]) -> Result<bool> {
+//         return self._exists(key);
+//     }
+//
+//     /// Batch set entries, returns result sets
+//     pub async fn batch_set(&self, entries: Vec<Entry>) -> Vec<Result<()>> {
+//         self.to_ref().batch_set(entries).await
+//     }
+//
+//     /// Asynchronous version of CompareAndSet. It accepts a callback function
+//     /// which is called when the CompareAndSet completes. Any error encountered during execution is
+//     /// passed as an argument to the callback function.
+//     pub async fn compare_and_set(
+//         &self,
+//         key: Vec<u8>,
+//         value: Vec<u8>,
+//         cas_counter: u64,
+//     ) -> Result<()> {
+//         let entry = Entry::default()
+//             .key(key)
+//             .value(value)
+//             .cas_counter_check(cas_counter);
+//         let ret = self.batch_set(vec![entry]).await;
+//         ret[0].to_owned()
+//     }
+//
+//     /// Delete deletes a key.
+//     /// Exposing this so that user does not have to specify the Entry directly.
+//     /// For example, BitDelete seems internal to badger.
+//     pub async fn delete(&self, key: &[u8]) -> Result<()> {
+//         let entry = Entry::default()
+//             .key(key.to_vec())
+//             .meta(MetaBit::BIT_DELETE.bits());
+//         let ret = self.batch_set(vec![entry]).await;
+//         ret[0].to_owned()
+//     }
+//
+//     /// CompareAndDelete deletes a key ensuring that it has not been changed since last read.
+//     /// If existing key has different casCounter, this would not delete the key and return an error.
+//     pub async fn compare_and_delete(&self, key: Vec<u8>, cas_counter: u64) -> Result<()> {
+//         let entry = Entry::default().key(key).cas_counter_check(cas_counter);
+//         let ret = self.batch_set(vec![entry]).await;
+//         ret[0].to_owned()
+//     }
+//
+//     /// RunValueLogGC would trigger a value log garbage collection with no guarantees that a call would
+//     /// result in a space reclaim. Every run would in the best case rewrite only one log file. So,
+//     /// repeated calls may be necessary.
+//     ///
+//     /// The way it currently works is that it would randomly pick up a value log file, and sample it. If
+//     /// the sample shows that we can discard at least discardRatio space of that file, it would be
+//     /// rewritten. Else, an ErrNoRewrite error would be returned indicating that the GC didn't result in
+//     /// any file rewrite.
+//     ///
+//     /// We recommend setting discardRatio to 0.5, thus indicating that a file be rewritten if half the
+//     /// space can be discarded.  This results in a lifetime value log write amplification of 2 (1 from
+//     /// original write + 0.5 rewrite + 0.25 + 0.125 + ... = 2). Setting it to higher value would result
+//     /// in fewer space reclaims, while setting it to a lower value would result in more space reclaims at
+//     /// the cost of increased activity on the LSM tree. discardRatio must be in the range (0.0, 1.0),
+//     /// both endpoints excluded, otherwise an ErrInvalidRequest is returned.
+//     ///
+//     /// Only one GC is allowed at a time. If another value log GC is running, or KV has been closed, this
+//     /// would return an ErrRejected.
+//     ///
+//     /// Note: Every time GC is run, it would produce a spike of activity on the LSM tree.
+//     pub async fn run_value_log_gc(&self, discard_ratio: f64) -> Result<()> {
+//         if discard_ratio >= 1.0 || discard_ratio <= 0.0 {
+//             return Err(Error::ValueInvalidRequest);
+//         }
+//         self.must_vlog().trigger_gc(discard_ratio).await
+//     }
+//
+//     async fn do_writes(&self, lc: Closer, without_close_write_ch: bool) {
+//         info!("start do writes task!");
+//         defer! {info!("exit writes task!")}
+//         defer! {lc.done()}
+//         // TODO add metrics
+//         let has_been_close = lc.has_been_closed();
+//         let write_ch = self.write_ch.clone();
+//         let reqs = ArcMx::<Vec<Request>>::new(Mutex::new(vec![]));
+//
+//         let mut wait_time = tokio::time::interval(Duration::from_millis(10));
+//         let to_reqs = || {
+//             let to_reqs = reqs
+//                 .lock()
+//                 .clone()
+//                 .into_iter()
+//                 .map(|req| req.clone())
+//                 .collect::<Vec<_>>();
+//             reqs.lock().clear();
+//             to_reqs
+//         };
+//         loop {
+//             tokio::select! {
+//                 _ret = has_been_close.recv() => {
+//                     break;
+//                 },
+//                 _ = wait_time.tick() => {
+//                     // info!("wait time trigger!, {}", reqs.lock().len());
+//                 },
+//                 req = write_ch.recv() => {
+//                     if req.is_err() {
+//                         assert!(write_ch.is_close());
+//                         info!("receive a invalid write task, err: {:?}", req.unwrap_err());
+//                         break;
+//                     }
+//                     reqs.lock().push(req.unwrap());
+//                 }
+//             }
+//             wait_time.reset();
+//             let to_reqs = if reqs.lock().len() >= 3 * KV_WRITE_CH_CAPACITY {
+//                 to_reqs()
+//             } else {
+//                 // Try to get next one
+//                 if let Ok(req) = write_ch.try_recv() {
+//                     reqs.lock().push(req);
+//                     vec![]
+//                 } else {
+//                     to_reqs()
+//                 }
+//             };
+//
+//             // TODO maybe currently
+//             if !to_reqs.is_empty() {
+//                 self.write_requests(to_reqs)
+//                     .await
+//                     .expect("TODO: panic message");
+//             }
+//         }
+//
+//         // clear future requests
+//         if !without_close_write_ch {
+//             assert!(!write_ch.is_close());
+//             write_ch.close();
+//         }
+//         loop {
+//             let req = write_ch.try_recv();
+//             if let Err(err) = &req {
+//                 assert!(err.is_closed() || err.is_empty(), "{:?}", err);
+//                 break;
+//             }
+//             reqs.lock().push(req.unwrap());
+//             let to_reqs = to_reqs();
+//             self.write_requests(to_reqs.clone())
+//                 .await
+//                 .expect("TODO: panic message");
+//         }
+//     }
+//
+//     /// Closes a KV. It's crucial to call it to ensure all the pending updates
+//     /// make their way to disk.
+//     pub async fn close(&self) -> Result<()> {
+//         info!("Closing database");
+//         // Stop value GC first;
+//         self.to_ref().closers.value_gc.signal_and_wait().await;
+//         // Stop writes next.
+//         self.to_ref().closers.writes.signal_and_wait().await;
+//
+//         // Now close the value log.
+//         self.must_vlog().close().await?;
+//
+//         // Make sure that block writer is done pushing stuff into memtable!
+//         // Otherwise, you will have a race condition: we are trying to flush memtables
+//         // and remove them completely, while the block / memtable writer is still trying
+//         // to push stuff into the memtable. This will also resolve the value
+//         // offset problem: as we push into memtable, we update value offsets there.
+//         if !self.must_mt().empty() {
+//             info!("Flushing memtable!");
+//             let _ = self.share_lock.write().await;
+//             // TODO
+//             let vptr = self.must_vptr();
+//             assert!(!self.mem_st_manger.mt_ref(&crossbeam_epoch::pin()).is_null());
+//             self.flush_chan
+//                 .send(FlushTask {
+//                     mt: Some(self.mem_st_manger.mt_clone()),
+//                     vptr,
+//                 })
+//                 .await
+//                 .unwrap();
+//             self.mem_st_manger.swap_st(self.opt.clone());
+//             warn!("Pushed to flush chan");
+//         }
+//
+//         // Tell flusher to quit.
+//         self.flush_chan
+//             .send(FlushTask {
+//                 mt: None,
+//                 vptr: ValuePointer::default(),
+//             })
+//             .await
+//             .unwrap();
+//         self.0.closers.mem_table.signal_and_wait().await;
+//         info!("Memtable flushed!");
+//
+//         self.0.closers.compactors.signal_and_wait().await;
+//         info!("Compaction finished!");
+//
+//         self.0.must_lc().close()?;
+//
+//         info!("Waiting for closer");
+//         self.0.closers.update_size.signal_and_wait().await;
+//
+//         self.dir_lock_guard.unlock()?;
+//         self.value_dir_guard.unlock()?;
+//
+//         self.manifest.write().await.close();
+//         // Fsync directions to ensure that lock file, and any other removed files whose directory
+//         // we haven't specifically fsynced, are guaranteed to have their directory entry removal
+//         // persisted to disk.
+//         async_sync_directory(self.0.opt.dir.clone().to_string()).await?;
+//         async_sync_directory(self.0.opt.value_dir.clone().to_string()).await?;
+//         Ok(())
+//     }
+// }
+
+impl DB2 {
+    // NewIterator returns a new iterator. Depending upon the options, either only keys, or both
+    // key-value pairs would be fetched. The keys are returned in lexicographically sorted order.
+    // Usage:
+    //   opt := badger.DefaultIteratorOptions
+    //   itr := kv.NewIterator(opt)
+    //   for itr.Rewind(); itr.Valid(); itr.Next() {
+    //     item := itr.Item()
+    //     key := item.Key()
+    //     var val []byte
+    //     err = item.Value(func(v []byte) {
+    //         val = make([]byte, len(v))
+    // 	       copy(val, v)
+    //     }) 	// This could block while value is fetched from value log.
+    //          // For key only iteration, set opt.PrefetchValues to false, and don't call
+    //          // item.Value(func(v []byte)).
+    //
+    //     // Remember that both key, val would become invalid in the next iteration of the loop.
+    //     // So, if you need access to them outside, copy them or parse them.
+    //   }
+    //   itr.Close()
+    pub(crate) async fn new_iterator(&self, opt: IteratorOptions) -> IteratorExt {
+        // Notice, the iterator is global iterator, so must incr reference for memtable(SikpList), sst(file), vlog(file).
+        let p = crossbeam_epoch::pin();
+        let tables = self.0.get_mem_tables(&p);
+        // TODO it should decr at IteratorExt close.
+        defer! {
+            tables.iter().for_each(|table| unsafe {table.as_ref().unwrap().decr_ref()});
+        }
+        // add vlog reference.
+        self.0.must_vlog().incr_iterator_count();
+
+        // Create iterators across all the tables involved first.
+        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+        for tb in tables.clone() {
+            let st = unsafe { tb.as_ref().unwrap().clone() };
+            let iter = Box::new(UniIterator::new(st, opt.reverse));
+            itrs.push(iter);
+        }
+        // Extend sst.table
+        itrs.extend(self.0.must_lc().as_iterator(opt.reverse));
+        let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
+        IteratorExt::new(self.0.clone(), mitr, opt)
+    }
+
+    pub(crate) async fn new_std_iterator(
+        &self,
+        opt: IteratorOptions,
+    ) -> impl futures_core::Stream<Item=KVItem> {
+        let mut itr = self.new_iterator(opt).await;
+        itr
+    }
+    // asyn yield item value from ValueLog
+    pub(crate) async fn yield_item_value(
+        &self,
+        item: KVItemInner,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+    ) -> Result<()> {
+        //info!("ready to yield item:{} value from vlog!", item);
+        // no value
+        if !item.has_value() {
+            info!(
+                "not found the key:{}, it has not value",
+                hex_str(item.key())
+            );
+            return consumer(&[0u8; 0]).await;
+        }
+
+        if (item.meta() & MetaBit::BIT_VALUE_POINTER.bits()) == 0 {
+            info!(
+                "not found the key:{}, meta: {} ",
+                hex_str(item.key()),
+                item.meta()
+            );
+            return consumer(item.vptr()).await;
+        }
+        let mut vptr = ValuePointer::default();
+        vptr.dec(&mut Cursor::new(item.vptr()))?;
+        let vlog = self.0.must_vlog();
+        vlog.async_read(&vptr, consumer).await?;
+        Ok(())
+    }
+    pub(crate) async fn get_with_ext(&self, key: &[u8]) -> Result<KVItem> {
+        let got = self.0._get(key)?;
+        let inner = KVItemInner::new(key.to_vec(), got, self.0.clone());
+        Ok(TArcRW::new(tokio::sync::RwLock::new(inner)))
+    }
+}
+
+pub type DB = XArc<KV>;
+
+impl DB {
     /// Async open a KV db
-    pub async fn open(op: Options) -> Result<ArcKV> {
+    pub async fn open(op: Options) -> Result<DB> {
         KV::open(op).await
     }
 
@@ -1172,7 +1559,7 @@ impl ArcKV {
     }
 }
 
-impl ArcKV {
+impl DB {
     // NewIterator returns a new iterator. Depending upon the options, either only keys, or both
     // key-value pairs would be fetched. The keys are returned in lexicographically sorted order.
     // Usage:
@@ -1205,7 +1592,7 @@ impl ArcKV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1220,7 +1607,7 @@ impl ArcKV {
     pub(crate) async fn new_std_iterator(
         &self,
         opt: IteratorOptions,
-    ) -> impl futures_core::Stream<Item = KVItem> {
+    ) -> impl futures_core::Stream<Item=KVItem> {
         let mut itr = self.new_iterator(opt).await;
         itr
     }
@@ -1228,7 +1615,7 @@ impl ArcKV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         //info!("ready to yield item:{} value from vlog!", item);
         // no value
