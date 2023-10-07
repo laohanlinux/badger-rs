@@ -670,8 +670,8 @@ async fn t_delete_without_sync_write() {
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890".to_vec(),
         0x00,
     )
-    .await
-    .unwrap();
+        .await
+        .unwrap();
     let opt = kv.opt.clone();
     kv.delete(&key).await.unwrap();
     kv.close().await.expect("TODO: panic message");
@@ -825,6 +825,46 @@ async fn t_kv_get_set_race() {
     wg.wait().await;
     kv.close().await.expect("TODO: panic message");
 }
+
+extern crate test;
+
+// #[bench]
+// fn t_kv_bench_exists(b: &mut test::Bencher) {
+//     let mut r = tokio::runtime::Runtime::new().unwrap();
+//     r.block_on(
+//
+//         async {
+//             let kv = build_kv().await;
+//             let n = 50000 * 100;
+//             let m = 100;
+//             let mut entries = (0..n)
+//                 .into_iter()
+//                 .map(|i| i.to_string().as_bytes().to_vec())
+//                 .map(|key| {
+//                     Entry::default()
+//                         .key(key.clone())
+//                         .value(key.clone())
+//                         .user_meta(1)
+//                 })
+//                 .collect::<Vec<_>>();
+//             for chunk in entries.chunks(m) {
+//                 let ret = kv
+//                     .batch_set(chunk.into_iter().map(|entry| entry.clone()).collect())
+//                     .await;
+//                 let pass = ret.into_iter().all(|ret| ret.is_ok());
+//                 assert!(pass);
+//             }
+//             assert!(kv.must_lc().validate().is_ok());
+//             // Get
+//             b.iter(|| {
+//                 for i in 0..n {
+//
+//                 }
+//             });
+//         }
+//     );
+// }
+
 
 async fn build_kv() -> XArc<KV> {
     use crate::test_util::random_tmp_dir;

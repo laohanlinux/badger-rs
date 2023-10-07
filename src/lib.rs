@@ -20,6 +20,7 @@
 #![feature(stmt_expr_attributes)]
 #![feature(backtrace_frames)]
 #![feature(binary_heap_into_iter_sorted)]
+#![feature(test)]
 
 use std::mem::align_of;
 
@@ -48,6 +49,7 @@ mod pb;
 mod st_manager;
 #[cfg(test)]
 mod test_util;
+
 
 pub use skl::*;
 pub use st_manager::*;
