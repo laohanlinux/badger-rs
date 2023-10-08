@@ -16,7 +16,7 @@ use crate::test_util::{push_log, remove_push_log, tracing_log};
 use crate::types::{TArcMx, XArc};
 use crate::value_log::{Entry, MetaBit, MAX_KEY_SIZE};
 use crate::y::hex_str;
-use crate::{kv::KV, options::Options, Error};
+use crate::{kv::KVCore, options::Options, Error};
 
 fn get_test_option(dir: &str) -> Options {
     let mut opt = Options::default();
@@ -32,7 +32,7 @@ async fn t_1_write() {
     use crate::test_util::{random_tmp_dir, tracing_log};
     tracing_log();
     let dir = random_tmp_dir();
-    let kv = KV::open(get_test_option(&dir)).await;
+    let kv = KVCore::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
     let res = kv.set(b"hello".to_vec(), b"word".to_vec(), 10).await;
     assert!(res.is_ok());
@@ -46,7 +46,7 @@ async fn t_batch_write() {
     use crate::test_util::{random_tmp_dir, tracing_log};
     tracing_log();
     let dir = random_tmp_dir();
-    let kv = KV::open(get_test_option(&dir)).await;
+    let kv = KVCore::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
     let n = 50000;
     let mut batch = vec![];
@@ -134,7 +134,7 @@ async fn t_concurrent_write() {
     use crate::test_util::{random_tmp_dir, tracing_log};
     tracing_log();
     let dir = random_tmp_dir();
-    let kv = KV::open(get_test_option(&dir)).await;
+    let kv = KVCore::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
     let mut wg = awaitgroup::WaitGroup::new();
     let n = 20;
@@ -678,7 +678,7 @@ async fn t_delete_without_sync_write() {
     drop(kv);
     // Reopen kv, it should failed
     {
-        let kv = KV::open(opt).await.unwrap();
+        let kv = KVCore::open(opt).await.unwrap();
         let got = kv.get_with_ext(&key).await;
         assert!(got.unwrap_err().is_not_found());
     }
@@ -704,7 +704,7 @@ async fn t_kv_set_if_absent() {
 async fn t_kv_pid_file() {
     tracing_log();
     let kv1 = build_kv().await;
-    let kv2 = KV::open(kv1.opt.clone()).await;
+    let kv2 = KVCore::open(kv1.opt.clone()).await;
     let err = kv2.unwrap_err();
     assert!(err
         .to_string()
@@ -866,11 +866,11 @@ extern crate test;
 // }
 
 
-async fn build_kv() -> XArc<KV> {
+async fn build_kv() -> XArc<KVCore> {
     use crate::test_util::random_tmp_dir;
     tracing_log();
     let dir = random_tmp_dir();
-    let kv = KV::open(get_test_option(&dir)).await;
+    let kv = KVCore::open(get_test_option(&dir)).await;
     let kv = kv.unwrap();
     kv
 }

@@ -3,7 +3,7 @@ use crate::kv::_BADGER_PREFIX;
 use crate::types::{ArcRW, Channel, Closer, TArcMx, TArcRW};
 use crate::{DB2, hex_str, ValueStruct};
 use crate::{
-    kv::KV,
+    kv::KVCore,
     types::XArc,
     value_log::{MetaBit, ValuePointer},
     Decode, MergeIterator, Result, Xiterator, EMPTY_SLICE,
@@ -35,7 +35,7 @@ pub(crate) type KVItem = TArcRW<KVItemInner>;
 #[derive(Clone)]
 pub(crate) struct KVItemInner {
     status: Arc<Atomic<PreFetchStatus>>,
-    kv: XArc<KV>,
+    kv: XArc<KVCore>,
     key: Vec<u8>,
     // TODO, Opz memory
     vptr: Vec<u8>,
@@ -70,7 +70,7 @@ impl Debug for KVItemInner {
 }
 
 impl KVItemInner {
-    pub(crate) fn new(key: Vec<u8>, value: ValueStruct, kv: XArc<KV>) -> KVItemInner {
+    pub(crate) fn new(key: Vec<u8>, value: ValueStruct, kv: XArc<KVCore>) -> KVItemInner {
         Self {
             status: Arc::new(Atomic::new(PreFetchStatus::Empty)),
             kv,
@@ -220,7 +220,7 @@ pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
 //  |             |        |
 //  IteratorExt  reference
 pub(crate) struct IteratorExt {
-    kv: XArc<KV>,
+    kv: XArc<KVCore>,
     itr: MergeIterator,
     opt: IteratorOptions,
     item: ArcRW<Option<KVItem>>,
@@ -263,7 +263,7 @@ impl futures_core::Stream for IteratorExt {
 }
 
 impl IteratorExt {
-    pub(crate) fn new(kv: XArc<KV>, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
+    pub(crate) fn new(kv: XArc<KVCore>, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
         IteratorExt {
             kv,
             opt,
@@ -275,7 +275,7 @@ impl IteratorExt {
     }
 
     pub(crate) async fn new_async_iterator(
-        kv: XArc<KV>,
+        kv: XArc<KVCore>,
         itr: MergeIterator,
         opt: IteratorOptions,
     ) -> Box<dyn futures_core::Stream<Item = KVItem>> {

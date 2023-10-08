@@ -33,7 +33,7 @@ use std::{fmt, fs, io, ptr};
 
 use tokio::macros::support::thread_rng_n;
 
-use crate::kv::{BoxKV, KV};
+use crate::kv::{BoxKV, KVCore};
 use crate::log_file::LogFile;
 use crate::options::Options;
 
@@ -507,7 +507,7 @@ impl ValueLogCore {
     }
 
     // TODO Use Arc<KV> to replace it
-    pub(crate) async fn open(&mut self, kv: *const KV, opt: Options) -> Result<()> {
+    pub(crate) async fn open(&mut self, kv: *const KVCore, opt: Options) -> Result<()> {
         self.dir_path = opt.value_dir.clone();
         self.opt = opt;
         self.kv = BoxKV::new(kv);
@@ -517,7 +517,7 @@ impl ValueLogCore {
         Ok(())
     }
 
-    fn get_kv(&self) -> &KV {
+    fn get_kv(&self) -> &KVCore {
         unsafe { &*self.kv.kv }
     }
 
@@ -825,7 +825,7 @@ impl ValueLogCore {
     }
 
     // rewrite the log_file
-    async fn rewrite(&self, lf: TArcRW<LogFile>, _x: &KV) -> Result<()> {
+    async fn rewrite(&self, lf: TArcRW<LogFile>, _x: &KVCore) -> Result<()> {
         let max_fid = self.max_fid.load(Ordering::Relaxed);
         assert!(
             lf.read().await.fid < max_fid,

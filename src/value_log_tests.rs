@@ -1,4 +1,4 @@
-use crate::kv::KV;
+use crate::kv::KVCore;
 use crate::options::Options;
 use crate::value_log::{Entry, MetaBit, Request};
 use awaitgroup::WaitGroup;

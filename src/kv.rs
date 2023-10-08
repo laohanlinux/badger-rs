@@ -53,6 +53,7 @@ pub const _HEAD: &[u8; 12] = b"!badger!head"; // For Storing value offset for re
 
 pub const KV_WRITE_CH_CAPACITY: usize = 1000;
 
+#[derive(Clone)]
 pub struct Closers {
     pub update_size: Closer,
     pub compactors: Closer,
@@ -62,7 +63,7 @@ pub struct Closers {
     pub value_gc: Closer,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FlushTask {
     mt: Option<SkipList>,
     vptr: ValuePointer,
@@ -80,9 +81,10 @@ pub struct KVBuilder {
 }
 
 /// Manage key/value
-pub struct KV {
+#[derive(Clone)]
+pub(crate) struct KVCore {
     pub opt: Options,
-    pub vlog: Option<ValueLogCore>,
+    pub vlog: Option<Arc<ValueLogCore>>,
     pub vptr: crossbeam_epoch::Atomic<ValuePointer>,
     pub manifest: Arc<RwLock<ManifestFile>>,
     lc: Option<LevelsController>,
@@ -92,8 +94,8 @@ pub struct KV {
     pub zero_level_compact_chan: Channel<()>,
     notify_write_request_chan: Channel<()>,
     // write_chan: Channel<Request>,
-    dir_lock_guard: File,
-    value_dir_guard: File,
+    dir_lock_guard: Arc<File>,
+    value_dir_guard: Arc<File>,
     pub closers: Closers,
     // Our latest (actively written) in-memory table.
     pub mem_st_manger: Arc<SkipListManager>,
@@ -101,31 +103,28 @@ pub struct KV {
     pub write_ch: Channel<Request>,
     // Incremented in the non-concurrently accessed write loop.  But also accessed outside. So
     // we use an atomic op.
-    pub(crate) last_used_cas_counter: AtomicU64,
-    share_lock: tokio::sync::RwLock<()>,
-    // TODO user ctx replace closer
-    ctx: tokio_context::context::Context,
-    ctx_handle: tokio_context::context::Handle,
+    pub(crate) last_used_cas_counter: Arc<AtomicU64>,
+    share_lock: TArcRW<()>,
 }
 
-unsafe impl Send for KV {}
+unsafe impl Send for KVCore {}
 
-unsafe impl Sync for KV {}
+unsafe impl Sync for KVCore {}
 
-impl Drop for KV {
+impl Drop for KVCore {
     fn drop(&mut self) {
         warn!("Drop kv");
     }
 }
 
-impl std::fmt::Debug for KV {
+impl std::fmt::Debug for KVCore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         return Ok(());
     }
 }
 
 pub(crate) struct BoxKV {
-    pub kv: *const KV,
+    pub kv: *const KVCore,
 }
 
 unsafe impl Send for BoxKV {}
@@ -133,14 +132,14 @@ unsafe impl Send for BoxKV {}
 unsafe impl Sync for BoxKV {}
 
 impl BoxKV {
-    pub(crate) fn new(kv: *const KV) -> BoxKV {
+    pub(crate) fn new(kv: *const KVCore) -> BoxKV {
         BoxKV { kv }
     }
 }
 
-impl KV {
+impl KVCore {
     /// Open a data with Options
-    pub async fn open(mut opt: Options) -> Result<XArc<KV>> {
+    pub async fn open(mut opt: Options) -> Result<XArc<KVCore>> {
         opt.max_batch_size = (15 * opt.max_table_size) / 100;
         opt.max_batch_count = 2 * opt.max_batch_size / Node::size() as u64;
         create_dir_all(opt.dir.as_str()).await?;
@@ -179,8 +178,7 @@ impl KV {
             value_gc: Closer::new("value_gc".to_owned()),
         };
 
-        let (ctx, h) = tokio_context::context::Context::new();
-        let mut out = KV {
+        let mut out = KVCore {
             opt: opt.clone(),
             vlog: None,
             vptr: crossbeam_epoch::Atomic::null(),
@@ -190,15 +188,13 @@ impl KV {
             notify_try_compact_chan: Channel::new(1),
             zero_level_compact_chan: Channel::new(3),
             notify_write_request_chan: Channel::new(3),
-            dir_lock_guard,
-            value_dir_guard,
+            dir_lock_guard: Arc::new(dir_lock_guard),
+            value_dir_guard: Arc::new(value_dir_guard),
             closers,
             write_ch: Channel::new(KV_WRITE_CH_CAPACITY),
-            last_used_cas_counter: AtomicU64::new(1),
+            last_used_cas_counter: Arc::new(AtomicU64::new(1)),
             mem_st_manger: Arc::new(SkipListManager::new(opt.arena_size() as usize)),
-            share_lock: tokio::sync::RwLock::new(()),
-            ctx,
-            ctx_handle: h,
+            share_lock: TArcRW::new(tokio::sync::RwLock::new(())),
         };
 
         let manifest = out.manifest.clone();
@@ -211,15 +207,15 @@ impl KV {
             out.notify_write_request_chan.clone(),
             out.opt.clone(),
         )
-            .await?;
+        .await?;
         lc.start_compact(out.closers.compactors.clone());
         out.lc.replace(lc);
         let mut vlog = ValueLogCore::default();
         {
-            let kv = &out as *const KV;
+            let kv = &out as *const KVCore;
             vlog.open(kv, opt.clone()).await?;
         }
-        out.vlog.replace(vlog);
+        out.vlog.replace(Arc::new(vlog));
 
         let xout = XArc::new(out);
 
@@ -353,7 +349,7 @@ impl KV {
     }
 }
 
-impl KV {
+impl KVCore {
     /// Walk the directory, return sst and vlog total size
     async fn walk_dir(dir: &str) -> Result<(u64, u64)> {
         let mut lsm_size = 0;
@@ -385,8 +381,7 @@ impl KV {
                 .iter()
                 .for_each(|tb| unsafe { tb.as_ref().unwrap().decr_ref() })
         };
-        defer! {decref_tables()}
-        ;
+        defer! {decref_tables()};
 
         crate::event::get_metrics().num_gets.inc(); // TODO add metrics
 
@@ -648,13 +643,13 @@ impl KV {
         // defer! {info!("exit write to lsm")}
 
         #[cfg(test)]
-            let tid = random::<u32>();
+        let tid = random::<u32>();
 
         for (i, pair) in req.entries.into_iter().enumerate() {
             let (entry, resp_ch) = pair.to_owned();
 
             #[cfg(test)]
-                let debug_entry = entry.clone();
+            let debug_entry = entry.clone();
 
             let mut old_cas = 0;
 
@@ -841,7 +836,7 @@ impl KV {
     }
 }
 
-impl KV {
+impl KVCore {
     pub(crate) fn must_lc(&self) -> &LevelsController {
         let lc = self.lc.as_ref().unwrap();
         lc
@@ -854,8 +849,9 @@ impl KV {
         unsafe { &*st }
     }
 
-    fn must_vlog(&self) -> &ValueLogCore {
-        self.vlog.as_ref().unwrap()
+    fn must_vlog(&self) -> Arc<ValueLogCore> {
+        let vlog = self.vlog.clone().unwrap();
+        vlog
     }
 
     fn must_vptr(&self) -> ValuePointer {
@@ -881,10 +877,9 @@ impl KV {
     }
 }
 
-pub type WeakKV = XWeak<KV>;
+pub type WeakKV = XWeak<KVCore>;
 
-
-pub struct DB2(XArc<KV>);
+pub struct DB2(XArc<KVCore>);
 
 impl Clone for DB2 {
     fn clone(&self) -> Self {
@@ -1213,7 +1208,7 @@ impl DB2 {
         self.0.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1228,7 +1223,7 @@ impl DB2 {
     pub(crate) async fn new_std_iterator(
         &self,
         opt: IteratorOptions,
-    ) -> impl futures_core::Stream<Item=KVItem> {
+    ) -> impl futures_core::Stream<Item = KVItem> {
         let mut itr = self.new_iterator(opt).await;
         itr
     }
@@ -1236,7 +1231,7 @@ impl DB2 {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         //info!("ready to yield item:{} value from vlog!", item);
         // no value
@@ -1269,12 +1264,12 @@ impl DB2 {
     }
 }
 
-pub type DB = XArc<KV>;
+pub type DB = XArc<KVCore>;
 
 impl DB {
     /// Async open a KV db
     pub async fn open(op: Options) -> Result<DB> {
-        KV::open(op).await
+        KVCore::open(op).await
     }
 
     /// data size stats
@@ -1292,9 +1287,9 @@ impl DB {
                 _ = tk.tick() => {
                     info!("ready to update size");
                     // If value directory is different from dir, we'd have to do another walk.
-                    let (_lsm_sz, _vlog_sz) = KV::walk_dir(dir.as_str()).await.unwrap();
+                    let (_lsm_sz, _vlog_sz) = KVCore::walk_dir(dir.as_str()).await.unwrap();
                     if dir != vdir {
-                         let (_, _vlog_sz) = KV::walk_dir(dir.as_str()).await.unwrap();
+                         let (_, _vlog_sz) = KVCore::walk_dir(dir.as_str()).await.unwrap();
                     }
                 },
                 _ = c.recv() => {return;},
@@ -1592,7 +1587,7 @@ impl DB {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1607,7 +1602,7 @@ impl DB {
     pub(crate) async fn new_std_iterator(
         &self,
         opt: IteratorOptions,
-    ) -> impl futures_core::Stream<Item=KVItem> {
+    ) -> impl futures_core::Stream<Item = KVItem> {
         let mut itr = self.new_iterator(opt).await;
         itr
     }
@@ -1615,7 +1610,7 @@ impl DB {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         //info!("ready to yield item:{} value from vlog!", item);
         // no value
