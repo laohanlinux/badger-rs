@@ -9,9 +9,7 @@ use crate::types::{ArcMx, Channel, Closer, TArcRW, XArc, XWeak};
 use crate::value_log::{
     Entry, EntryType, MetaBit, Request, ValueLogCore, ValuePointer, MAX_KEY_SIZE,
 };
-use crate::y::{
-    async_sync_directory, create_synced_file, sync_directory, Encode, Result, ValueStruct,
-};
+use crate::y::{async_sync_directory, create_synced_file, Encode, Result, ValueStruct};
 use crate::Error::{NotFound, Unexpected};
 use crate::{
     hex_str, Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager, UniIterator,
@@ -19,12 +17,11 @@ use crate::{
 };
 
 use atomic::Atomic;
-use bytes::BufMut;
 use crossbeam_epoch::{Owned, Shared};
 use drop_cell::defer;
 use fs2::FileExt;
 
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
 
 use parking_lot::Mutex;
 
@@ -38,12 +35,12 @@ use std::pin::Pin;
 
 use libc::difftime;
 use rand::random;
+use std::fmt::Formatter;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::{fmt, string, vec};
-use std::fmt::Formatter;
-use std::ops::Deref;
 use tokio::fs::create_dir_all;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, RwLockWriteGuard};
@@ -77,6 +74,7 @@ impl FlushTask {
     }
 }
 
+/// A builder for KV building.
 pub struct KVBuilder {
     opt: Options,
     kv: BoxKV,
@@ -122,7 +120,7 @@ impl Drop for KVCore {
 
 impl std::fmt::Debug for KVCore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return Ok(());
+        f.debug_struct("KVCore").finish()
     }
 }
 
@@ -139,7 +137,6 @@ impl BoxKV {
         BoxKV { kv }
     }
 }
-
 
 impl KVCore {
     /// Walk the directory, return sst and vlog total size
@@ -173,8 +170,7 @@ impl KVCore {
                 .iter()
                 .for_each(|tb| unsafe { tb.as_ref().unwrap().decr_ref() })
         };
-        defer! {decref_tables()}
-        ;
+        defer! {decref_tables()};
 
         crate::event::get_metrics().num_gets.inc(); // TODO add metrics
 
@@ -436,15 +432,15 @@ impl KVCore {
         // defer! {info!("exit write to lsm")}
 
         #[cfg(test)]
-            let tid = random::<u32>();
+        let tid = random::<u32>();
 
         for (i, pair) in req.entries.into_iter().enumerate() {
             let (entry, resp_ch) = pair.to_owned();
 
             #[cfg(test)]
-                let debug_entry = entry.clone();
+            let debug_entry = entry.clone();
 
-            let mut old_cas = 0;
+            let mut _old_cas = 0;
 
             if entry.cas_counter_check != 0 {
                 // TODO FIXME if not found the key，maybe push something to resp_ch
@@ -456,7 +452,7 @@ impl KVCore {
 
                 let old_value = old_value.unwrap();
 
-                old_cas = old_value.cas_counter;
+                _old_cas = old_value.cas_counter;
 
                 // No need to decode existing value. Just need old CAS counter.
                 if old_value.cas_counter != entry.cas_counter_check {
@@ -467,7 +463,7 @@ impl KVCore {
                         "tid:{}, abort cas check, #{}, old_cas:{}, check_cas: {}, old_value:{}, new_val: {}",
                         tid,
                         crate::y::hex_str(&entry.key),
-                        old_cas, entry.cas_counter_check,
+                        _old_cas, entry.cas_counter_check,
                         crate::y::hex_str(&old_value.value),
                         crate::y::hex_str(&entry.value));
 
@@ -516,7 +512,7 @@ impl KVCore {
                 tid,
                 self.must_mt().id(),
                 String::from_utf8_lossy(&key),
-                old_cas,
+                _old_cas,
                 debug_entry.get_cas_counter(),
                 debug_entry.cas_counter_check,
                 String::from_utf8_lossy(&debug_entry.value),
@@ -692,7 +688,7 @@ impl fmt::Debug for KV {
 }
 
 impl KV {
-    /// Async open a KV db
+    /// Async open a KV db with Options
     pub async fn open(mut opt: Options) -> Result<KV> {
         opt.max_batch_size = (15 * opt.max_table_size) / 100;
         opt.max_batch_count = 2 * opt.max_batch_size / Node::size() as u64;
@@ -761,7 +757,7 @@ impl KV {
             out.notify_write_request_chan.clone(),
             out.opt.clone(),
         )
-            .await?;
+        .await?;
         lc.start_compact(out.closers.compactors.clone());
         out.lc.replace(lc);
         let mut vlog = ValueLogCore::default();
@@ -785,7 +781,11 @@ impl KV {
         {
             let _out = xout.clone();
             tokio::spawn(async move {
-                if let Err(err) = _out.inner.flush_mem_table(_out.inner.closers.mem_table.spawn()).await {
+                if let Err(err) = _out
+                    .inner
+                    .flush_mem_table(_out.inner.closers.mem_table.spawn())
+                    .await
+                {
                     error!("abort exit flush mem table {:?}", err);
                 } else {
                     info!("abort exit flush mem table");
@@ -804,7 +804,8 @@ impl KV {
         // written value log entry that we replay.  (Subsequent value log entries might be _less_
         // than lastUsedCasCounter, if there was value log gc so we have to max() values while
         // replaying.)
-        xout.get_inner_kv().update_last_used_cas_counter(item.cas_counter);
+        xout.get_inner_kv()
+            .update_last_used_cas_counter(item.cas_counter);
         warn!("the last cas counter: {}", item.cas_counter);
 
         let mut vptr = ValuePointer::default();
@@ -824,7 +825,8 @@ impl KV {
         // replay data from vlog
         let mut first = true;
         let mut count = 0;
-        xout.inner.vlog
+        xout.inner
+            .vlog
             .as_ref()
             .unwrap()
             .replay(&vptr, |entry, vptr| {
@@ -878,7 +880,11 @@ impl KV {
 
         // Mmap writeable log
         let max_fid = xout.get_inner_kv().must_vlog().get_max_fid();
-        let lf = xout.get_inner_kv().must_vlog().pick_log_by_vlog_id(&max_fid).await;
+        let lf = xout
+            .get_inner_kv()
+            .must_vlog()
+            .pick_log_by_vlog_id(&max_fid)
+            .await;
         lf.write()
             .await
             .set_write(opt.clone().value_log_file_size * 2)?;
@@ -902,15 +908,14 @@ impl KV {
         Ok(xout)
     }
 
-
     /// data size stats
     /// TODO
     pub async fn spawn_update_size(&self) {
-        let lc = self.to_ref().closers.update_size.spawn();
+        let lc = self.closers.update_size.spawn();
         defer! {lc.done()}
 
         let mut tk = tokio::time::interval(tokio::time::Duration::from_secs(5 * 60));
-        let opt = self.to_ref().opt.clone();
+        let opt = self.opt.clone();
         let (dir, vdir) = (opt.dir, opt.value_dir);
         loop {
             let c = lc.has_been_closed();
@@ -976,7 +981,7 @@ impl KV {
 
     /// Batch set entries, returns result sets
     pub async fn batch_set(&self, entries: Vec<Entry>) -> Vec<Result<()>> {
-        self.to_ref().batch_set(entries).await
+        self.inner.batch_set(entries).await
     }
 
     /// Asynchronous version of CompareAndSet. It accepts a callback function
@@ -1094,7 +1099,8 @@ impl KV {
 
             // TODO maybe currently
             if !to_reqs.is_empty() {
-                self.to_ref().write_requests(to_reqs)
+                self.to_ref()
+                    .write_requests(to_reqs)
                     .await
                     .expect("TODO: panic message");
             }
@@ -1113,7 +1119,8 @@ impl KV {
             }
             reqs.lock().push(req.unwrap());
             let to_reqs = to_reqs();
-            self.to_ref().write_requests(to_reqs.clone())
+            self.to_ref()
+                .write_requests(to_reqs.clone())
                 .await
                 .expect("TODO: panic message");
         }
@@ -1124,9 +1131,9 @@ impl KV {
     pub async fn close(&self) -> Result<()> {
         info!("Closing database");
         // Stop value GC first;
-        self.to_ref().closers.value_gc.signal_and_wait().await;
+        self.closers.value_gc.signal_and_wait().await;
         // Stop writes next.
-        self.to_ref().closers.writes.signal_and_wait().await;
+        self.closers.writes.signal_and_wait().await;
 
         // Now close the value log.
         self.must_vlog().close().await?;
@@ -1154,28 +1161,28 @@ impl KV {
         }
 
         // Tell flusher to quit.
-        self.to_ref().flush_chan
+        self.flush_chan
             .send(FlushTask {
                 mt: None,
                 vptr: ValuePointer::default(),
             })
             .await
             .unwrap();
-        self.to_ref().closers.mem_table.signal_and_wait().await;
+        self.closers.mem_table.signal_and_wait().await;
         info!("Memtable flushed!");
 
-        self.to_ref().closers.compactors.signal_and_wait().await;
+        self.closers.compactors.signal_and_wait().await;
         info!("Compaction finished!");
 
-        self.to_ref().must_lc().close()?;
+        self.must_lc().close()?;
 
         info!("Waiting for closer");
-        self.to_ref().closers.update_size.signal_and_wait().await;
+        self.closers.update_size.signal_and_wait().await;
 
-        self.to_ref().dir_lock_guard.unlock()?;
-        self.to_ref().value_dir_guard.unlock()?;
+        self.dir_lock_guard.unlock()?;
+        self.value_dir_guard.unlock()?;
 
-        self.to_ref().manifest.write().await.close();
+        self.manifest.write().await.close();
         // Fsync directions to ensure that lock file, and any other removed files whose directory
         // we haven't specifically fsynced, are guaranteed to have their directory entry removal
         // persisted to disk.
@@ -1218,7 +1225,7 @@ impl KV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1233,7 +1240,7 @@ impl KV {
     pub(crate) async fn new_std_iterator(
         &self,
         opt: IteratorOptions,
-    ) -> impl futures_core::Stream<Item=KVItem> {
+    ) -> impl futures_core::Stream<Item = KVItem> {
         let mut itr = self.new_iterator(opt).await;
         itr
     }
@@ -1241,7 +1248,7 @@ impl KV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         //info!("ready to yield item:{} value from vlog!", item);
         // no value

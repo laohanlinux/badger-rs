@@ -2,7 +2,6 @@ use crate::hex_str;
 use crate::levels::CompactDef;
 use crate::table::table::Table;
 
-use crate::types::XArc;
 use log::{error, info, warn};
 use parking_lot::lock_api::{RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{RawRwLock, RwLock};
