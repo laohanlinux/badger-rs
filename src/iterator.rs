@@ -1,7 +1,7 @@
 use crate::iterator::PreFetchStatus::Prefetched;
 use crate::kv::_BADGER_PREFIX;
 use crate::types::{ArcRW, Channel, Closer, TArcMx, TArcRW};
-use crate::{DB2, hex_str, ValueStruct};
+use crate::{hex_str, ValueStruct};
 use crate::{
     kv::KVCore,
     types::XArc,
@@ -101,7 +101,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-        .await?;
+            .await?;
         Ok(ch.recv().await.unwrap())
     }
 
@@ -112,7 +112,7 @@ impl KVItemInner {
     // Note that the call to the consumer func happens synchronously.
     pub(crate) async fn value(
         &self,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
@@ -157,7 +157,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-        .await
+            .await
     }
 
     // Returns approximate size of the key-value pair.
@@ -278,7 +278,7 @@ impl IteratorExt {
         kv: XArc<KVCore>,
         itr: MergeIterator,
         opt: IteratorOptions,
-    ) -> Box<dyn futures_core::Stream<Item = KVItem>> {
+    ) -> Box<dyn futures_core::Stream<Item=KVItem>> {
         let itr = Self::new(kv, itr, opt);
         Box::new(itr)
     }
@@ -386,14 +386,14 @@ impl IteratorExt {
     async fn valid_for_prefix(&self, prefix: &[u8]) -> bool {
         self.item.read().is_some()
             && self
-                .item
-                .read()
-                .as_ref()
-                .unwrap()
-                .read()
-                .await
-                .key()
-                .starts_with(prefix)
+            .item
+            .read()
+            .as_ref()
+            .unwrap()
+            .read()
+            .await
+            .key()
+            .starts_with(prefix)
     }
 
     // Close the iterator, It is important to call this when you're done with iteration.
