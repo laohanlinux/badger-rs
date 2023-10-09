@@ -41,7 +41,9 @@ use rand::random;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use std::{string, vec};
+use std::{fmt, string, vec};
+use std::fmt::Formatter;
+use std::ops::Deref;
 use tokio::fs::create_dir_all;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, RwLockWriteGuard};
@@ -81,8 +83,9 @@ pub struct KVBuilder {
 }
 
 /// Manage key/value
+#[doc(hidden)]
 #[derive(Clone)]
-pub(crate) struct KVCore {
+pub struct KVCore {
     pub opt: Options,
     pub vlog: Option<Arc<ValueLogCore>>,
     pub vptr: crossbeam_epoch::Atomic<ValuePointer>,
@@ -137,217 +140,6 @@ impl BoxKV {
     }
 }
 
-impl KVCore {
-    /// Open a data with Options
-    pub async fn open(mut opt: Options) -> Result<XArc<KVCore>> {
-        opt.max_batch_size = (15 * opt.max_table_size) / 100;
-        opt.max_batch_count = 2 * opt.max_batch_size / Node::size() as u64;
-        create_dir_all(opt.dir.as_str()).await?;
-        create_dir_all(opt.value_dir.as_str()).await?;
-        if !(opt.value_log_file_size <= 2 << 30 && opt.value_log_file_size >= 1 << 20) {
-            return Err(Error::ValueLogSize);
-        }
-        let dir_lock_guard = OpenOptions::new()
-            .write(true)
-            .append(true)
-            .create(true)
-            .open(Path::new(opt.dir.as_str()).join("dir_lock_guard.lock"))?;
-        dir_lock_guard.try_lock_exclusive().map_err(|_| {
-            crate::Error::Unexpected(
-                "Another program process is using the Badger databse".to_owned(),
-            )
-        })?;
-
-        let value_dir_guard = OpenOptions::new()
-            .write(true)
-            .append(true)
-            .create(true)
-            .open(Path::new(opt.value_dir.as_str()).join("value_dir_guard.lock"))?;
-        value_dir_guard.try_lock_exclusive().map_err(|_| {
-            crate::Error::Unexpected(
-                "Anthoer program process is using the Bader databse".to_owned(),
-            )
-        })?;
-        let manifest_file = open_or_create_manifest_file(opt.dir.as_str()).await?;
-
-        let closers = Closers {
-            update_size: Closer::new("update_size".to_owned()),
-            compactors: Closer::new("compactors".to_owned()),
-            mem_table: Closer::new("mem_table".to_owned()),
-            writes: Closer::new("writes".to_owned()),
-            value_gc: Closer::new("value_gc".to_owned()),
-        };
-
-        let mut out = KVCore {
-            opt: opt.clone(),
-            vlog: None,
-            vptr: crossbeam_epoch::Atomic::null(),
-            manifest: Arc::new(RwLock::new(manifest_file)),
-            lc: None,
-            flush_chan: Channel::new(opt.num_mem_tables),
-            notify_try_compact_chan: Channel::new(1),
-            zero_level_compact_chan: Channel::new(3),
-            notify_write_request_chan: Channel::new(3),
-            dir_lock_guard: Arc::new(dir_lock_guard),
-            value_dir_guard: Arc::new(value_dir_guard),
-            closers,
-            write_ch: Channel::new(KV_WRITE_CH_CAPACITY),
-            last_used_cas_counter: Arc::new(AtomicU64::new(1)),
-            mem_st_manger: Arc::new(SkipListManager::new(opt.arena_size() as usize)),
-            share_lock: TArcRW::new(tokio::sync::RwLock::new(())),
-        };
-
-        let manifest = out.manifest.clone();
-
-        // handle levels_controller
-        let lc = LevelsController::new(
-            manifest.clone(),
-            out.notify_try_compact_chan.clone(),
-            out.zero_level_compact_chan.clone(),
-            out.notify_write_request_chan.clone(),
-            out.opt.clone(),
-        )
-            .await?;
-        lc.start_compact(out.closers.compactors.clone());
-        out.lc.replace(lc);
-        let mut vlog = ValueLogCore::default();
-        {
-            let kv = &out as *const KVCore;
-            vlog.open(kv, opt.clone()).await?;
-        }
-        out.vlog.replace(Arc::new(vlog));
-
-        let xout = XArc::new(out);
-
-        // update size
-        {
-            let _out = xout.clone();
-            tokio::spawn(async move {
-                _out.spawn_update_size().await;
-            });
-        }
-
-        // mem_table closer
-        {
-            let _out = xout.clone();
-            tokio::spawn(async move {
-                if let Err(err) = _out.flush_mem_table(_out.closers.mem_table.spawn()).await {
-                    error!("abort exit flush mem table {:?}", err);
-                } else {
-                    info!("abort exit flush mem table");
-                }
-            });
-        }
-
-        // Get the lasted ValueLog Recover Pointer
-        let item = match xout._get(_HEAD) {
-            Err(NotFound) => ValueStruct::default(), // Give it a default value
-            Err(_) => return Err("Retrieving head".into()),
-            Ok(item) => item,
-        };
-        // assert!(item.value.is_empty() , "got value {:?}", item);
-        // lastUsedCasCounter will either be the value stored in !badger!head, or some subsequently
-        // written value log entry that we replay.  (Subsequent value log entries might be _less_
-        // than lastUsedCasCounter, if there was value log gc so we have to max() values while
-        // replaying.)
-        xout.update_last_used_cas_counter(item.cas_counter);
-        warn!("the last cas counter: {}", item.cas_counter);
-
-        let mut vptr = ValuePointer::default();
-        if !item.value.is_empty() {
-            vptr.dec(&mut Cursor::new(&item.value))?;
-        }
-        warn!("the last vptr: {:?}", vptr);
-        let replay_closer = Closer::new("tmp_writer_closer".to_owned());
-        {
-            let _out = xout.clone();
-            let replay_closer = replay_closer.spawn();
-            tokio::spawn(async move {
-                _out.do_writes(replay_closer, true).await;
-            });
-        }
-
-        // replay data from vlog
-        let mut first = true;
-        let mut count = 0;
-        xout.vlog
-            .as_ref()
-            .unwrap()
-            .replay(&vptr, |entry, vptr| {
-                let xout = xout.clone();
-                Box::pin(async move {
-                    if first {
-                        warn!("First key={}", string::String::from_utf8_lossy(&entry.key));
-                    }
-                    first = false;
-                    // TODO maybe use comparse set
-                    if xout.get_last_used_cas_counter() < entry.get_cas_counter() {
-                        xout.update_last_used_cas_counter(entry.get_cas_counter());
-                    }
-
-                    // TODO why?
-                    if entry.cas_counter_check != 0 {
-                        let old_value = xout._get(&entry.key)?;
-                        if old_value.cas_counter != entry.cas_counter_check {
-                            return Ok(true);
-                        }
-                    }
-                    let mut nv = vec![];
-                    let mut meta = entry.meta;
-                    if xout.should_write_value_to_lsm(entry) {
-                        nv = entry.value.clone();
-                    } else {
-                        nv = Vec::with_capacity(ValuePointer::value_pointer_encoded_size());
-                        vptr.enc(&mut nv).unwrap();
-                        meta = meta | MetaBit::BIT_VALUE_POINTER.bits();
-                    }
-                    let v = ValueStruct {
-                        meta,
-                        user_meta: entry.user_meta,
-                        cas_counter: entry.get_cas_counter(),
-                        value: nv,
-                    };
-                    while let Err(err) = xout.ensure_room_for_write().await {
-                        if count % 1000 == 0 {
-                            info!("No room for write, {}", err);
-                        }
-
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                    }
-                    xout.must_mt().put(&entry.key, v);
-                    Ok(true)
-                })
-            })
-            .await?;
-        // Wait for replay to be applied first.
-        replay_closer.signal_and_wait().await;
-
-        // Mmap writeable log
-        let max_fid = xout.must_vlog().get_max_fid();
-        let lf = xout.must_vlog().pick_log_by_vlog_id(&max_fid).await;
-        lf.write()
-            .await
-            .set_write(opt.clone().value_log_file_size * 2)?;
-        // TODO
-
-        {
-            let closer = xout.closers.writes.spawn();
-            let _out = xout.clone();
-            tokio::spawn(async move {
-                _out.do_writes(closer, false).await;
-            });
-        }
-
-        {
-            let closer = xout.closers.value_gc.spawn();
-            let _out = xout.clone();
-            tokio::spawn(async move {
-                _out.must_vlog().wait_on_gc(closer).await;
-            });
-        }
-        Ok(xout)
-    }
-}
 
 impl KVCore {
     /// Walk the directory, return sst and vlog total size
@@ -880,24 +672,246 @@ impl KVCore {
 
 pub type WeakKV = XWeak<KVCore>;
 
+#[derive(Clone)]
+pub struct KV {
+    inner: XArc<KVCore>,
+}
 
-pub type KV = XArc<KVCore>;
+impl Deref for KV {
+    type Target = KVCore;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner.deref()
+    }
+}
+
+impl fmt::Debug for KV {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KV").finish()
+    }
+}
 
 impl KV {
     /// Async open a KV db
-    pub async fn open(op: Options) -> Result<KV> {
-        KVCore::open(op).await
+    pub async fn open(mut opt: Options) -> Result<KV> {
+        opt.max_batch_size = (15 * opt.max_table_size) / 100;
+        opt.max_batch_count = 2 * opt.max_batch_size / Node::size() as u64;
+        create_dir_all(opt.dir.as_str()).await?;
+        create_dir_all(opt.value_dir.as_str()).await?;
+        if !(opt.value_log_file_size <= 2 << 30 && opt.value_log_file_size >= 1 << 20) {
+            return Err(Error::ValueLogSize);
+        }
+        let dir_lock_guard = OpenOptions::new()
+            .write(true)
+            .append(true)
+            .create(true)
+            .open(Path::new(opt.dir.as_str()).join("dir_lock_guard.lock"))?;
+        dir_lock_guard.try_lock_exclusive().map_err(|_| {
+            crate::Error::Unexpected(
+                "Another program process is using the Badger databse".to_owned(),
+            )
+        })?;
+
+        let value_dir_guard = OpenOptions::new()
+            .write(true)
+            .append(true)
+            .create(true)
+            .open(Path::new(opt.value_dir.as_str()).join("value_dir_guard.lock"))?;
+        value_dir_guard.try_lock_exclusive().map_err(|_| {
+            crate::Error::Unexpected(
+                "Anthoer program process is using the Bader databse".to_owned(),
+            )
+        })?;
+        let manifest_file = open_or_create_manifest_file(opt.dir.as_str()).await?;
+
+        let closers = Closers {
+            update_size: Closer::new("update_size".to_owned()),
+            compactors: Closer::new("compactors".to_owned()),
+            mem_table: Closer::new("mem_table".to_owned()),
+            writes: Closer::new("writes".to_owned()),
+            value_gc: Closer::new("value_gc".to_owned()),
+        };
+
+        let mut out = KVCore {
+            opt: opt.clone(),
+            vlog: None,
+            vptr: crossbeam_epoch::Atomic::null(),
+            manifest: Arc::new(RwLock::new(manifest_file)),
+            lc: None,
+            flush_chan: Channel::new(opt.num_mem_tables),
+            notify_try_compact_chan: Channel::new(1),
+            zero_level_compact_chan: Channel::new(3),
+            notify_write_request_chan: Channel::new(3),
+            dir_lock_guard: Arc::new(dir_lock_guard),
+            value_dir_guard: Arc::new(value_dir_guard),
+            closers,
+            write_ch: Channel::new(KV_WRITE_CH_CAPACITY),
+            last_used_cas_counter: Arc::new(AtomicU64::new(1)),
+            mem_st_manger: Arc::new(SkipListManager::new(opt.arena_size() as usize)),
+            share_lock: TArcRW::new(tokio::sync::RwLock::new(())),
+        };
+
+        let manifest = out.manifest.clone();
+
+        // handle levels_controller
+        let lc = LevelsController::new(
+            manifest.clone(),
+            out.notify_try_compact_chan.clone(),
+            out.zero_level_compact_chan.clone(),
+            out.notify_write_request_chan.clone(),
+            out.opt.clone(),
+        )
+            .await?;
+        lc.start_compact(out.closers.compactors.clone());
+        out.lc.replace(lc);
+        let mut vlog = ValueLogCore::default();
+        {
+            let kv = &out as *const KVCore;
+            vlog.open(kv, opt.clone()).await?;
+        }
+        out.vlog.replace(Arc::new(vlog));
+
+        let xout = KV::new(XArc::new(out));
+
+        // update size
+        {
+            let _out = xout.clone();
+            tokio::spawn(async move {
+                _out.spawn_update_size().await;
+            });
+        }
+
+        // mem_table closer
+        {
+            let _out = xout.clone();
+            tokio::spawn(async move {
+                if let Err(err) = _out.inner.flush_mem_table(_out.inner.closers.mem_table.spawn()).await {
+                    error!("abort exit flush mem table {:?}", err);
+                } else {
+                    info!("abort exit flush mem table");
+                }
+            });
+        }
+
+        // Get the lasted ValueLog Recover Pointer
+        let item = match xout.inner._get(_HEAD) {
+            Err(NotFound) => ValueStruct::default(), // Give it a default value
+            Err(_) => return Err("Retrieving head".into()),
+            Ok(item) => item,
+        };
+        // assert!(item.value.is_empty() , "got value {:?}", item);
+        // lastUsedCasCounter will either be the value stored in !badger!head, or some subsequently
+        // written value log entry that we replay.  (Subsequent value log entries might be _less_
+        // than lastUsedCasCounter, if there was value log gc so we have to max() values while
+        // replaying.)
+        xout.get_inner_kv().update_last_used_cas_counter(item.cas_counter);
+        warn!("the last cas counter: {}", item.cas_counter);
+
+        let mut vptr = ValuePointer::default();
+        if !item.value.is_empty() {
+            vptr.dec(&mut Cursor::new(&item.value))?;
+        }
+        warn!("the last vptr: {:?}", vptr);
+        let replay_closer = Closer::new("tmp_writer_closer".to_owned());
+        {
+            let _out = xout.clone();
+            let replay_closer = replay_closer.spawn();
+            tokio::spawn(async move {
+                _out.do_writes(replay_closer, true).await;
+            });
+        }
+
+        // replay data from vlog
+        let mut first = true;
+        let mut count = 0;
+        xout.inner.vlog
+            .as_ref()
+            .unwrap()
+            .replay(&vptr, |entry, vptr| {
+                let xout = xout.get_inner_kv();
+                Box::pin(async move {
+                    if first {
+                        warn!("First key={}", string::String::from_utf8_lossy(&entry.key));
+                    }
+                    first = false;
+                    // TODO maybe use comparse set
+                    if xout.get_last_used_cas_counter() < entry.get_cas_counter() {
+                        xout.update_last_used_cas_counter(entry.get_cas_counter());
+                    }
+
+                    // TODO why?
+                    if entry.cas_counter_check != 0 {
+                        let old_value = xout._get(&entry.key)?;
+                        if old_value.cas_counter != entry.cas_counter_check {
+                            return Ok(true);
+                        }
+                    }
+                    let mut nv = vec![];
+                    let mut meta = entry.meta;
+                    if xout.should_write_value_to_lsm(entry) {
+                        nv = entry.value.clone();
+                    } else {
+                        nv = Vec::with_capacity(ValuePointer::value_pointer_encoded_size());
+                        vptr.enc(&mut nv).unwrap();
+                        meta = meta | MetaBit::BIT_VALUE_POINTER.bits();
+                    }
+                    let v = ValueStruct {
+                        meta,
+                        user_meta: entry.user_meta,
+                        cas_counter: entry.get_cas_counter(),
+                        value: nv,
+                    };
+                    while let Err(err) = xout.ensure_room_for_write().await {
+                        if count % 1000 == 0 {
+                            info!("No room for write, {}", err);
+                        }
+
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    xout.must_mt().put(&entry.key, v);
+                    Ok(true)
+                })
+            })
+            .await?;
+        // Wait for replay to be applied first.
+        replay_closer.signal_and_wait().await;
+
+        // Mmap writeable log
+        let max_fid = xout.get_inner_kv().must_vlog().get_max_fid();
+        let lf = xout.get_inner_kv().must_vlog().pick_log_by_vlog_id(&max_fid).await;
+        lf.write()
+            .await
+            .set_write(opt.clone().value_log_file_size * 2)?;
+        // TODO
+
+        {
+            let closer = xout.get_inner_kv().closers.writes.spawn();
+            let _out = xout.clone();
+            tokio::spawn(async move {
+                _out.do_writes(closer, false).await;
+            });
+        }
+
+        {
+            let closer = xout.get_inner_kv().closers.value_gc.spawn();
+            let _out = xout.get_inner_kv();
+            tokio::spawn(async move {
+                _out.must_vlog().wait_on_gc(closer).await;
+            });
+        }
+        Ok(xout)
     }
+
 
     /// data size stats
     /// TODO
     pub async fn spawn_update_size(&self) {
-        let lc = self.closers.update_size.spawn();
+        let lc = self.to_ref().closers.update_size.spawn();
         defer! {lc.done()}
 
         let mut tk = tokio::time::interval(tokio::time::Duration::from_secs(5 * 60));
-        let dir = self.opt.dir.clone();
-        let vdir = self.opt.value_dir.clone();
+        let opt = self.to_ref().opt.clone();
+        let (dir, vdir) = (opt.dir, opt.value_dir);
         loop {
             let c = lc.has_been_closed();
             tokio::select! {
@@ -1034,7 +1048,7 @@ impl KV {
         defer! {lc.done()}
         // TODO add metrics
         let has_been_close = lc.has_been_closed();
-        let write_ch = self.write_ch.clone();
+        let write_ch = self.to_ref().write_ch.clone();
         let reqs = ArcMx::<Vec<Request>>::new(Mutex::new(vec![]));
 
         let mut wait_time = tokio::time::interval(Duration::from_millis(10));
@@ -1080,7 +1094,7 @@ impl KV {
 
             // TODO maybe currently
             if !to_reqs.is_empty() {
-                self.write_requests(to_reqs)
+                self.to_ref().write_requests(to_reqs)
                     .await
                     .expect("TODO: panic message");
             }
@@ -1099,7 +1113,7 @@ impl KV {
             }
             reqs.lock().push(req.unwrap());
             let to_reqs = to_reqs();
-            self.write_requests(to_reqs.clone())
+            self.to_ref().write_requests(to_reqs.clone())
                 .await
                 .expect("TODO: panic message");
         }
@@ -1140,28 +1154,28 @@ impl KV {
         }
 
         // Tell flusher to quit.
-        self.flush_chan
+        self.to_ref().flush_chan
             .send(FlushTask {
                 mt: None,
                 vptr: ValuePointer::default(),
             })
             .await
             .unwrap();
-        self.closers.mem_table.signal_and_wait().await;
+        self.to_ref().closers.mem_table.signal_and_wait().await;
         info!("Memtable flushed!");
 
-        self.closers.compactors.signal_and_wait().await;
+        self.to_ref().closers.compactors.signal_and_wait().await;
         info!("Compaction finished!");
 
-        self.must_lc().close()?;
+        self.to_ref().must_lc().close()?;
 
         info!("Waiting for closer");
-        self.closers.update_size.signal_and_wait().await;
+        self.to_ref().closers.update_size.signal_and_wait().await;
 
-        self.dir_lock_guard.unlock()?;
-        self.value_dir_guard.unlock()?;
+        self.to_ref().dir_lock_guard.unlock()?;
+        self.to_ref().value_dir_guard.unlock()?;
 
-        self.manifest.write().await.close();
+        self.to_ref().manifest.write().await.close();
         // Fsync directions to ensure that lock file, and any other removed files whose directory
         // we haven't specifically fsynced, are guaranteed to have their directory entry removal
         // persisted to disk.
@@ -1249,7 +1263,7 @@ impl KV {
         }
         let mut vptr = ValuePointer::default();
         vptr.dec(&mut Cursor::new(item.vptr()))?;
-        let vlog = self.must_vlog();
+        let vlog = self.inner.must_vlog();
         vlog.async_read(&vptr, consumer).await?;
         Ok(())
     }
@@ -1257,6 +1271,18 @@ impl KV {
         let got = self._get(key)?;
         let inner = KVItemInner::new(key.to_vec(), got, self.clone());
         Ok(TArcRW::new(tokio::sync::RwLock::new(inner)))
+    }
+
+    pub(crate) fn get_inner_kv(&self) -> XArc<KVCore> {
+        self.inner.clone()
+    }
+
+    pub(crate) fn new(inner: XArc<KVCore>) -> KV {
+        KV { inner }
+    }
+
+    pub(crate) fn to_ref(&self) -> &KVCore {
+        self.inner.to_ref()
     }
 }
 

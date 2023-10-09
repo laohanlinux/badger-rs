@@ -1,7 +1,7 @@
 use crate::iterator::PreFetchStatus::Prefetched;
 use crate::kv::_BADGER_PREFIX;
 use crate::types::{ArcRW, Channel, Closer, TArcMx, TArcRW};
-use crate::{hex_str, ValueStruct};
+use crate::{hex_str, ValueStruct, KV};
 use crate::{
     kv::KVCore,
     types::XArc,
@@ -35,7 +35,7 @@ pub(crate) type KVItem = TArcRW<KVItemInner>;
 #[derive(Clone)]
 pub(crate) struct KVItemInner {
     status: Arc<Atomic<PreFetchStatus>>,
-    kv: XArc<KVCore>,
+    kv: KV,
     key: Vec<u8>,
     // TODO, Opz memory
     vptr: Vec<u8>,
@@ -70,7 +70,7 @@ impl Debug for KVItemInner {
 }
 
 impl KVItemInner {
-    pub(crate) fn new(key: Vec<u8>, value: ValueStruct, kv: XArc<KVCore>) -> KVItemInner {
+    pub(crate) fn new(key: Vec<u8>, value: ValueStruct, kv: KV) -> KVItemInner {
         Self {
             status: Arc::new(Atomic::new(PreFetchStatus::Empty)),
             kv,
@@ -101,7 +101,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-            .await?;
+        .await?;
         Ok(ch.recv().await.unwrap())
     }
 
@@ -112,7 +112,7 @@ impl KVItemInner {
     // Note that the call to the consumer func happens synchronously.
     pub(crate) async fn value(
         &self,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
@@ -157,7 +157,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-            .await
+        .await
     }
 
     // Returns approximate size of the key-value pair.
@@ -220,7 +220,7 @@ pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
 //  |             |        |
 //  IteratorExt  reference
 pub(crate) struct IteratorExt {
-    kv: XArc<KVCore>,
+    kv: KV,
     itr: MergeIterator,
     opt: IteratorOptions,
     item: ArcRW<Option<KVItem>>,
@@ -263,7 +263,7 @@ impl futures_core::Stream for IteratorExt {
 }
 
 impl IteratorExt {
-    pub(crate) fn new(kv: XArc<KVCore>, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
+    pub(crate) fn new(kv: KV, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
         IteratorExt {
             kv,
             opt,
@@ -274,14 +274,14 @@ impl IteratorExt {
         }
     }
 
-    pub(crate) async fn new_async_iterator(
-        kv: XArc<KVCore>,
-        itr: MergeIterator,
-        opt: IteratorOptions,
-    ) -> Box<dyn futures_core::Stream<Item=KVItem>> {
-        let itr = Self::new(kv, itr, opt);
-        Box::new(itr)
-    }
+    // pub(crate) async fn new_async_iterator(
+    //     kv: KV,
+    //     itr: MergeIterator,
+    //     opt: IteratorOptions,
+    // ) -> Box<dyn futures_core::Stream<Item=KVItem>> {
+    //     let itr = Self::new(kv, itr, opt);
+    //     Box::new(itr)
+    // }
 
     // Seek to the provided key if present. If absent, if would seek to the next smallest key
     // greater than provided if iterating in the forward direction. Behavior would be reversed is
@@ -386,14 +386,14 @@ impl IteratorExt {
     async fn valid_for_prefix(&self, prefix: &[u8]) -> bool {
         self.item.read().is_some()
             && self
-            .item
-            .read()
-            .as_ref()
-            .unwrap()
-            .read()
-            .await
-            .key()
-            .starts_with(prefix)
+                .item
+                .read()
+                .as_ref()
+                .unwrap()
+                .read()
+                .await
+                .key()
+                .starts_with(prefix)
     }
 
     // Close the iterator, It is important to call this when you're done with iteration.
