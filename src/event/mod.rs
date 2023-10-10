@@ -1,6 +1,5 @@
 use lazy_static::lazy_static;
-use metrics::{counter, describe_counter};
-use prometheus::{IntCounter, IntCounterVec, Opts, Registry};
+use prometheus::{Gauge, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry};
 use std::time::{Duration, Instant};
 
 lazy_static! {
@@ -24,10 +23,13 @@ pub fn stats() {}
 
 lazy_static! {
     static ref EV: EvMetrics = EvMetrics {
+        lsm_size: IntGaugeVec::new(prometheus::Opts::new("badger_lsm_size_bytes", "lsm size bytes by direct"), &["direct"]).unwrap(),
+        vlog_size: IntGauge::new("vlog_size", "vlog size bytes").unwrap(),
+        pending_writes: Gauge::new("pending_writes_total", "pending writes total").unwrap(),
         num_reads: IntCounter::new("num_reads", "number of reads").unwrap(),
         num_writes: IntCounter::new("num_writes", "number of writes").unwrap(),
-        bytes_read: IntCounter::new("bytes_read", "bytes of read").unwrap(),
-        bytes_written: IntCounter::new("bytes_written", "bytes of written").unwrap(),
+        num_bytes_read: IntCounter::new("num_bytes_read", "bytes of read").unwrap(),
+        num_bytes_written: IntCounter::new("num_bytes_written", "bytes of written").unwrap(),
         num_lsm_gets: IntCounter::new("num_lsm_gets", "number of lsm gets").unwrap(),
         num_lsm_bloom_hits: IntCounter::new("num_bloom_hits", "number of bloom hits").unwrap(),
         num_blocked_puts: IntCounter::new("num_blocked_hits", "number of blocked hits").unwrap(),
@@ -43,11 +45,15 @@ lazy_static! {
 }
 
 pub struct EvMetrics {
+    pub lsm_size: IntGaugeVec,
+    pub vlog_size: IntGauge,
+    pub pending_writes: Gauge,
+
     /// These are cumulative
     pub num_reads: IntCounter,
     pub num_writes: IntCounter,
-    pub bytes_read: IntCounter,
-    pub bytes_written: IntCounter,
+    pub num_bytes_read: IntCounter,
+    pub num_bytes_written: IntCounter,
     pub num_lsm_gets: IntCounter,
     pub num_lsm_bloom_hits: IntCounter,
     pub num_gets: IntCounter,

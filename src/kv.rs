@@ -170,7 +170,8 @@ impl KVCore {
                 .iter()
                 .for_each(|tb| unsafe { tb.as_ref().unwrap().decr_ref() })
         };
-        defer! {decref_tables()};
+        defer! {decref_tables()}
+        ;
 
         crate::event::get_metrics().num_gets.inc(); // TODO add metrics
 
@@ -432,13 +433,13 @@ impl KVCore {
         // defer! {info!("exit write to lsm")}
 
         #[cfg(test)]
-        let tid = random::<u32>();
+            let tid = random::<u32>();
 
         for (i, pair) in req.entries.into_iter().enumerate() {
             let (entry, resp_ch) = pair.to_owned();
 
             #[cfg(test)]
-            let debug_entry = entry.clone();
+                let debug_entry = entry.clone();
 
             let mut _old_cas = 0;
 
@@ -757,7 +758,7 @@ impl KV {
             out.notify_write_request_chan.clone(),
             out.opt.clone(),
         )
-        .await?;
+            .await?;
         lc.start_compact(out.closers.compactors.clone());
         out.lc.replace(lc);
         let mut vlog = ValueLogCore::default();
@@ -915,18 +916,24 @@ impl KV {
         defer! {lc.done()}
 
         let mut tk = tokio::time::interval(tokio::time::Duration::from_secs(5 * 60));
+        #[cfg(test)]
+        tk = tokio::time::interval(Duration::from_secs(5));
+
         let opt = self.opt.clone();
         let (dir, vdir) = (opt.dir, opt.value_dir);
         loop {
             let c = lc.has_been_closed();
             tokio::select! {
                 _ = tk.tick() => {
-                    info!("ready to update size");
                     // If value directory is different from dir, we'd have to do another walk.
-                    let (_lsm_sz, _vlog_sz) = KVCore::walk_dir(dir.as_str()).await.unwrap();
+                    let (lsm_sz, mut vlog_sz) = KVCore::walk_dir(dir.as_str()).await.unwrap();
+                    crate::event::get_metrics().lsm_size.with_label_values(&[dir.as_ref()]).set(lsm_sz as i64);
                     if dir != vdir {
-                         let (_, _vlog_sz) = KVCore::walk_dir(dir.as_str()).await.unwrap();
+                         vlog_sz = KVCore::walk_dir(dir.as_str()).await.unwrap().1;
                     }
+                    crate::event::get_metrics().vlog_size.set(vlog_sz as i64);
+                    let lsm_sz = crate::event::get_metrics().lsm_size.get_metric_with_label_values(&[dir.as_ref()]).unwrap().get();
+                    info!("ready to update size, lsm_sz: {}, vlog_size: {}", lsm_sz, crate::event::get_metrics().vlog_size.get());
                 },
                 _ = c.recv() => {return;},
             }
@@ -1225,7 +1232,7 @@ impl KV {
         self.must_vlog().incr_iterator_count();
 
         // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
         for tb in tables.clone() {
             let st = unsafe { tb.as_ref().unwrap().clone() };
             let iter = Box::new(UniIterator::new(st, opt.reverse));
@@ -1240,7 +1247,7 @@ impl KV {
     pub(crate) async fn new_std_iterator(
         &self,
         opt: IteratorOptions,
-    ) -> impl futures_core::Stream<Item = KVItem> {
+    ) -> impl futures_core::Stream<Item=KVItem> {
         let mut itr = self.new_iterator(opt).await;
         itr
     }
@@ -1248,7 +1255,7 @@ impl KV {
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         //info!("ready to yield item:{} value from vlog!", item);
         // no value
