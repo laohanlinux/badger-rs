@@ -682,6 +682,15 @@ pub type WeakKV = XWeak<KVCore>;
 ///      let value = kv.get(b"foo").await.unwrap();
 ///      assert_eq!(&value, b"bar");
 ///      kv.delete(&b"foo").await.unwrap();
+///      let itr = kv.new_iterator(IteratorOptions::default());
+///      itr.rewind().await;
+///      while let Some(item) = itr.peek().await {
+///         let rd_item = item.read().await;
+///         let key = rd_item.key();
+///         let value = rd_item.get_value();
+///         itr.next().await;
+///     }
+///     itr.close().await;
 ///}
 /// ```
 #[derive(Clone)]
@@ -1149,18 +1158,6 @@ impl KV {
 
     /// NewIterator returns a new iterator. Depending upon the options, either only keys, or both
     /// key-value pairs would be fetched. The keys are returned in lexicographically sorted order.
-    /// Usage:
-    /// ```
-    ///   let itr = kv.new_iterator(IteratorOptions::default())
-    ///   itr.rewind().await();
-    ///   while let Some(item) = itr.peek().await {
-    ///         let rd_item = item.read().await;
-    ///         let key = rd_item.key();
-    ///         let value = rd_item.get_value();
-    ///         itr.next().await;
-    ///   }
-    ///   itr.close().await;
-    /// ```
     pub async fn new_iterator(&self, opt: IteratorOptions) -> IteratorExt {
         // Notice, the iterator is global iterator, so must incr reference for memtable(SikpList), sst(file), vlog(file).
         let p = crossbeam_epoch::pin();
