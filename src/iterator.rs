@@ -11,7 +11,7 @@ use crate::{
 
 use atomic::Atomic;
 
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Display, Formatter, Pointer};
 use std::future::Future;
 
 use std::pin::{pin, Pin};
@@ -20,7 +20,9 @@ use log::warn;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
+use std::ops::Deref;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::{RwLockReadGuard, RwLockWriteGuard};
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub(crate) enum PreFetchStatus {
@@ -28,7 +30,59 @@ pub(crate) enum PreFetchStatus {
     Prefetched,
 }
 
-pub type KVItem = TArcRW<KVItemInner>;
+#[derive(Clone, Debug)]
+pub struct KVItem {
+    inner: TArcRW<KVItemInner>,
+}
+
+impl From<KVItemInner> for KVItem {
+    fn from(value: KVItemInner) -> Self {
+        Self { inner: TArcRW::new(tokio::sync::RwLock::new(value)) }
+    }
+}
+// impl Deref for KVItem {
+//     type Target = tokio::sync::RwLock<KVItemInner>;
+//
+//     fn deref(&self) -> &Self::Target {
+//         self.inner.as_ref()
+//     }
+// }
+
+impl KVItem {
+    pub async fn key(&self) -> Vec<u8> {
+        let inner = self.rl().await;
+        inner.key().to_vec()
+    }
+
+    pub async fn value(&self) -> Result<Vec<u8>> {
+        let inner = self.rl().await;
+        inner.get_value().await
+    }
+
+    pub async fn has_value(&self) -> bool {
+        let inner = self.rl().await;
+        inner.has_value()
+    }
+
+    pub async fn counter(&self) -> u64 {
+        let inner = self.rl().await;
+        inner.counter()
+    }
+
+    pub async fn user_meta(&self) -> u8 {
+        let inner = self.rl().await;
+        inner.user_meta()
+    }
+
+    pub(crate) async fn rl(&self) -> RwLockReadGuard<'_, KVItemInner> {
+        self.inner.read().await
+    }
+
+    pub(crate) async fn wl(&self) -> RwLockWriteGuard<'_, KVItemInner> {
+        self.inner.write().await
+    }
+}
+
 
 // Returned during iteration. Both the key() and value() output is only valid until
 // iterator.next() is called.
@@ -91,7 +145,7 @@ impl KVItemInner {
     }
 
     // Return value
-    pub async fn get_value(&self) -> Result<Vec<u8>> {
+    pub(crate) async fn get_value(&self) -> Result<Vec<u8>> {
         let ch = Channel::new(1);
         self.value(|value| {
             let tx = ch.tx();
@@ -301,9 +355,9 @@ impl IteratorExt {
     // Seek to the provided key if present. If absent, if would seek to the next smallest key
     // greater than provided if iterating in the forward direction. Behavior would be reversed is
     // iterating backwards.
-    pub(crate) async fn seek(&self, key: &[u8]) -> Option<KVItem> {
+    pub async fn seek(&self, key: &[u8]) -> Option<KVItem> {
         while let Some(el) = self.data.write().pop_front() {
-            el.read().await.wg.wait().await;
+            el.rl().await.wg.wait().await;
         }
         while let Some(el) = self.itr.seek(key) {
             if el.key().starts_with(_BADGER_PREFIX) {
@@ -318,10 +372,10 @@ impl IteratorExt {
     // Rewind the iterator cursor all the wy to zero-th position, which would be the
     // smallest key if iterating forward, and largest if iterating backward. It dows not
     // keep track of whether the cursor started with a `seek`.
-    pub(crate) async fn rewind(&self) -> Option<KVItem> {
+    pub async fn rewind(&self) -> Option<KVItem> {
         while let Some(el) = self.data.write().pop_front() {
             // Just cleaner to wait before pushing. No ref counting need.
-            el.read().await.wg.wait().await;
+            el.rl().await.wg.wait().await;
         }
         // rewind the iterator
         // rewind, next, rewind?, thie item is who!
@@ -339,10 +393,10 @@ impl IteratorExt {
     }
 
     // Advance the iterator by one (*NOTICE*: must be rewind when you call self.next())
-    pub(crate) async fn next(&self) -> Option<KVItem> {
+    pub async fn next(&self) -> Option<KVItem> {
         // Ensure current item has load
         if let Some(el) = self.item.write().take() {
-            el.read().await.wg.wait().await; // Just cleaner to wait before pushing to avoid doing ref counting.
+            el.rl().await.wg.wait().await; // Just cleaner to wait before pushing to avoid doing ref counting.
         }
         // Set next item to current
         if let Some(el) = self.data.write().pop_front() {
@@ -369,33 +423,12 @@ impl IteratorExt {
         Some(xitem)
     }
 
-    pub(crate) async fn peek(&self) -> Option<KVItem> {
+    pub async fn peek(&self) -> Option<KVItem> {
         self.item.read().clone()
     }
 }
 
 impl IteratorExt {
-    fn new_item(&self) -> KVItem {
-        let inner_item = KVItemInner {
-            status: Arc::new(Atomic::new(PreFetchStatus::Empty)),
-            kv: self.kv.clone(),
-            key: vec![],
-            value: TArcMx::new(Default::default()),
-            vptr: vec![],
-            meta: 0,
-            user_meta: 0,
-            cas_counter: Arc::new(Default::default()),
-            wg: Closer::new("IteratorExt".to_owned()),
-            err: Ok(()),
-        };
-        return KVItem::new(tokio::sync::RwLock::new(inner_item));
-    }
-
-    // Returns false when iteration is done.
-    fn valid(&self) -> bool {
-        self.item.read().is_some()
-    }
-
     // Returns false when iteration is done
     // or when the current key is not prefixed by the specified prefix.
     async fn valid_for_prefix(&self, prefix: &[u8]) -> bool {
@@ -405,7 +438,7 @@ impl IteratorExt {
             .read()
             .as_ref()
             .unwrap()
-            .read()
+            .rl()
             .await
             .key()
             .starts_with(prefix)
@@ -423,7 +456,7 @@ impl IteratorExt {
         let vs = self.itr.peek().unwrap();
         let vs = vs.value();
         {
-            let mut item = item.write().await;
+            let mut item = item.wl().await;
             item.meta = vs.meta;
             item.user_meta = vs.user_meta;
             item.cas_counter.store(vs.cas_counter, Ordering::Release);
@@ -434,16 +467,16 @@ impl IteratorExt {
 
         // need fetch value, use new coroutine to load value.
         if self.opt.pre_fetch_values {
-            item.read().await.wg.add_running(1);
+            item.rl().await.wg.add_running(1);
             tokio::spawn(async move {
                 // FIXME we are not handling errors here.
                 {
-                    let item = item.read().await;
+                    let item = item.rl().await;
                     if let Err(err) = item.pre_fetch_value().await {
                         log::error!("Failed to fetch value, {}", err);
                     }
                 }
-                item.read().await.wg.done();
+                item.rl().await.wg.done();
             });
         }
     }
@@ -481,5 +514,26 @@ impl IteratorExt {
             }
             itr.next();
         }
+    }
+
+    fn new_item(&self) -> KVItem {
+        let inner_item = KVItemInner {
+            status: Arc::new(Atomic::new(PreFetchStatus::Empty)),
+            kv: self.kv.clone(),
+            key: vec![],
+            value: TArcMx::new(Default::default()),
+            vptr: vec![],
+            meta: 0,
+            user_meta: 0,
+            cas_counter: Arc::new(Default::default()),
+            wg: Closer::new("IteratorExt".to_owned()),
+            err: Ok(()),
+        };
+        return KVItem::from(inner_item);
+    }
+
+    // Returns false when iteration is done.
+    fn valid(&self) -> bool {
+        self.item.read().is_some()
     }
 }

@@ -674,23 +674,26 @@ pub type WeakKV = XWeak<KVCore>;
 
 /// DB handle
 /// ```
+/// use badger_rs::{Options, KV};
+/// use badger_rs::IteratorOptions;
+///
 /// #[tokio::main]
 ///
 /// pub async fn main() {
-///      let kv = KV::open(Options::default());
-///      kv.set(b"foo".to_vec(), b"bar".to_vec()).await.unwrap();
+///      let kv = KV::open(Options::default()).await.unwrap();
+///      kv.set(b"foo".to_vec(), b"bar".to_vec(), 0x0).await.unwrap();
 ///      let value = kv.get(b"foo").await.unwrap();
 ///      assert_eq!(&value, b"bar");
-///      kv.delete(&b"foo").await.unwrap();
-///      let itr = kv.new_iterator(IteratorOptions::default());
+///      kv.delete(b"foo").await.unwrap();
+///      let mut itr = kv.new_iterator(IteratorOptions::default()).await;
 ///      itr.rewind().await;
 ///      while let Some(item) = itr.peek().await {
-///         let rd_item = item.read().await;
-///         let key = rd_item.key();
-///         let value = rd_item.get_value();
+///         let key = item.key();
+///         let value = item.value().await.unwrap();
 ///         itr.next().await;
 ///     }
-///     itr.close().await;
+///     itr.close().await.unwrap();
+///     kv.close().await.unwrap();
 ///}
 /// ```
 #[derive(Clone)]
@@ -1291,7 +1294,8 @@ impl KV {
     pub(crate) async fn get_with_ext(&self, key: &[u8]) -> Result<KVItem> {
         let got = self._get(key)?;
         let inner = KVItemInner::new(key.to_vec(), got, self.clone());
-        Ok(TArcRW::new(tokio::sync::RwLock::new(inner)))
+        let item = KVItem::from(inner);
+        Ok(item)
     }
 
     pub(crate) fn get_inner_kv(&self) -> XArc<KVCore> {
