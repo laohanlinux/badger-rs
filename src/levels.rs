@@ -161,6 +161,19 @@ impl LevelsController {
         self.cleanup_levels()
     }
 
+    pub(crate) fn get_all_fids(&self) -> Vec<u64> {
+        let file_ids = self
+            .levels
+            .iter()
+            .map(|lc| {
+                let tb = lc.tables.read();
+                tb.iter().map(|tb| tb.id()).collect::<Vec<_>>()
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        file_ids
+    }
+
     // returns the found value if any. If not found, we return nil.
     pub(crate) fn get(&self, key: &[u8]) -> Option<ValueStruct> {
         // It's important that we iterate the levels from 0 on upward.  The reason is, if we iterated
@@ -171,19 +184,6 @@ impl LevelsController {
         for h in self.levels.iter() {
             h.lock_shared();
             if let Some(item) = h.get(key) {
-                #[cfg(test)]
-                {
-                    if item.key() != key {
-                        error!("{} not equal {}", hex_str(key), hex_str(item.key()));
-                    }
-                    assert_eq!(
-                        key,
-                        item.key(),
-                        "{} not equal {}",
-                        hex_str(key),
-                        hex_str(item.key())
-                    );
-                }
                 h.unlock_shared();
                 return Some(item.value().clone());
             }
@@ -424,7 +424,7 @@ impl LevelsController {
 
     // async to add level0 table
     pub(crate) async fn add_level0_table(&self, table: Table) -> Result<()> {
-        defer! {info!("Finish add level0 table")}
+        defer! {warn!("Finish add level0 table, fid: {}", table.id())}
         // We update the manifest _before_ the table becomes part of a levelHandler, because at that
         // point it could get used in some compaction.  This ensures the manifest file gets updated in
         // the proper order. (That means this update happens before that of some compaction which
@@ -538,7 +538,6 @@ impl LevelsController {
         let execute_time = SystemTime::now();
         defer! {
             let cost = SystemTime::now().duration_since(execute_time).unwrap().as_millis();
-            crate::event::COMPACT_COST_TIME.inc_by(cost as u64);
         }
         {
             let cd = cd.read().await;

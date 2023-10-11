@@ -1,12 +1,9 @@
 use awaitgroup::WaitGroup;
 use drop_cell::defer;
-use itertools::Itertools;
-use log::kv::ToValue;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use std::collections::HashSet;
 use std::env::temp_dir;
 use std::io::{Read, Write};
-use std::process::id;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
 use tokio::io::AsyncWriteExt;
@@ -17,9 +14,9 @@ use tracing_subscriber::fmt::format;
 use crate::iterator::IteratorOptions;
 use crate::test_util::{push_log, remove_push_log, tracing_log};
 use crate::types::{TArcMx, XArc};
-use crate::value_log::{Entry, MetaBit};
+use crate::value_log::{Entry, MetaBit, MAX_KEY_SIZE};
 use crate::y::hex_str;
-use crate::{kv::KV, options::Options, Error};
+use crate::{kv::KVCore, options::Options, Error, KV};
 
 fn get_test_option(dir: &str) -> Options {
     let mut opt = Options::default();
@@ -130,6 +127,7 @@ async fn t_batch_write() {
         SystemTime::now().duration_since(start).unwrap().as_secs()
     );
     kv.must_lc().print_level_fids();
+    kv.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -280,6 +278,7 @@ async fn t_kv_cas() {
 
 #[tokio::test]
 async fn t_kv_get() {
+    tracing_log();
     let kv = build_kv().await;
     kv.set(b"key1".to_vec(), b"value1".to_vec(), 0x08)
         .await
@@ -420,13 +419,7 @@ async fn t_kv_get_more() {
 
     for entry in &entries {
         let got = kv.get(entry.key.as_ref()).await;
-        assert!(
-            got.is_err(),
-            "{}, value is =>{}",
-            hex_str(entry.key.as_ref()),
-            hex_str(&got.unwrap()),
-        );
-        //let value = got.into_err();
+        assert!(got.unwrap_err().is_not_found());
     }
 }
 
@@ -435,8 +428,7 @@ async fn t_kv_get_more() {
 #[tokio::test]
 async fn t_kv_exists_more() {
     tracing_log();
-
-    let mut start = SystemTime::now();
+    let start = SystemTime::now();
     let kv = build_kv().await;
 
     let n = 10000;
@@ -506,16 +498,13 @@ async fn t_kv_exists_more() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn kv_iterator_basic() {
     tracing_log();
-    use std::async_iter::AsyncIterator;
-
-    let mut start = SystemTime::now();
     let kv = build_kv().await;
 
     let n = 10000;
 
     let bkey = |i: usize| format!("{:09}", i).as_bytes().to_vec();
     let bvalue = |i: usize| format!("{:025}", i).as_bytes().to_vec();
-    let mut entries = (0..n)
+    let entries = (0..n)
         .into_iter()
         .map(|i| (bkey(i), bvalue(i)))
         .map(|(key, value)| Entry::default().key(key).value(value).user_meta(1))
@@ -531,12 +520,11 @@ async fn kv_iterator_basic() {
     opt.pre_fetch_values = true;
     opt.pre_fetch_size = 10;
 
-    let itr = kv.new_iterator(opt).await;
     {
+        let itr = kv.new_iterator(opt).await;
         let mut count = 0;
         let mut rewind = true;
         info!("Startinh first basic iteration");
-        let itr = kv.new_iterator(opt).await;
         itr.rewind().await;
         while let Some(item) = itr.peek().await {
             let rd_item = item.read().await;
@@ -561,21 +549,326 @@ async fn kv_iterator_basic() {
             itr.next().await;
         }
         assert_eq!(count, entries.len());
-        // use tokio_stream::StreamExt;
-        // let mut itr = kv.new_std_iterator(opt).await;
-        // let mut itr = std::pin::pin!(itr);
-        // let mut n = 0;
-        // while let Some(item) = itr.next().await {
-        //    n += 1;
-        //  warn!("====>>>>, {}", n);
-        // let item = item.read().await;
-        // warn!("====>>>>{}", hex_str(item.key()));
-        //}
+    }
+
+    {
+        info!("Starting second basic iteration");
+        let mut idx = 5030;
+        let start = bkey(idx);
+        let itr = kv.new_iterator(opt).await;
+        let _ = itr.seek(&start).await.unwrap();
+        while let Some(item) = itr.peek().await {
+            let item = item.read().await;
+            assert_eq!(hex_str(&bkey(idx)), hex_str(item.key()));
+            assert_eq!(
+                hex_str(&bvalue(idx)),
+                hex_str(&item.get_value().await.unwrap())
+            );
+            idx += 1;
+            itr.next().await;
+        }
     }
 }
 
-async fn build_kv() -> XArc<KV> {
-    use crate::test_util::{random_tmp_dir, tracing_log};
+#[tokio::test]
+async fn t_kv_load() {
+    tracing_log();
+    let kv = build_kv().await;
+
+    let n = 10000;
+
+    let bkey = |i: usize| format!("{:09}", i).as_bytes().to_vec();
+    let bvalue = |i: usize| format!("{:025}", i).as_bytes().to_vec();
+    let entries = (0..n)
+        .into_iter()
+        .map(|i| (bkey(i), bvalue(i)))
+        .map(|(key, value)| Entry::default().key(key).value(value).user_meta(1))
+        .collect::<Vec<_>>();
+    for entry in entries.iter() {
+        kv.set(entry.key.clone(), entry.value.clone(), 0)
+            .await
+            .unwrap();
+    }
+
+    assert!(kv.must_lc().validate().is_ok());
+
+    kv.close().await.unwrap();
+    let mut fids = kv.must_lc().get_all_fids();
+    let dir = kv.opt.dir.clone();
+
+    // Check that files are garbage collected.
+    let mut disk_fids = crate::table::table::get_id_map(dir.as_str())
+        .into_iter()
+        .collect::<Vec<_>>();
+    fids.sort();
+    disk_fids.sort();
+    assert_eq!(fids, disk_fids);
+}
+
+#[tokio::test]
+async fn t_kv_iterator_deleted() {
+    tracing_log();
+    let kv = build_kv().await;
+    kv.set(b"Key1".to_vec(), b"Value1".to_vec(), 0x00)
+        .await
+        .unwrap();
+    kv.set(b"Key2".to_vec(), b"Value2".to_vec(), 0x00)
+        .await
+        .unwrap();
+
+    let mut opt = IteratorOptions::default();
+    opt.pre_fetch_size = 10;
+    let itr = kv.new_iterator(opt).await;
+    let mut wb = vec![];
+    let prefix = b"Key";
+    itr.seek(prefix).await;
+    while let Some(item) = itr.peek().await {
+        let key = item.read().await.key().to_vec();
+        if !key.starts_with(prefix) {
+            break;
+        }
+        let entry = Entry::default().key(key).meta(MetaBit::BIT_DELETE.bits());
+        wb.push(entry);
+        itr.next().await;
+    }
+    assert_eq!(2, wb.len());
+    let ret = kv.batch_set(wb).await;
+    for res in &ret {
+        assert!(res.is_ok());
+    }
+
+    for prefetch in [true, false] {
+        let mut opt = IteratorOptions::default();
+        opt.pre_fetch_values = prefetch;
+        let idx_it = kv.new_iterator(opt).await;
+        let mut est_size = 0;
+        let mut idx_keys = vec![];
+        idx_it.seek(prefix).await;
+        while let Some(item) = idx_it.peek().await {
+            let item = item.read().await;
+            let key = item.key().to_vec();
+            est_size += item.estimated_size();
+            if !key.starts_with(prefix) {
+                break;
+            }
+
+            idx_keys.push(hex_str(&key));
+            idx_it.next().await;
+        }
+
+        assert_eq!(0, idx_keys.len());
+        assert_eq!(0, est_size);
+    }
+}
+
+#[tokio::test]
+async fn t_delete_without_sync_write() {
+    tracing_log();
+    let kv = build_kv().await;
+    let key = b"k1".to_vec();
+    kv.set(
+        key.clone(),
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890".to_vec(),
+        0x00,
+    )
+        .await
+        .unwrap();
+    let opt = kv.opt.clone();
+    kv.delete(&key).await.unwrap();
+    kv.close().await.expect("TODO: panic message");
+    drop(kv);
+    // Reopen kv, it should failed
+    {
+        let kv = KV::open(opt).await.unwrap();
+        let got = kv.get_with_ext(&key).await;
+        assert!(got.unwrap_err().is_not_found());
+    }
+}
+
+#[tokio::test]
+async fn t_kv_set_if_absent() {
+    tracing_log();
+    let kv = build_kv().await;
+    let key = b"k1".to_vec();
+    let got = kv
+        .set_if_ab_sent(key.clone(), b"value".to_vec(), 0x00)
+        .await;
+    assert!(got.is_ok());
+
+    let got = kv
+        .set_if_ab_sent(key.clone(), b"value2".to_vec(), 0x00)
+        .await;
+    assert!(got.unwrap_err().is_exists());
+}
+
+#[tokio::test]
+async fn t_kv_pid_file() {
+    tracing_log();
+    let kv1 = build_kv().await;
+    let kv2 = KV::open(kv1.opt.clone()).await;
+    let err = kv2.unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("Another program process is using the Badger databse"));
+    kv1.close().await.unwrap();
+    drop(kv1);
+}
+
+#[tokio::test]
+async fn t_kv_big_key_value_pairs() {
+    tracing_log();
+    let kv = build_kv().await;
+    let big_key = vec![0u8; MAX_KEY_SIZE + 1];
+    let big_value = vec![0u8; kv.opt.value_log_file_size as usize + 1];
+    let small = vec![0u8; 10];
+    let got = kv.set(big_key.clone(), small.clone(), 0x00).await;
+    let err = got.unwrap_err();
+    assert!(err.to_string().starts_with("Key"));
+
+    let got = kv.set(small.clone(), big_value.clone(), 0x00).await;
+    let err = got.unwrap_err();
+    assert!(err.to_string().starts_with("Value"));
+
+    let entry1 = Entry::default().key(small.clone()).value(small.clone());
+    let entry2 = Entry::default()
+        .key(big_key.clone())
+        .value(big_value.clone());
+    let res = kv.batch_set(vec![entry1, entry2]).await;
+    let first_res = res[0].clone();
+    let second_res = res[1].clone();
+    assert!(first_res.is_ok());
+    assert!(second_res.unwrap_err().to_string().starts_with("Key"));
+
+    // make sure e1 was actually set:
+    let item = kv.get(&small).await.unwrap();
+    assert_eq!(&item, &small);
+    kv.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn t_kv_iterator_prefetch_size() {
+    tracing_log();
+    let kv = build_kv().await;
+    let bkey = |i: usize| format!("{:09}", i).as_bytes().to_vec();
+    let bvalue = |i: usize| format!("{:025}", i).as_bytes().to_vec();
+
+    let n = 100;
+    let entries = (0..n)
+        .into_iter()
+        .map(|i| (bkey(i), bvalue(i)))
+        .map(|(key, value)| Entry::default().key(key).value(value).user_meta(1))
+        .collect::<Vec<_>>();
+    for entry in entries.iter() {
+        kv.set(entry.key.clone(), entry.value.clone(), 0)
+            .await
+            .unwrap();
+    }
+
+    for prefetch_size in [-10, 0, 1, 10] {
+        let mut opt = IteratorOptions::default();
+        opt.pre_fetch_values = true;
+        opt.pre_fetch_size = prefetch_size;
+        let itr = kv.new_iterator(opt).await;
+        itr.rewind().await;
+        let mut count = 0;
+        while itr.peek().await.is_some() {
+            count += 1;
+            itr.next().await;
+        }
+        assert_eq!(count, n);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn t_kv_get_set_race() {
+    use rand::{thread_rng, Rng};
+    tracing_log();
+    let mut rng = thread_rng();
+    let mut arr = [0u8; 4096];
+    rng.fill(&mut arr);
+    let kv = build_kv().await;
+    let mut wg = awaitgroup::WaitGroup::new();
+    let num_op = 1000;
+    let data = TArcMx::new(tokio::sync::Mutex::new(arr));
+
+    let worker = wg.worker();
+    let ndata = data.clone();
+    let mut key_ch = crate::types::Channel::new(1);
+    let key_tx = key_ch.tx();
+    {
+        let kv = kv.clone();
+        tokio::spawn(async move {
+            for i in 0..num_op {
+                let key = format!("{}", i);
+                let data = ndata.lock().await.clone().to_vec();
+                kv.set(key.clone().into_bytes(), data, 0x0).await.unwrap();
+                key_tx.send(key.into_bytes()).await.unwrap();
+                info!("Put Some");
+            }
+            worker.done();
+            key_tx.close();
+        });
+    }
+
+    let worker = wg.worker();
+    let key_rx = key_ch.rx();
+
+    {
+        let kv = kv.clone();
+        tokio::spawn(async move {
+            while let Ok(key) = key_rx.recv().await {
+                kv.get(&key).await.unwrap();
+                info!("Try again!");
+            }
+            worker.done();
+        });
+    }
+    wg.wait().await;
+    kv.close().await.expect("TODO: panic message");
+}
+
+extern crate test;
+
+// #[bench]
+// fn t_kv_bench_exists(b: &mut test::Bencher) {
+//     let mut r = tokio::runtime::Runtime::new().unwrap();
+//     r.block_on(
+//
+//         async {
+//             let kv = build_kv().await;
+//             let n = 50000 * 100;
+//             let m = 100;
+//             let mut entries = (0..n)
+//                 .into_iter()
+//                 .map(|i| i.to_string().as_bytes().to_vec())
+//                 .map(|key| {
+//                     Entry::default()
+//                         .key(key.clone())
+//                         .value(key.clone())
+//                         .user_meta(1)
+//                 })
+//                 .collect::<Vec<_>>();
+//             for chunk in entries.chunks(m) {
+//                 let ret = kv
+//                     .batch_set(chunk.into_iter().map(|entry| entry.clone()).collect())
+//                     .await;
+//                 let pass = ret.into_iter().all(|ret| ret.is_ok());
+//                 assert!(pass);
+//             }
+//             assert!(kv.must_lc().validate().is_ok());
+//             // Get
+//             b.iter(|| {
+//                 for i in 0..n {
+//
+//                 }
+//             });
+//         }
+//     );
+// }
+
+
+async fn build_kv() -> KV {
+    use crate::test_util::random_tmp_dir;
     tracing_log();
     let dir = random_tmp_dir();
     let kv = KV::open(get_test_option(&dir)).await;

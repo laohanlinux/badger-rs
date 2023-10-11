@@ -33,20 +33,18 @@ use std::{fmt, fs, io, ptr};
 
 use tokio::macros::support::thread_rng_n;
 
-use crate::kv::{BoxKV, KV};
+use crate::kv::{BoxKV, KVCore};
 use crate::log_file::LogFile;
 use crate::options::Options;
 
 use crate::types::{Channel, Closer, TArcRW};
-use crate::y::{
-    create_synced_file, hex_str, open_existing_synced_file, sync_directory, Decode, Encode,
-};
+use crate::y::{create_synced_file, open_existing_synced_file, sync_directory, Decode, Encode};
 use crate::Error::Unexpected;
-use crate::{Error, Result, EMPTY_SLICE};
+use crate::{event, hex_str, Error, Result, EMPTY_SLICE};
 
-/// Values have their first byte being byteData or byteDelete. This helps us distinguish between
-/// a key that has never been seen and a key that has been explicitly deleted.
 bitflags! {
+    /// Values have their first byte being byteData or byteDelete. This helps us distinguish between
+    /// a key that has never been seen and a key that has been explicitly deleted.
     pub struct MetaBit: u8{
         /// Set if the key has been deleted.
         const BIT_DELETE = 1;
@@ -509,7 +507,7 @@ impl ValueLogCore {
     }
 
     // TODO Use Arc<KV> to replace it
-    pub(crate) async fn open(&mut self, kv: *const KV, opt: Options) -> Result<()> {
+    pub(crate) async fn open(&mut self, kv: *const KVCore, opt: Options) -> Result<()> {
         self.dir_path = opt.value_dir.clone();
         self.opt = opt;
         self.kv = BoxKV::new(kv);
@@ -519,7 +517,7 @@ impl ValueLogCore {
         Ok(())
     }
 
-    fn get_kv(&self) -> &KV {
+    fn get_kv(&self) -> &KVCore {
         unsafe { &*self.kv.kv }
     }
 
@@ -805,6 +803,8 @@ impl ValueLogCore {
             // update log
             self.writable_log_offset
                 .fetch_add(n as u32, Ordering::Release);
+            event::get_metrics().num_writes.inc();
+            event::get_metrics().num_bytes_written.inc_by(n as u64);
 
             info!(
                 "Flushing {} requests, file_offset:{}",
@@ -827,7 +827,7 @@ impl ValueLogCore {
     }
 
     // rewrite the log_file
-    async fn rewrite(&self, lf: TArcRW<LogFile>, _x: &KV) -> Result<()> {
+    async fn rewrite(&self, lf: TArcRW<LogFile>, _x: &KVCore) -> Result<()> {
         let max_fid = self.max_fid.load(Ordering::Relaxed);
         assert!(
             lf.read().await.fid < max_fid,
@@ -1178,4 +1178,16 @@ impl ValueLogCore {
 struct PickVlogsGuardsReadLock<'a> {
     vlogs: tokio::sync::RwLockReadGuard<'a, HashMap<u32, TArcRW<LogFile>>>,
     fids: Vec<u32>,
+}
+
+#[test]
+fn t_value_vptr_size() {
+    let mut vpr = ValuePointer::default();
+    vpr.len = 75;
+    vpr.fid = 0;
+    vpr.offset = 0;
+    let mut buffer = std::io::Cursor::new(vec![0u8; ValuePointer::value_pointer_encoded_size()]);
+    let sz = vpr.enc(&mut buffer).unwrap();
+    println!("{}", sz);
+    println!("{:?}", buffer.into_inner());
 }

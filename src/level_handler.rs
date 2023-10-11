@@ -4,7 +4,7 @@ use crate::table::iterator::{IteratorImpl, IteratorItem};
 use crate::table::table::Table;
 use crate::types::XArc;
 
-use crate::{hex_str, Result};
+use crate::{event, hex_str, Result};
 use core::slice::SlicePattern;
 use std::fmt::Display;
 
@@ -315,9 +315,11 @@ impl LevelHandler {
                 // check it by bloom filter
                 if tb.does_not_have(key) {
                     //debug!("not contain it, key #{}, st: {}", hex_str(key), tb.id());
+                    event::get_metrics().num_lsm_bloom_hits.inc();
                     tb.decr_ref();
                     continue;
                 }
+                event::get_metrics().num_lsm_gets.inc();
                 let it = IteratorImpl::new(tb.clone(), false);
                 let item = it.seek(key);
                 tb.decr_ref();
@@ -345,10 +347,11 @@ impl LevelHandler {
             tb.incr_ref();
             if tb.does_not_have(key) {
                 //debug!("not contain it, key #{}, st: {}", hex_str(key), tb.id());
+                event::get_metrics().num_lsm_bloom_hits.inc();
                 tb.decr_ref();
                 return None;
             }
-
+            event::get_metrics().num_lsm_gets.inc();
             let it = IteratorImpl::new(tb.clone(), false);
             let item = it.seek(key);
             tb.decr_ref();

@@ -1,9 +1,9 @@
 use crate::iterator::PreFetchStatus::Prefetched;
 use crate::kv::_BADGER_PREFIX;
 use crate::types::{ArcRW, Channel, Closer, TArcMx, TArcRW};
-use crate::{hex_str, ValueStruct};
+use crate::{hex_str, ValueStruct, KV};
 use crate::{
-    kv::KV,
+    kv::KVCore,
     types::XArc,
     value_log::{MetaBit, ValuePointer},
     Decode, MergeIterator, Result, Xiterator, EMPTY_SLICE,
@@ -11,12 +11,12 @@ use crate::{
 
 use atomic::Atomic;
 
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 
 use std::pin::{pin, Pin};
 
-use log::{error, warn};
+use log::warn;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
@@ -28,14 +28,14 @@ pub(crate) enum PreFetchStatus {
     Prefetched,
 }
 
-pub(crate) type KVItem = TArcRW<KVItemInner>;
+pub type KVItem = TArcRW<KVItemInner>;
 
 // Returned during iteration. Both the key() and value() output is only valid until
 // iterator.next() is called.
 #[derive(Clone)]
 pub(crate) struct KVItemInner {
     status: Arc<Atomic<PreFetchStatus>>,
-    kv: XArc<KV>,
+    kv: KV,
     key: Vec<u8>,
     // TODO, Opz memory
     vptr: Vec<u8>,
@@ -58,8 +58,19 @@ impl Display for KVItemInner {
     }
 }
 
+impl Debug for KVItemInner {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("kv")
+            .field("key", &hex_str(&self.key))
+            .field("meta", &self.meta)
+            .field("user_meta", &self.user_meta)
+            .field("cas", &self.counter())
+            .finish()
+    }
+}
+
 impl KVItemInner {
-    pub(crate) fn new(key: Vec<u8>, value: ValueStruct, kv: XArc<KV>) -> KVItemInner {
+    pub(crate) fn new(key: Vec<u8>, value: ValueStruct, kv: KV) -> KVItemInner {
         Self {
             status: Arc::new(Atomic::new(PreFetchStatus::Empty)),
             kv,
@@ -90,7 +101,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-        .await?;
+            .await?;
         Ok(ch.recv().await.unwrap())
     }
 
@@ -101,7 +112,7 @@ impl KVItemInner {
     // Note that the call to the consumer func happens synchronously.
     pub(crate) async fn value(
         &self,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
@@ -146,7 +157,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-        .await
+            .await
     }
 
     // Returns approximate size of the key-value pair.
@@ -187,14 +198,30 @@ impl KVItemInner {
 }
 
 // Used to set options when iterating over Badger key-value stores.
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct IteratorOptions {
+#[derive(Debug, Clone, Copy)]
+pub struct IteratorOptions {
     // Indicates whether we should prefetch values during iteration and store them.
     pub(crate) pre_fetch_values: bool,
     // How may KV pairs to prefetch while iterating. Valid only if PrefetchValues is true.
     pub(crate) pre_fetch_size: isize,
     // Direction of iteration. False is forward, true is backward.
     pub(crate) reverse: bool,
+}
+
+impl Default for IteratorOptions {
+    fn default() -> Self {
+        DEF_ITERATOR_OPTIONS
+    }
+}
+
+impl IteratorOptions {
+    pub fn new(pre_fetch_values: bool, pre_fetch_size: isize, reverse: bool) -> Self {
+        IteratorOptions {
+            pre_fetch_values,
+            pre_fetch_size,
+            reverse,
+        }
+    }
 }
 
 pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
@@ -208,8 +235,8 @@ pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
 //  |             |        |
 //  |             |        |
 //  IteratorExt  reference
-pub(crate) struct IteratorExt {
-    kv: XArc<KV>,
+pub struct IteratorExt {
+    kv: KV,
     itr: MergeIterator,
     opt: IteratorOptions,
     item: ArcRW<Option<KVItem>>,
@@ -219,40 +246,39 @@ pub(crate) struct IteratorExt {
 }
 
 /// TODO FIXME
-impl futures_core::Stream for IteratorExt {
-    type Item = KVItem;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        warn!("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
-        let mut has_rewind = self.has_rewind.write();
-        if !*has_rewind {
-            *has_rewind = true;
-            match Pin::new(&mut pin!(self.rewind())).poll(cx) {
-                std::task::Poll::Pending => {
-                    warn!("<<<<Pending>>>>>");
-                    std::task::Poll::Pending
-                }
-                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-                std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
-            }
-        } else {
-            match Pin::new(&mut pin!(self.next())).poll(cx) {
-                std::task::Poll::Pending => {
-                    warn!("<<<<Pending>>>>>");
-                    std::task::Poll::Pending
-                }
-                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-                std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
-            }
-        }
-    }
-}
+// impl futures_core::Stream for IteratorExt {
+//     type Item = KVItem;
+//
+//     fn poll_next(
+//         mut self: Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//     ) -> std::task::Poll<Option<Self::Item>> {
+//         let mut has_rewind = self.has_rewind.write();
+//         if !*has_rewind {
+//             *has_rewind = true;
+//             match Pin::new(&mut pin!(self.rewind())).poll(cx) {
+//                 std::task::Poll::Pending => {
+//                     warn!("<<<<Pending>>>>>");
+//                     std::task::Poll::Pending
+//                 }
+//                 std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+//                 std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
+//             }
+//         } else {
+//             match Pin::new(&mut pin!(self.next())).poll(cx) {
+//                 std::task::Poll::Pending => {
+//                     warn!("<<<<Pending>>>>>");
+//                     std::task::Poll::Pending
+//                 }
+//                 std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+//                 std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
+//             }
+//         }
+//     }
+// }
 
 impl IteratorExt {
-    pub(crate) fn new(kv: XArc<KV>, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
+    pub(crate) fn new(kv: KV, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
         IteratorExt {
             kv,
             opt,
@@ -263,14 +289,15 @@ impl IteratorExt {
         }
     }
 
-    pub(crate) async fn new_async_iterator(
-        kv: XArc<KV>,
-        itr: MergeIterator,
-        opt: IteratorOptions,
-    ) -> Box<dyn futures_core::Stream<Item = KVItem>> {
-        let itr = Self::new(kv, itr, opt);
-        Box::new(itr)
-    }
+    // pub(crate) async fn new_async_iterator(
+    //     kv: KV,
+    //     itr: MergeIterator,
+    //     opt: IteratorOptions,
+    // ) -> Box<dyn futures_core::Stream<Item=KVItem>> {
+    //     let itr = Self::new(kv, itr, opt);
+    //     Box::new(itr)
+    // }
+
     // Seek to the provided key if present. If absent, if would seek to the next smallest key
     // greater than provided if iterating in the forward direction. Behavior would be reversed is
     // iterating backwards.
@@ -282,6 +309,7 @@ impl IteratorExt {
             if el.key().starts_with(_BADGER_PREFIX) {
                 continue;
             }
+            break;
         }
         self.pre_fetch().await;
         self.item.read().clone()
@@ -373,18 +401,18 @@ impl IteratorExt {
     async fn valid_for_prefix(&self, prefix: &[u8]) -> bool {
         self.item.read().is_some()
             && self
-                .item
-                .read()
-                .as_ref()
-                .unwrap()
-                .read()
-                .await
-                .key()
-                .starts_with(prefix)
+            .item
+            .read()
+            .as_ref()
+            .unwrap()
+            .read()
+            .await
+            .key()
+            .starts_with(prefix)
     }
 
     // Close the iterator, It is important to call this when you're done with iteration.
-    pub(crate) async fn close(&self) -> Result<()> {
+    pub async fn close(&self) -> Result<()> {
         // TODO: We could handle this error.
         self.kv.vlog.as_ref().unwrap().decr_iterator_count().await?;
         Ok(())

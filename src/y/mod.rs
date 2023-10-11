@@ -130,7 +130,7 @@ impl Error {
         }
     }
 
-    pub fn is_io_notfound(&self) -> bool {
+    pub(crate) fn is_io_notfound(&self) -> bool {
         match self {
             Error::StdIO(err) if err.kind() == ErrorKind::NotFound => true,
             _ => false,
@@ -140,6 +140,13 @@ impl Error {
     pub fn is_not_found(&self) -> bool {
         match self {
             Error::NotFound => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_exists(&self) -> bool {
+        match self {
+            Error::ValueKeyExists => true,
             _ => false,
         }
     }
