@@ -127,6 +127,7 @@ async fn t_batch_write() {
         SystemTime::now().duration_since(start).unwrap().as_secs()
     );
     kv.must_lc().print_level_fids();
+    kv.close().await.unwrap();
 }
 
 #[tokio::test]

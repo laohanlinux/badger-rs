@@ -28,7 +28,7 @@ pub(crate) enum PreFetchStatus {
     Prefetched,
 }
 
-pub(crate) type KVItem = TArcRW<KVItemInner>;
+pub type KVItem = TArcRW<KVItemInner>;
 
 // Returned during iteration. Both the key() and value() output is only valid until
 // iterator.next() is called.
@@ -101,7 +101,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-        .await?;
+            .await?;
         Ok(ch.recv().await.unwrap())
     }
 
@@ -112,7 +112,7 @@ impl KVItemInner {
     // Note that the call to the consumer func happens synchronously.
     pub(crate) async fn value(
         &self,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
@@ -157,7 +157,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-        .await
+            .await
     }
 
     // Returns approximate size of the key-value pair.
@@ -198,14 +198,30 @@ impl KVItemInner {
 }
 
 // Used to set options when iterating over Badger key-value stores.
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct IteratorOptions {
+#[derive(Debug, Clone, Copy)]
+pub struct IteratorOptions {
     // Indicates whether we should prefetch values during iteration and store them.
     pub(crate) pre_fetch_values: bool,
     // How may KV pairs to prefetch while iterating. Valid only if PrefetchValues is true.
     pub(crate) pre_fetch_size: isize,
     // Direction of iteration. False is forward, true is backward.
     pub(crate) reverse: bool,
+}
+
+impl Default for IteratorOptions {
+    fn default() -> Self {
+        DEF_ITERATOR_OPTIONS
+    }
+}
+
+impl IteratorOptions {
+    pub fn new(pre_fetch_values: bool, pre_fetch_size: isize, reverse: bool) -> Self {
+        IteratorOptions {
+            pre_fetch_values,
+            pre_fetch_size,
+            reverse,
+        }
+    }
 }
 
 pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
@@ -219,7 +235,7 @@ pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
 //  |             |        |
 //  |             |        |
 //  IteratorExt  reference
-pub(crate) struct IteratorExt {
+pub struct IteratorExt {
     kv: KV,
     itr: MergeIterator,
     opt: IteratorOptions,
@@ -230,37 +246,36 @@ pub(crate) struct IteratorExt {
 }
 
 /// TODO FIXME
-impl futures_core::Stream for IteratorExt {
-    type Item = KVItem;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        warn!("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
-        let mut has_rewind = self.has_rewind.write();
-        if !*has_rewind {
-            *has_rewind = true;
-            match Pin::new(&mut pin!(self.rewind())).poll(cx) {
-                std::task::Poll::Pending => {
-                    warn!("<<<<Pending>>>>>");
-                    std::task::Poll::Pending
-                }
-                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-                std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
-            }
-        } else {
-            match Pin::new(&mut pin!(self.next())).poll(cx) {
-                std::task::Poll::Pending => {
-                    warn!("<<<<Pending>>>>>");
-                    std::task::Poll::Pending
-                }
-                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-                std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
-            }
-        }
-    }
-}
+// impl futures_core::Stream for IteratorExt {
+//     type Item = KVItem;
+//
+//     fn poll_next(
+//         mut self: Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//     ) -> std::task::Poll<Option<Self::Item>> {
+//         let mut has_rewind = self.has_rewind.write();
+//         if !*has_rewind {
+//             *has_rewind = true;
+//             match Pin::new(&mut pin!(self.rewind())).poll(cx) {
+//                 std::task::Poll::Pending => {
+//                     warn!("<<<<Pending>>>>>");
+//                     std::task::Poll::Pending
+//                 }
+//                 std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+//                 std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
+//             }
+//         } else {
+//             match Pin::new(&mut pin!(self.next())).poll(cx) {
+//                 std::task::Poll::Pending => {
+//                     warn!("<<<<Pending>>>>>");
+//                     std::task::Poll::Pending
+//                 }
+//                 std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+//                 std::task::Poll::Ready(t) => std::task::Poll::Ready(t),
+//             }
+//         }
+//     }
+// }
 
 impl IteratorExt {
     pub(crate) fn new(kv: KV, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
@@ -386,18 +401,18 @@ impl IteratorExt {
     async fn valid_for_prefix(&self, prefix: &[u8]) -> bool {
         self.item.read().is_some()
             && self
-                .item
-                .read()
-                .as_ref()
-                .unwrap()
-                .read()
-                .await
-                .key()
-                .starts_with(prefix)
+            .item
+            .read()
+            .as_ref()
+            .unwrap()
+            .read()
+            .await
+            .key()
+            .starts_with(prefix)
     }
 
     // Close the iterator, It is important to call this when you're done with iteration.
-    pub(crate) async fn close(&self) -> Result<()> {
+    pub async fn close(&self) -> Result<()> {
         // TODO: We could handle this error.
         self.kv.vlog.as_ref().unwrap().decr_iterator_count().await?;
         Ok(())

@@ -40,7 +40,7 @@ use crate::options::Options;
 use crate::types::{Channel, Closer, TArcRW};
 use crate::y::{create_synced_file, open_existing_synced_file, sync_directory, Decode, Encode};
 use crate::Error::Unexpected;
-use crate::{hex_str, Error, Result, EMPTY_SLICE};
+use crate::{event, hex_str, Error, Result, EMPTY_SLICE};
 
 bitflags! {
     /// Values have their first byte being byteData or byteDelete. This helps us distinguish between
@@ -803,6 +803,8 @@ impl ValueLogCore {
             // update log
             self.writable_log_offset
                 .fetch_add(n as u32, Ordering::Release);
+            event::get_metrics().num_writes.inc();
+            event::get_metrics().num_bytes_written.inc_by(n as u64);
 
             info!(
                 "Flushing {} requests, file_offset:{}",

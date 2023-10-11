@@ -538,7 +538,6 @@ impl LevelsController {
         let execute_time = SystemTime::now();
         defer! {
             let cost = SystemTime::now().duration_since(execute_time).unwrap().as_millis();
-            crate::event::COMPACT_COST_TIME.inc_by(cost as u64);
         }
         {
             let cd = cd.read().await;

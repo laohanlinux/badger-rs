@@ -22,6 +22,10 @@
 #![feature(binary_heap_into_iter_sorted)]
 #![feature(test)]
 
+/// Badger DB is an embedded keyvalue database.
+///
+/// Badger DB is a library written in Rust that implements a badger-go [https://github.com/dgraph-io/badger]
+/// bager-rs will implements all features of badger-go
 use std::mem::align_of;
 
 mod event;
@@ -50,13 +54,10 @@ mod st_manager;
 #[cfg(test)]
 mod test_util;
 
-
 pub use kv::*;
 pub use skl::*;
 pub use st_manager::*;
 pub use y::*;
-
-
 
 #[allow(dead_code)]
 #[inline]

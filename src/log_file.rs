@@ -19,6 +19,7 @@ use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::atomic::AtomicU64;
 
+use crate::event;
 use tokio::select;
 
 // MmapType is a Mmap and MmapMut tule
@@ -267,6 +268,8 @@ impl LogFile {
         );
         let offset = p.offset;
         let mmp = self._mmap.as_ref().unwrap();
+        event::get_metrics().num_reads.inc();
+        event::get_metrics().num_bytes_read.inc_by(p.len as u64);
         // todo add metrics
         match mmp.0 {
             Either::Left(ref m) => Ok(&m.as_ref()[offset as usize..(offset + p.len) as usize]),

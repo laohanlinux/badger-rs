@@ -2,7 +2,7 @@ use crate::options::FileLoadingMode;
 use crate::options::FileLoadingMode::MemoryMap;
 use crate::table::builder::Header;
 use crate::y::{hash, mmap, parallel_load_block_key, read_at, Result};
-use crate::{hex_str, Error};
+use crate::{hex_str, Error, event};
 use byteorder::{BigEndian, ReadBytesExt};
 
 use growable_bloom_filter::GrowableBloom;
@@ -215,6 +215,8 @@ impl TableCore {
                 return Ok(m[off..off + sz].to_vec());
             }
         }
+        event::get_metrics().num_reads.inc();
+        event::get_metrics().num_bytes_read.inc_by(sz as u64);
         let mut buffer = vec![0u8; sz];
         read_at(&self.fd, &mut buffer, sz as u64)?;
         // todo add stats
@@ -348,6 +350,8 @@ impl TableCore {
         }
         // todo stats
         self._mmap = Some(_mmap);
+        event::get_metrics().num_reads.inc();
+        event::get_metrics().num_bytes_read.inc_by(read as u64);
         Ok(())
     }
 }

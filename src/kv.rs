@@ -12,8 +12,8 @@ use crate::value_log::{
 use crate::y::{async_sync_directory, create_synced_file, Encode, Result, ValueStruct};
 use crate::Error::{NotFound, Unexpected};
 use crate::{
-    hex_str, Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager, UniIterator,
-    Xiterator,
+    event, hex_str, Decode, Error, MergeIterOverBuilder, Node, SkipList, SkipListManager,
+    UniIterator, Xiterator,
 };
 
 use atomic::Atomic;
@@ -108,10 +108,6 @@ pub struct KVCore {
     share_lock: TArcRW<()>,
 }
 
-unsafe impl Send for KVCore {}
-
-unsafe impl Sync for KVCore {}
-
 impl Drop for KVCore {
     fn drop(&mut self) {
         warn!("Drop kv");
@@ -162,6 +158,7 @@ impl KVCore {
     // Note that value will include meta byte.
     #[inline]
     pub(crate) fn _get(&self, key: &[u8]) -> Result<ValueStruct> {
+        event::get_metrics().num_gets.inc();
         let p = crossbeam_epoch::pin();
         let tables = self.get_mem_tables(&p);
         // Must dereference skip list
@@ -170,12 +167,12 @@ impl KVCore {
                 .iter()
                 .for_each(|tb| unsafe { tb.as_ref().unwrap().decr_ref() })
         };
-        defer! {decref_tables()}
-        ;
+        defer! {decref_tables()};
 
         crate::event::get_metrics().num_gets.inc(); // TODO add metrics
 
         for tb in tables.iter() {
+            event::get_metrics().num_mem_tables_gets.inc();
             let st = unsafe { tb.as_ref().unwrap() };
             let vs = st.get(key);
             crate::event::get_metrics().num_mem_tables_gets.inc();
@@ -371,14 +368,17 @@ impl KVCore {
         let mut res = vec![Ok(()); entries.len()];
         let mut req = Request::default();
         let mut req_index = vec![];
+        let mut bad_count = 0;
         // packet entries into internal request message and filter invalid entry.
         for (i, entry) in entries.into_iter().enumerate() {
             if entry.key.len() > MAX_KEY_SIZE {
                 res[i] = Err("Key too big".into());
+                bad_count += 1;
                 continue;
             }
             if entry.value.len() as u64 > self.opt.value_log_file_size {
                 res[i] = Err("Value to big".into());
+                bad_count += 1;
                 continue;
             }
             {
@@ -396,6 +396,7 @@ impl KVCore {
                 let resp_ch = req.get_resp_channel();
                 // batch process requests
                 self.write_ch.send(req).await.unwrap();
+                event::get_metrics().num_puts.inc_by(count);
                 {
                     count = 0;
                     sz = 0;
@@ -417,6 +418,7 @@ impl KVCore {
         if !req.entries.is_empty() {
             let resp_ch = req.get_resp_channel();
             self.write_ch.send(req).await.unwrap();
+            event::get_metrics().num_puts.inc_by(count);
             {
                 for (index, ch) in resp_ch.into_iter().enumerate() {
                     let entry_index = req_index[index];
@@ -425,6 +427,7 @@ impl KVCore {
                 req_index.clear();
             }
         }
+        event::get_metrics().num_blocked_puts.inc_by(bad_count);
         res
     }
 
@@ -433,13 +436,13 @@ impl KVCore {
         // defer! {info!("exit write to lsm")}
 
         #[cfg(test)]
-            let tid = random::<u32>();
+        let tid = random::<u32>();
 
         for (i, pair) in req.entries.into_iter().enumerate() {
             let (entry, resp_ch) = pair.to_owned();
 
             #[cfg(test)]
-                let debug_entry = entry.clone();
+            let debug_entry = entry.clone();
 
             let mut _old_cas = 0;
 
@@ -669,6 +672,18 @@ impl KVCore {
 
 pub type WeakKV = XWeak<KVCore>;
 
+/// DB handle
+/// ```
+/// #[tokio::main]
+///
+/// pub async fn main() {
+///      let kv = KV::open(Options::default());
+///      kv.set(b"foo".to_vec(), b"bar".to_vec()).await.unwrap();
+///      let value = kv.get(b"foo").await.unwrap();
+///      assert_eq!(&value, b"bar");
+///      kv.delete(&b"foo").await.unwrap();
+///}
+/// ```
 #[derive(Clone)]
 pub struct KV {
     inner: XArc<KVCore>,
@@ -758,7 +773,7 @@ impl KV {
             out.notify_write_request_chan.clone(),
             out.opt.clone(),
         )
-            .await?;
+        .await?;
         lc.start_compact(out.closers.compactors.clone());
         out.lc.replace(lc);
         let mut vlog = ValueLogCore::default();
@@ -916,8 +931,6 @@ impl KV {
         defer! {lc.done()}
 
         let mut tk = tokio::time::interval(tokio::time::Duration::from_secs(5 * 60));
-        #[cfg(test)]
-        tk = tokio::time::interval(Duration::from_secs(5));
 
         let opt = self.opt.clone();
         let (dir, vdir) = (opt.dir, opt.value_dir);
@@ -938,10 +951,6 @@ impl KV {
                 _ = c.recv() => {return;},
             }
         }
-    }
-
-    pub async fn manifest_wl(&self) -> RwLockWriteGuard<'_, ManifestFile> {
-        self.manifest.write().await
     }
 
     /// Return a value that will async load value, if want not return value, should be `exists`
@@ -1105,11 +1114,13 @@ impl KV {
             };
 
             // TODO maybe currently
+            let reqs_len = to_reqs.len();
             if !to_reqs.is_empty() {
                 self.to_ref()
                     .write_requests(to_reqs)
                     .await
                     .expect("TODO: panic message");
+                event::get_metrics().pending_writes.set(reqs_len as i64);
             }
         }
 
@@ -1130,9 +1141,49 @@ impl KV {
                 .write_requests(to_reqs.clone())
                 .await
                 .expect("TODO: panic message");
+            event::get_metrics()
+                .pending_writes
+                .set(to_reqs.len() as i64);
         }
     }
 
+    /// NewIterator returns a new iterator. Depending upon the options, either only keys, or both
+    /// key-value pairs would be fetched. The keys are returned in lexicographically sorted order.
+    /// Usage:
+    /// ```
+    ///   let itr = kv.new_iterator(IteratorOptions::default())
+    ///   itr.rewind().await();
+    ///   while let Some(item) = itr.peek().await {
+    ///         let rd_item = item.read().await;
+    ///         let key = rd_item.key();
+    ///         let value = rd_item.get_value();
+    ///         itr.next().await;
+    ///   }
+    ///   itr.close().await;
+    /// ```
+    pub async fn new_iterator(&self, opt: IteratorOptions) -> IteratorExt {
+        // Notice, the iterator is global iterator, so must incr reference for memtable(SikpList), sst(file), vlog(file).
+        let p = crossbeam_epoch::pin();
+        let tables = self.get_mem_tables(&p);
+        // TODO it should decr at IteratorExt close.
+        defer! {
+            tables.iter().for_each(|table| unsafe {table.as_ref().unwrap().decr_ref()});
+        }
+        // add vlog reference.
+        self.must_vlog().incr_iterator_count();
+
+        // Create iterators across all the tables involved first.
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        for tb in tables.clone() {
+            let st = unsafe { tb.as_ref().unwrap().clone() };
+            let iter = Box::new(UniIterator::new(st, opt.reverse));
+            itrs.push(iter);
+        }
+        // Extend sst.table
+        itrs.extend(self.must_lc().as_iterator(opt.reverse));
+        let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
+        IteratorExt::new(self.clone(), mitr, opt)
+    }
     /// Closes a KV. It's crucial to call it to ensure all the pending updates
     /// make their way to disk.
     pub async fn close(&self) -> Result<()> {
@@ -1195,67 +1246,25 @@ impl KV {
         // persisted to disk.
         async_sync_directory(self.opt.dir.clone().to_string()).await?;
         async_sync_directory(self.opt.value_dir.clone().to_string()).await?;
+
+        warn!("metrics: \n{}", event::get_metrics());
         Ok(())
     }
 }
 
 impl KV {
-    // NewIterator returns a new iterator. Depending upon the options, either only keys, or both
-    // key-value pairs would be fetched. The keys are returned in lexicographically sorted order.
-    // Usage:
-    //   opt := badger.DefaultIteratorOptions
-    //   itr := kv.NewIterator(opt)
-    //   for itr.Rewind(); itr.Valid(); itr.Next() {
-    //     item := itr.Item()
-    //     key := item.Key()
-    //     var val []byte
-    //     err = item.Value(func(v []byte) {
-    //         val = make([]byte, len(v))
-    // 	       copy(val, v)
-    //     }) 	// This could block while value is fetched from value log.
-    //          // For key only iteration, set opt.PrefetchValues to false, and don't call
-    //          // item.Value(func(v []byte)).
-    //
-    //     // Remember that both key, val would become invalid in the next iteration of the loop.
-    //     // So, if you need access to them outside, copy them or parse them.
-    //   }
-    //   itr.Close()
-    pub(crate) async fn new_iterator(&self, opt: IteratorOptions) -> IteratorExt {
-        // Notice, the iterator is global iterator, so must incr reference for memtable(SikpList), sst(file), vlog(file).
-        let p = crossbeam_epoch::pin();
-        let tables = self.get_mem_tables(&p);
-        // TODO it should decr at IteratorExt close.
-        defer! {
-            tables.iter().for_each(|table| unsafe {table.as_ref().unwrap().decr_ref()});
-        }
-        // add vlog reference.
-        self.must_vlog().incr_iterator_count();
-
-        // Create iterators across all the tables involved first.
-        let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
-        for tb in tables.clone() {
-            let st = unsafe { tb.as_ref().unwrap().clone() };
-            let iter = Box::new(UniIterator::new(st, opt.reverse));
-            itrs.push(iter);
-        }
-        // Extend sst.table
-        itrs.extend(self.must_lc().as_iterator(opt.reverse));
-        let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
-        IteratorExt::new(self.clone(), mitr, opt)
-    }
-
-    pub(crate) async fn new_std_iterator(
-        &self,
-        opt: IteratorOptions,
-    ) -> impl futures_core::Stream<Item=KVItem> {
-        let mut itr = self.new_iterator(opt).await;
-        itr
-    }
+    // pub(crate) async fn new_std_iterator(
+    //     &self,
+    //     opt: IteratorOptions,
+    // ) -> impl futures_core::Stream<Item = KVItem> {
+    //     let mut itr = self.new_iterator(opt).await;
+    //     itr
+    // }
     // asyn yield item value from ValueLog
     pub(crate) async fn yield_item_value(
         &self,
         item: KVItemInner,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         //info!("ready to yield item:{} value from vlog!", item);
         // no value
@@ -1281,6 +1290,7 @@ impl KV {
         vlog.async_read(&vptr, consumer).await?;
         Ok(())
     }
+
     pub(crate) async fn get_with_ext(&self, key: &[u8]) -> Result<KVItem> {
         let got = self._get(key)?;
         let inner = KVItemInner::new(key.to_vec(), got, self.clone());
@@ -1297,6 +1307,10 @@ impl KV {
 
     pub(crate) fn to_ref(&self) -> &KVCore {
         self.inner.to_ref()
+    }
+
+    pub(crate) async fn manifest_wl(&self) -> RwLockWriteGuard<'_, ManifestFile> {
+        self.manifest.write().await
     }
 }
 
