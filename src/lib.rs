@@ -30,7 +30,7 @@ use std::mem::align_of;
 
 mod event;
 mod iterator;
-mod kv;
+pub mod kv;
 mod level_handler;
 mod log_file;
 mod manifest;
@@ -58,6 +58,8 @@ pub use kv::*;
 pub use skl::*;
 pub use st_manager::*;
 pub use y::*;
+pub use options::*;
+pub use iterator::*;
 
 #[allow(dead_code)]
 #[inline]

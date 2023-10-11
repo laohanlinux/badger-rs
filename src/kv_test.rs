@@ -181,10 +181,10 @@ async fn t_concurrent_write() {
     itr.rewind().await;
     let mut i = 0;
     while let Some(item) = itr.peek().await {
-        let kv_item = item.read().await;
-        count_set.insert(hex_str(kv_item.key()));
-        let expect = String::from_utf8_lossy(keys.get(i).unwrap());
-        let got = String::from_utf8_lossy(kv_item.key());
+        let key = item.key().await;
+        count_set.insert(hex_str(&key));
+        let expect = hex_str(keys.get(i).unwrap());
+        let got = hex_str(&key);
         assert_eq!(expect, got);
         i += 1;
         itr.next().await;
@@ -223,10 +223,10 @@ async fn t_kv_cas() {
         let key = i.to_string().into_bytes();
         let value = i.to_string().into_bytes();
         let got = kv.get_with_ext(&key).await.unwrap();
-        let pair = got.read().await.clone();
-        let got_value = got.read().await.get_value().await.unwrap();
+        let pair = got.rl().await.clone();
+        let got_value = got.rl().await.get_value().await.unwrap();
         assert_eq!(got_value, value, "{}", String::from_utf8_lossy(&key));
-        let counter = got.read().await.counter();
+        let counter = got.rl().await.counter();
         // cas counter from 1
         assert_eq!(i + 1, counter as usize);
         // store kv pair
@@ -269,7 +269,7 @@ async fn t_kv_cas() {
         let key = i.to_string().into_bytes();
         let value = format!("zzz{}", i).as_bytes().to_vec();
         let got = kv.get_with_ext(&key).await.unwrap();
-        let got = got.read().await;
+        let got = got.rl().await;
         assert_eq!(got.get_value().await.unwrap(), value);
         assert_eq!(n * 2 + i + 1, got.counter() as usize);
     }
@@ -285,22 +285,22 @@ async fn t_kv_get() {
         .unwrap();
     let got = kv.get_with_ext(b"key1").await.unwrap();
     assert_eq!(
-        got.read().await.get_value().await.unwrap(),
+        got.rl().await.get_value().await.unwrap(),
         b"value1".to_vec()
     );
-    assert_eq!(got.read().await.user_meta(), 0x08);
-    assert!(got.read().await.counter() > 0);
+    assert_eq!(got.rl().await.user_meta(), 0x08);
+    assert!(got.rl().await.counter() > 0);
 
     kv.set(b"key1".to_vec(), b"val2".to_vec(), 0x09)
         .await
         .unwrap();
     let got = kv.get_with_ext(b"key1").await.unwrap();
     assert_eq!(
-        got.read().await.get_value().await.unwrap(),
+        got.rl().await.get_value().await.unwrap(),
         b"val2".to_vec()
     );
-    assert_eq!(got.read().await.user_meta(), 0x09);
-    assert!(got.read().await.counter() > 0);
+    assert_eq!(got.rl().await.user_meta(), 0x09);
+    assert!(got.rl().await.counter() > 0);
 
     kv.delete(b"key1").await.unwrap();
     let got = kv.get_with_ext(b"key1").await;
@@ -311,18 +311,18 @@ async fn t_kv_get() {
         .unwrap();
     let got = kv.get_with_ext(b"key1").await.unwrap();
     assert_eq!(
-        got.read().await.get_value().await.unwrap(),
+        got.rl().await.get_value().await.unwrap(),
         b"val3".to_vec()
     );
-    assert_eq!(got.read().await.user_meta(), 0x01);
-    assert!(got.read().await.counter() > 0);
+    assert_eq!(got.rl().await.user_meta(), 0x01);
+    assert!(got.rl().await.counter() > 0);
 
     let long = vec![1u8; 1 << 10];
     kv.set(b"key1".to_vec(), long.clone(), 0x00).await.unwrap();
     let got = kv.get_with_ext(b"key1").await.unwrap();
-    assert_eq!(got.read().await.get_value().await.unwrap(), long);
-    assert_eq!(got.read().await.user_meta(), 0x00);
-    assert!(got.read().await.counter() > 0);
+    assert_eq!(got.rl().await.get_value().await.unwrap(), long);
+    assert_eq!(got.rl().await.user_meta(), 0x00);
+    assert!(got.rl().await.counter() > 0);
 }
 
 #[tokio::test]
@@ -527,7 +527,7 @@ async fn kv_iterator_basic() {
         info!("Startinh first basic iteration");
         itr.rewind().await;
         while let Some(item) = itr.peek().await {
-            let rd_item = item.read().await;
+            let rd_item = item.rl().await;
             let key = rd_item.key();
             if rewind && count == 5000 {
                 // Rewind would be skip /heap/key, and it.next() would be skip 0.
@@ -558,7 +558,7 @@ async fn kv_iterator_basic() {
         let itr = kv.new_iterator(opt).await;
         let _ = itr.seek(&start).await.unwrap();
         while let Some(item) = itr.peek().await {
-            let item = item.read().await;
+            let item = item.rl().await;
             assert_eq!(hex_str(&bkey(idx)), hex_str(item.key()));
             assert_eq!(
                 hex_str(&bvalue(idx)),
@@ -623,7 +623,7 @@ async fn t_kv_iterator_deleted() {
     let prefix = b"Key";
     itr.seek(prefix).await;
     while let Some(item) = itr.peek().await {
-        let key = item.read().await.key().to_vec();
+        let key = item.rl().await.key().to_vec();
         if !key.starts_with(prefix) {
             break;
         }
@@ -645,7 +645,7 @@ async fn t_kv_iterator_deleted() {
         let mut idx_keys = vec![];
         idx_it.seek(prefix).await;
         while let Some(item) = idx_it.peek().await {
-            let item = item.read().await;
+            let item = item.rl().await;
             let key = item.key().to_vec();
             est_size += item.estimated_size();
             if !key.starts_with(prefix) {

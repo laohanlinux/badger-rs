@@ -1,3 +1,5 @@
+use std::env::temp_dir;
+use rand::random;
 use crate::value_log::Entry;
 use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE};
 use crate::Node;
@@ -87,9 +89,10 @@ impl Options {
 
 impl Default for Options {
     fn default() -> Self {
+        let id = random::<u64>();
         Options {
-            dir: Box::new("".to_string()),
-            value_dir: Box::new("".to_string()),
+            dir: Box::new(id.to_string()),
+            value_dir: Box::new(id.to_string()),
             sync_writes: false,
             table_loading_mode: FileLoadingMode::LoadToRADM,
             max_table_size: 64 << 20,
