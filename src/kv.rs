@@ -688,7 +688,7 @@ pub type WeakKV = XWeak<KVCore>;
 ///      let mut itr = kv.new_iterator(IteratorOptions::default()).await;
 ///      itr.rewind().await;
 ///      while let Some(item) = itr.peek().await {
-///         let key = item.key();
+///         let key = item.key().await;
 ///         let value = item.value().await.unwrap();
 ///         itr.next().await;
 ///     }
