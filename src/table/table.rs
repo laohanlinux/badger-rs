@@ -2,7 +2,7 @@ use crate::options::FileLoadingMode;
 use crate::options::FileLoadingMode::MemoryMap;
 use crate::table::builder::Header;
 use crate::y::{hash, mmap, parallel_load_block_key, read_at, Result};
-use crate::{hex_str, Error, event};
+use crate::{event, hex_str, Error};
 use byteorder::{BigEndian, ReadBytesExt};
 
 use growable_bloom_filter::GrowableBloom;
@@ -144,25 +144,23 @@ impl TableCore {
         let table_ref = Table::new(table);
         let biggest = {
             let iter1 = super::iterator::IteratorImpl::new(table_ref.clone(), true);
-            defer! {iter1.close()}
-            ;
+            defer! {iter1.close()};
             iter1
                 .rewind()
                 .map(|item| item.key().to_vec())
                 .or_else(|| Some(vec![]))
         }
-            .unwrap();
+        .unwrap();
 
         let smallest = {
             let iter1 = super::iterator::IteratorImpl::new(table_ref.clone(), false);
-            defer! {iter1.close()}
-            ;
+            defer! {iter1.close()};
             iter1
                 .rewind()
                 .map(|item| item.key().to_vec())
                 .or_else(|| Some(vec![]))
         }
-            .unwrap();
+        .unwrap();
         let mut tc = table_ref.to_inner().unwrap();
         tc.biggest = biggest;
         tc.smallest = smallest;
@@ -346,7 +344,7 @@ impl TableCore {
                 "Unable to load file in memory, Table faile: {}",
                 self.filename()
             )
-                .into());
+            .into());
         }
         // todo stats
         self._mmap = Some(_mmap);

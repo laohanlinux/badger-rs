@@ -1,49 +1,45 @@
 use crate::skl::alloc::{OnlyLayoutAllocate, SliceAllocate};
 use crate::skl::node::Node;
 use crate::y::ValueStruct;
+use crate::SmallAlloc;
 use std::mem::size_of;
-use std::ptr::NonNull;
+use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
 
 const OFFSET_SIZE: usize = size_of::<u32>();
-// FIXME: i don't know
-const PTR_ALIGN: usize = 7;
+
 
 /// `Arena` should be lock-free.
 #[derive(Debug)]
 pub struct Arena {
-    slice: SliceAllocate,
-    node_alloc: OnlyLayoutAllocate<Node>,
+    alloc: SmallAlloc,
 }
 
 impl Arena {
     pub(crate) fn new(n: usize) -> Self {
         assert!(n > 0);
-        let slice_alloc = SliceAllocate::new(n);
-        let node_alloc = OnlyLayoutAllocate::new(n);
         // Don't store data at position 0 in order to reverse offset = 0 as a kind
         // of nil pointer
         Self {
-            slice: slice_alloc,
-            node_alloc,
+            alloc: SmallAlloc::new(n),
         }
     }
 
     pub(crate) fn size(&self) -> u32 {
-        (self.slice.len() + self.node_alloc.len()) as u32
+        self.alloc.len() as u32
     }
 
     pub(crate) fn cap(&self) -> u32 {
-        self.slice.cap() as u32
+        self.alloc.cap() as u32
     }
 
     // TODO: maybe use MaybeUint instead
-    pub(crate) fn reset(&self) {
-        self.slice.reset();
-        self.node_alloc.reset();
-    }
+    // pub(crate) fn reset(&self) {
+    //     self.alloc.reset();
+    // }
 
     pub(crate) fn valid(&self) -> bool {
-        !self.slice.ptr.is_empty()
+        // !self.slice.ptr.is_empty()
+        todo!()
     }
 
     // Returns a pointer to the node located at offset. If the offset is
@@ -52,19 +48,23 @@ impl Arena {
         if offset == 0 {
             return None;
         }
-        Some(self.node_alloc.get(offset))
+        unsafe { self.alloc.get_mut::<Node>(offset).as_ref() }
     }
 
     pub(crate) fn get_mut_node(&self, offset: usize) -> Option<&mut Node> {
         if offset == 0 {
             return None;
         }
-        Some(self.node_alloc.get_mut(offset))
+        unsafe { self.alloc.get_mut::<Node>(offset).as_mut() }
     }
 
     // Returns start location
     pub(crate) fn put_key(&self, key: &[u8]) -> u32 {
-        self.slice.append(key) as u32
+        let offset = self.alloc.alloc(key.len());
+        let buffer = unsafe { self.alloc.get_mut::<u8>(offset) };
+        let mut buffer = unsafe { &mut *slice_from_raw_parts_mut(buffer, key.len()) };
+        buffer.copy_from_slice(key);
+        offset as u32
     }
 
     // Put will *copy* val into arena. To make better use of this, reuse your input
@@ -79,20 +79,21 @@ impl Arena {
 
     // Returns byte slice at offset.
     pub(crate) fn get_key(&self, offset: u32, size: u16) -> &[u8] {
-        self.slice.get(offset as usize, size as usize)
+        let buffer = unsafe { self.alloc.get_mut::<u8>(offset as usize) };
+        unsafe { &*slice_from_raw_parts(buffer, size as usize) }
     }
 
     // Returns byte slice at offset. The given size should be just the value
     // size and should NOT include the meta bytes.
     pub(crate) fn get_val(&self, offset: u32, size: u16) -> ValueStruct {
-        let buffer = self.slice.get(offset as usize, size as usize);
+        let buffer = self.get_key(offset, size);
         ValueStruct::from(buffer)
     }
 
     // Return byte slice at offset.
     // FIXME:
     pub(crate) fn put_node(&self, _height: isize) -> u32 {
-        let (_, offset) = self.node_alloc.alloc_offset();
+        let offset = self.alloc.alloc(Node::size());
         offset as u32
     }
 
@@ -102,9 +103,8 @@ impl Arena {
         if node.is_null() {
             return 0;
         }
-        let node = node as *const u8;
-        let ptr = self.node_alloc.ptr.as_ptr();
-        let offset = unsafe { node.offset_from(ptr) };
+
+        let offset = unsafe { self.alloc.offset(node) };
         offset as usize
     }
 

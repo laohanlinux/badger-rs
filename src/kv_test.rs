@@ -295,10 +295,7 @@ async fn t_kv_get() {
         .await
         .unwrap();
     let got = kv.get_with_ext(b"key1").await.unwrap();
-    assert_eq!(
-        got.rl().await.get_value().await.unwrap(),
-        b"val2".to_vec()
-    );
+    assert_eq!(got.rl().await.get_value().await.unwrap(), b"val2".to_vec());
     assert_eq!(got.rl().await.user_meta(), 0x09);
     assert!(got.rl().await.counter() > 0);
 
@@ -310,10 +307,7 @@ async fn t_kv_get() {
         .await
         .unwrap();
     let got = kv.get_with_ext(b"key1").await.unwrap();
-    assert_eq!(
-        got.rl().await.get_value().await.unwrap(),
-        b"val3".to_vec()
-    );
+    assert_eq!(got.rl().await.get_value().await.unwrap(), b"val3".to_vec());
     assert_eq!(got.rl().await.user_meta(), 0x01);
     assert!(got.rl().await.counter() > 0);
 
@@ -671,8 +665,8 @@ async fn t_delete_without_sync_write() {
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890".to_vec(),
         0x00,
     )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
     let opt = kv.opt.clone();
     kv.delete(&key).await.unwrap();
     kv.close().await.expect("TODO: panic message");
@@ -865,7 +859,6 @@ extern crate test;
 //         }
 //     );
 // }
-
 
 async fn build_kv() -> KV {
     use crate::test_util::random_tmp_dir;

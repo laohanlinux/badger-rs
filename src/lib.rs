@@ -54,12 +54,12 @@ mod st_manager;
 #[cfg(test)]
 mod test_util;
 
+pub use iterator::*;
 pub use kv::*;
+pub use options::*;
 pub use skl::*;
 pub use st_manager::*;
 pub use y::*;
-pub use options::*;
-pub use iterator::*;
 
 #[allow(dead_code)]
 #[inline]

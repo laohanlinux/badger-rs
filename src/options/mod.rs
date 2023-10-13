@@ -1,8 +1,8 @@
-use std::env::temp_dir;
-use rand::random;
 use crate::value_log::Entry;
 use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE};
 use crate::Node;
+use rand::random;
+use std::env::temp_dir;
 
 /// Specifies how data in LSM table files and value log files should
 /// be loaded.

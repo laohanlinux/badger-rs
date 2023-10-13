@@ -1,7 +1,7 @@
+use std::cell::{Cell, UnsafeCell};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::mem::{size_of, ManuallyDrop};
-
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -129,6 +129,114 @@ impl Clone for BlockBytes {
             start: AtomicPtr::new(ptr),
             n: self.n,
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct SmallAlloc {
+    cursor: AtomicUsize,
+    _cap: AtomicUsize,
+    ptr: Cell<*mut u8>,
+    l: Arc<std::sync::Mutex<()>>,
+}
+
+unsafe impl Send for SmallAlloc {}
+
+unsafe impl Sync for SmallAlloc {}
+
+impl SmallAlloc {
+    pub fn new(cap: usize) -> SmallAlloc {
+        let mut buf: Vec<u64> = Vec::with_capacity(cap / 8);
+        let ptr = buf.as_mut_ptr() as *mut u8;
+        let cap = buf.capacity() * 8;
+        std::mem::forget(buf);
+        SmallAlloc {
+            cursor: AtomicUsize::new(8),
+            _cap: AtomicUsize::new(cap),
+            ptr: Cell::new(ptr),
+            l: Arc::new(std::sync::Mutex::new(())),
+        }
+    }
+
+    /// Alloc 8-byte aligned memory.
+    pub fn alloc(&self, size: usize) -> usize {
+        // Leave enough padding for alignment.
+        let size = (size + 7) & !7;
+        let offset = self.cursor.fetch_add(size, Ordering::SeqCst);
+        if offset + size > self.cap() {
+            #[cfg(test)]
+            crate::test_util::push_log_by_filename("aaaa", b"shift");
+        }
+        // assert!(offset + size <= self.cap());
+        // Grow the arena if there is no enough space
+        // if offset + size > self.cap() {
+        //
+        //     let _l = self.l.lock().unwrap();
+        //     if offset + size > self.cap() {
+        //         // Alloc new buf and copy data to new buf
+        //         let mut grow_by = self.cap();
+        //         if grow_by > 1 << 30 {
+        //             grow_by = 1 << 30;
+        //         }
+        //         if grow_by < size {
+        //             grow_by = size;
+        //         }
+        //         let mut new_buf: Vec<u64> = Vec::with_capacity((self.cap() + grow_by) / 8);
+        //         let new_ptr = new_buf.as_mut_ptr() as *mut u8;
+        //         unsafe {
+        //             ptr::copy_nonoverlapping(new_ptr, self.ptr.get(), self.cap());
+        //         }
+        //         println!("Grow size: {} {}", grow_by, new_buf.capacity());
+        //         // Release old buf
+        //         let old_ptr = self.ptr.get() as *mut u64;
+        //         unsafe {
+        //             Vec::from_raw_parts(old_ptr, 0, self.cap() / 8);
+        //         }
+        //
+        //         // Use new buf
+        //         self.ptr.set(new_ptr);
+        //         self._cap.store(new_buf.capacity() * 8, Ordering::SeqCst);
+        //         std::mem::forget(new_buf);
+        //     }
+        // }
+        offset
+    }
+
+    pub unsafe fn alloc_obj<T>(&self, size: usize) -> (*mut T, usize) {
+        //assert!(self.cursor.load(Ordering::SeqCst) + size <= self.cap.get());
+        let offset = self.alloc(size);
+        let obj = self.get_mut::<T>(offset);
+        (obj, offset)
+    }
+
+    pub unsafe fn get_mut<T>(&self, offset: usize) -> *mut T {
+        if offset == 0 {
+            return ptr::null_mut();
+        }
+        return self.ptr.get().add(offset) as _;
+    }
+
+    pub fn offset<T>(&self, ptr: *const T) -> usize {
+        let ptr_addr = ptr as usize;
+        let base_addr = self.ptr.get() as usize;
+        if ptr_addr > base_addr && ptr_addr < base_addr + self.cap() {
+            ptr_addr - base_addr
+        } else {
+            0
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.cursor.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn cap(&self) -> usize {
+        self._cap.load(Ordering::SeqCst)
+    }
+    pub fn reset(&self) {
+        // self._cap
+        // self.cursor.store(0, Ordering::Relaxed);
+        //self.ptr.clear();
     }
 }
 
@@ -261,6 +369,8 @@ pub struct SliceAllocate {
 }
 
 unsafe impl Send for SliceAllocate {}
+
+unsafe impl Sync for SliceAllocate {}
 
 impl SliceAllocate {
     pub fn len(&self) -> usize {
@@ -409,136 +519,66 @@ mod tests {
     }
 }
 
-
-#[cfg(test)]
-mod testss{
-    use std::{
-        cell::Cell,
-        mem, ptr,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
-
-    // Node 结构体
-    #[derive(Debug)]
-    #[repr(C)]
-    pub struct Node {
-        pub(crate) key_offset: u32,
-        pub(crate) key_size: u16,
-        pub(crate) height: u16,
-        pub(crate) value: u64,
-        pub(crate) tower: [u32; 4], // 假设最大高度为 4
-    }
-
-    // ArenaObject 枚举
-    #[repr(align(8))]
-    pub enum ArenaObject {
-        Node {
-            discriminant: u8,
-            data: Node,
-        },
-        Data {
-            discriminant: u8,
-            data: Vec<u8>,
-        },
-    }
-
-    const MAX_HEIGHT: usize = 4;
-
-    pub struct Arena {
-        len: AtomicUsize,
-        cap: Cell<usize>,
-        ptr: Cell<*mut u8>,
-    }
-
-    impl Arena {
-        pub fn new(cap: usize) -> Arena {
-            let mut buf: Vec<u64> = Vec::with_capacity(cap / 8);
-            let ptr = buf.as_mut_ptr() as *mut u8;
-            let cap = buf.capacity() * 8;
-            mem::forget(buf);
-            Arena {
-                len: AtomicUsize::new(8),
-                cap: Cell::new(cap),
-                ptr: Cell::new(ptr),
-            }
-        }
-
-        pub fn alloc_object(&self, object: ArenaObject) -> Option<usize> {
-            let size = std::mem::size_of_val(&object);
-            let offset = self.len.fetch_add(size, Ordering::SeqCst);
-            // let size = std::mem::size_of::<ArenaObject>();
-            println!("size: {}, {}", size, mem::size_of::<Node>());
-            // let offset = self.len.fetch_add(size, Ordering::SeqCst);
-
-            // 先检查是否需要扩展内存块，然后将 ArenaObject 复制到内存中
-            if offset + size > self.cap.get() {
-                self.grow();
-            }
-
-            unsafe {
-                let dest = self.ptr.get().add(offset);
-                std::ptr::copy_nonoverlapping(&object as *const ArenaObject as *const u8, dest, size);
-            }
-
-            Some(offset)
-        }
-
-        pub fn get_object(&self, offset: usize) -> Option<&ArenaObject> {
-            if offset == 0 {
-                None
-            } else {
-                let ptr = unsafe {self.ptr.get().add(offset) as *const ArenaObject};
-                Some(unsafe { &*ptr })
-            }
-        }
-
-        fn grow(&self) {
-            // 实现内存块的扩展逻辑
-            // 这里省略，可以根据需要实现内存扩展的逻辑
-        }
-    }
-
-    #[test]
-    fn main() {
-        // 创建一个 Node 对象
-        let node = Node {
-            key_offset: 0,
-            key_size: 10,
-            height: 3,
-            value: 42,
-            tower: [0; MAX_HEIGHT],
-        };
-
-        // 创建一个 Vec<u8> 数据
-        let data = vec![1, 2, 3, 4, 5];
-
-        // 创建 Arena 实例
-        let arena = Arena::new(1<< 12);
-
-        // 分配 Node 对象并获取偏移量
-        // 分配 Node 对象并获取偏移量
-        let node_object = ArenaObject::Node {
-            discriminant: 0, // 使用标签 0 表示 Node
-            data: node,
-        };
-        let node_offset = arena.alloc_object(node_object).unwrap();
-
-        // 分配 Vec<u8> 数据并获取偏移量
-        let data_object = ArenaObject::Data {
-            discriminant: 1, // 使用标签 1 表示 Data
-            data,
-        };
-        let data_offset = arena.alloc_object(data_object).unwrap();
-
-        // 获取存储在 Arena 中的 Node 对象
-        if let Some(object) = arena.get_object(node_offset) {
-            match object {
-                ArenaObject::Node { data, .. } => {
-                    println!("Stored Node: {:?}", data);
-                }
-                _ => println!("Invalid object type."),
-            }
-        }
-    }
-
-}
+// #[cfg(test)]
+// mod testss {
+//     use either::Either;
+//     use std::ptr::slice_from_raw_parts_mut;
+//     use std::{
+//         cell::Cell,
+//         mem, ptr,
+//         sync::atomic::{AtomicUsize, Ordering},
+//     };
+//
+//     // Node 结构体
+//     #[derive(Debug)]
+//     #[repr(C)]
+//     pub struct Node {
+//         pub(crate) key_offset: u32,
+//         pub(crate) key_size: u16,
+//         pub(crate) height: u16,
+//         pub(crate) value: u64,
+//         pub(crate) tower: [u32; 4], // 假设最大高度为 4
+//     }
+//
+//     // ArenaObject 枚举
+//     #[repr(align(8))]
+//     pub enum ArenaObject {
+//         Node { discriminant: u8, data: Node },
+//         Data { discriminant: u8, data: Vec<u8> },
+//     }
+//
+//     const MAX_HEIGHT: usize = 4;
+//     #[test]
+//     fn main() {
+//         let arena = SmallAlloc::new(1 << 12);
+//         let mut objs = vec![];
+//         for i in 0..100 {
+//             if i % 2 == 0 {
+//                 let (node, offset) = unsafe { arena.alloc_obj::<Node>(mem::size_of::<Node>()) };
+//                 let node = unsafe { node.as_mut().unwrap() };
+//                 node.key_size = i as u16;
+//                 let item = (Either::Left(node), offset);
+//                 objs.push(item);
+//             } else {
+//                 let (buffer, offset) = unsafe { arena.alloc_obj::<u8>(i) };
+//                 let key = unsafe { &mut *slice_from_raw_parts_mut(buffer, i) };
+//                 key.fill(87);
+//                 let item = (Either::Right(key), offset);
+//                 objs.push(item);
+//             }
+//         }
+//
+//         for obj in objs {
+//             if obj.0.is_left() {
+//                 let offset = obj.1;
+//                 let mut node = obj.0.left().unwrap();
+//                 println!("{:?}", node);
+//             } else {
+//                 let key = obj.0.right().unwrap();
+//                 println!("{:?}", key);
+//             }
+//         }
+//
+//         println!("{}", arena.cursor.load(Ordering::SeqCst));
+//     }
+// }

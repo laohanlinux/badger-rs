@@ -4,8 +4,8 @@ use byteorder::BigEndian;
 use byteorder::{ReadBytesExt, WriteBytesExt};
 use log::info;
 
-use std::io::{Cursor, Write};
 use serde::{Deserialize, Serialize};
+use std::io::{Cursor, Write};
 
 /// ValueStruct represents the value info that can be associated with a key, but also the internal
 /// Meta field.
