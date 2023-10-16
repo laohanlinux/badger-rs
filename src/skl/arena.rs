@@ -1,11 +1,8 @@
-use crate::skl::alloc::{OnlyLayoutAllocate, SliceAllocate};
 use crate::skl::node::Node;
 use crate::y::ValueStruct;
-use crate::SmallAlloc;
+use crate::{Allocate, SmallAlloc};
 use std::mem::size_of;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
-
-const OFFSET_SIZE: usize = size_of::<u32>();
 
 
 /// `Arena` should be lock-free.

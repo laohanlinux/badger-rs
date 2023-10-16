@@ -1,7 +1,7 @@
 use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
 use crate::table::iterator::IteratorItem;
 use crate::y::ValueStruct;
-use crate::Xiterator;
+use crate::{Allocate, SmallAlloc, Xiterator};
 
 use log::{info, warn};
 use rand::random;

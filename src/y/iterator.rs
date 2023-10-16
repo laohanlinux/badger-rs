@@ -1,5 +1,3 @@
-use crate::skl::Chunk;
-
 use byteorder::BigEndian;
 use byteorder::{ReadBytesExt, WriteBytesExt};
 use log::info;
