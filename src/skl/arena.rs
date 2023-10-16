@@ -5,6 +5,9 @@ use std::mem::size_of;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
 
 
+/// How to cals SkipList allocate size
+/// 8(zero-bit) + key + value + node*N
+
 /// `Arena` should be lock-free.
 #[derive(Debug)]
 pub struct Arena {
@@ -90,7 +93,7 @@ impl Arena {
     // Return byte slice at offset.
     // FIXME:
     pub(crate) fn put_node(&self, _height: isize) -> u32 {
-        let offset = self.alloc.alloc(Node::size());
+        let offset = self.alloc.alloc(Node::align_size());
         offset as u32
     }
 
@@ -165,9 +168,9 @@ mod tests {
             assert_eq!(value, i as u64);
         }
 
-        let second_node = arena.get_node(Node::size()).unwrap();
+        let second_node = arena.get_node(Node::align_size()).unwrap();
         let offset = arena.get_node_offset(second_node);
-        assert_eq!(offset, Node::size());
+        assert_eq!(offset, Node::align_size());
     }
 
     #[test]

@@ -719,7 +719,7 @@ impl KV {
     /// Async open a KV db with Options
     pub async fn open(mut opt: Options) -> Result<KV> {
         opt.max_batch_size = (15 * opt.max_table_size) / 100;
-        opt.max_batch_count = 2 * opt.max_batch_size / Node::size() as u64;
+        opt.max_batch_count = 2 * opt.max_batch_size / Node::align_size() as u64;
         create_dir_all(opt.dir.as_str()).await?;
         create_dir_all(opt.value_dir.as_str()).await?;
         if !(opt.value_log_file_size <= 2 << 30 && opt.value_log_file_size >= 1 << 20) {

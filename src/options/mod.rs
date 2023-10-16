@@ -83,7 +83,7 @@ impl Options {
 
     /// Return the size of allocator arena
     pub fn arena_size(&self) -> u64 {
-        self.max_table_size + self.max_batch_size + self.max_batch_count * (Node::size() as u64)
+        self.max_table_size + self.max_batch_size + self.max_batch_count * (Node::align_size() as u64)
     }
 }
 

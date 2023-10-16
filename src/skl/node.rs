@@ -1,5 +1,5 @@
 use crate::skl::arena::Arena;
-use crate::skl::MAX_HEIGHT;
+use crate::skl::{MAX_HEIGHT, PtrAlign};
 use crate::y::ValueStruct;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -68,8 +68,9 @@ impl Node {
         node
     }
 
-    pub(crate) const fn size() -> usize {
-        size_of::<Node>()
+    pub(crate) const fn align_size() -> usize {
+        // size_of::<Node>()
+        (size_of::<Node>() + PtrAlign) & !PtrAlign
     }
 
     pub(crate) fn set_value(&self, arena: &Arena, v: &ValueStruct) {
