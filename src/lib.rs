@@ -67,3 +67,10 @@ pub(crate) fn must_align<T>(ptr: *const T) {
     let actual = (ptr as usize) % align_of::<T>() == 0;
     assert!(actual);
 }
+
+#[allow(dead_code)]
+#[inline]
+pub(crate) fn cals_size_with_align(sz: usize, align_sz: usize) -> usize {
+    let size = (sz + align_sz) & !align_sz;
+    size
+}

@@ -1,7 +1,9 @@
+use crate::skl::PtrAlign;
 use crate::value_log::Entry;
 use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE};
-use crate::Node;
+use crate::{cals_size_with_align, Node};
 use rand::random;
+use std::ascii::Char::Cancel;
 use std::env::temp_dir;
 
 /// Specifies how data in LSM table files and value log files should
@@ -74,16 +76,26 @@ pub struct Options {
 }
 
 impl Options {
+    // TODO FIXME
     pub fn estimate_size(&self, entry: &Entry) -> usize {
+        let key_size = cals_size_with_align(entry.key.len(), PtrAlign);
         if entry.value.len() < self.value_threshold {
-            return entry.key.len() + entry.value.len() + META_SIZE + USER_META_SIZE + CAS_SIZE;
+            let value_size = cals_size_with_align(entry.value.len(), PtrAlign);
+            key_size + value_size + META_SIZE + USER_META_SIZE
         }
-        entry.key.len() + 16 + META_SIZE + USER_META_SIZE + CAS_SIZE
+
+        key_size
+        // if entry.value.len() < self.value_threshold {
+        //     return entry.key.len() + entry.value.len() + META_SIZE + USER_META_SIZE + CAS_SIZE;
+        // }
+        // entry.key.len() + 16 + META_SIZE + USER_META_SIZE + CAS_SIZE
     }
 
     /// Return the size of allocator arena
     pub fn arena_size(&self) -> u64 {
-        self.max_table_size + self.max_batch_size + self.max_batch_count * (Node::align_size() as u64)
+        self.max_table_size
+            + self.max_batch_size
+            + self.max_batch_count * (Node::align_size() as u64)
     }
 }
 

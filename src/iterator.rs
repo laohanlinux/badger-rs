@@ -285,11 +285,11 @@ pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
     reverse: false,
 };
 
-// Helps iterating over the KV pairs in a lexicographically sorted order.
-// skiplist,     sst      vlog
-//  |             |        |
-//  |             |        |
-//  IteratorExt  reference
+/// Helps iterating over the KV pairs in a lexicographically sorted order.
+/// skiplist,     sst      vlog
+///  |             |        |
+///  |             |        |
+///  IteratorExt  reference
 pub struct IteratorExt {
     kv: KV,
     itr: MergeIterator,
