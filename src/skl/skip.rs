@@ -48,7 +48,7 @@ impl Clone for SkipList {
 
 impl SkipList {
     pub fn new(arena_size: usize) -> Self {
-        let mut arena = Arena::new(10*arena_size);
+        let mut arena = Arena::new(arena_size);
         let v = ValueStruct::default();
         // header
         let node = Node::new(&mut arena, "".as_bytes(), &v, MAX_HEIGHT as isize);

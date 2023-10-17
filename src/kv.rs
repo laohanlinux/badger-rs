@@ -535,6 +535,7 @@ impl KVCore {
         if self.must_mt().mem_size() < self.opt.max_table_size as u32 {
             return Ok(());
         }
+        warn!("Will create a new skipklist, {}, {} >= {}", self.must_mt().id(), self.must_mt().mem_size(), self.opt.max_table_size);
         // A nil mt indicates that KV is being closed.
         assert!(!self.must_mt().empty());
         let flush_task = FlushTask {

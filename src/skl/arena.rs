@@ -3,6 +3,7 @@ use crate::y::ValueStruct;
 use crate::{Allocate, SmallAlloc};
 use std::mem::size_of;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
+use crate::skl::PtrAlign;
 
 
 /// How to cals SkipList allocate size
@@ -20,7 +21,7 @@ impl Arena {
         // Don't store data at position 0 in order to reverse offset = 0 as a kind
         // of nil pointer
         Self {
-            alloc: SmallAlloc::new(n),
+            alloc: SmallAlloc::new(n + PtrAlign + 1 + Node::align_size()),
         }
     }
 

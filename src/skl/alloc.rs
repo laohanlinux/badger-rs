@@ -44,10 +44,16 @@ impl Allocate for SmallAlloc {
         // Leave enough padding for alignment.
         let size = (size + PtrAlign) & !PtrAlign;
         let offset = self.cursor.fetch_add(size, Ordering::SeqCst);
-        if offset + size > self.cap() {
+        if offset + size >= self.cap() {
             #[cfg(test)]
-            crate::test_util::push_log_by_filename("aaaa", b"shift");
+            crate::test_util::push_log_by_filename("lack_memory.log", b"shift");
         }
+        assert!(
+            offset + size <= self.cap(),
+            "{} > {}",
+            offset + size,
+            self.cap()
+        );
         offset
     }
 
@@ -87,19 +93,13 @@ impl SmallAlloc {
         let ptr = buf.as_mut_ptr() as *mut u8;
         let cap = buf.capacity() * (PtrAlign + 1);
         std::mem::forget(buf);
+        log::info!("new a small alloc, size: {}", cap);
         SmallAlloc {
             cursor: AtomicUsize::new(PtrAlign + 1),
             _cap: AtomicUsize::new(cap),
             ptr: Cell::new(ptr),
             l: Arc::new(std::sync::Mutex::new(())),
         }
-    }
-
-    pub unsafe fn alloc_obj<T>(&self, size: usize) -> (*mut T, usize) {
-        //assert!(self.cursor.load(Ordering::SeqCst) + size <= self.cap.get());
-        let offset = self.alloc(size);
-        let obj = self.get_mut::<T>(offset);
-        (obj, offset)
     }
 
     pub fn reset(&self) {

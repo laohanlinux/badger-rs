@@ -80,3 +80,6 @@ protoc-rust = "2.28.0"
 [[bench]]
 name = "my_benchmark"
 harness = false
+
+[profile.dev]
+debug-assertions = false

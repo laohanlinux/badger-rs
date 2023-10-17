@@ -30,7 +30,7 @@ impl ValueStruct {
         10
     }
 
-    fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         Self::header_size() + self.value.len()
     }
 
