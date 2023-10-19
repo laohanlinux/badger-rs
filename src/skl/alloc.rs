@@ -9,12 +9,13 @@ use std::sync::Arc;
 use crate::Node;
 use std::ptr;
 
-pub trait Allocate: Send + Sync {
-    type Block;
+pub trait Allocate: Send + Sync + Clone {
     #[inline]
-    fn alloc(&self, start: usize, n: usize) -> Self::Block;
+    fn alloc<T>(&self, start: usize, n: usize) -> *mut T;
     #[inline]
     fn size(&self) -> usize;
+    #[inline]
+    fn cap(&self) -> usize;
     #[inline]
     fn used_count(&self) -> usize;
 }
