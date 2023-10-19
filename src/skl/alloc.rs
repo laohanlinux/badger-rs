@@ -6,7 +6,6 @@ use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use crate::Node;
 use std::ptr;
 
 pub(crate) const PtrAlign: usize = 7;
@@ -14,6 +13,10 @@ pub(crate) const PtrAlign: usize = 7;
 pub trait Allocate: Send + Sync {
     #[inline]
     fn alloc(&self, size: usize) -> usize;
+    #[inline]
+    fn alloc_rev(&self, size: usize) -> usize {
+        todo!()
+    }
     #[inline]
     fn size(&self) -> usize;
     #[inline]
@@ -27,34 +30,36 @@ pub trait Allocate: Send + Sync {
 }
 
 #[derive(Debug)]
-pub struct SmallAlloc {
-    cursor: AtomicUsize,
-    _cap: AtomicUsize,
-    ptr: Cell<*mut u8>,
-    l: Arc<std::sync::Mutex<()>>,
+pub struct DoubleAlloc {
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    ptr: ManuallyDrop<Vec<u8>>,
+    _cap: usize,
 }
 
-unsafe impl Send for SmallAlloc {}
+unsafe impl Send for DoubleAlloc {}
 
-unsafe impl Sync for SmallAlloc {}
-
-impl Allocate for SmallAlloc {
-    /// Alloc 8-byte aligned memory.
-    fn alloc(&self, size: usize) -> usize {
-        if size == 0 {
-            return self.cursor.load(Ordering::SeqCst);
+impl Drop for DoubleAlloc {
+    fn drop(&mut self) {
+        unsafe {
+            ManuallyDrop::drop(&mut self.ptr);
         }
-        // Leave enough padding for alignment.
-        let size = (size + PtrAlign) & !PtrAlign;
-        let offset = self.cursor.fetch_add(size, Ordering::SeqCst);
-        // assert!(
-        //     offset + size <= self.cap(),
-        //     "{} > {}",
-        //     offset + size,
-        //     self.cap()
-        // );
-        println!("alloc from {} to {}", offset, offset + size);
+    }
+}
+
+impl Allocate for DoubleAlloc {
+    fn alloc(&self, size: usize) -> usize {
+        let free_count = self.free_count();
+        assert!(free_count > size, "less memory");
+        let offset = self.head.fetch_add(size, Ordering::SeqCst);
         offset
+    }
+
+    fn alloc_rev(&self, size: usize) -> usize {
+        let free_count = self.free_count();
+        assert!(free_count > size, "less memory");
+        let offset = self.tail.fetch_sub(size, Ordering::SeqCst);
+        offset - size
     }
 
     fn size(&self) -> usize {
@@ -62,67 +67,37 @@ impl Allocate for SmallAlloc {
     }
 
     unsafe fn get_mut<T>(&self, offset: usize) -> *mut T {
-        if offset == 0 {
-            return ptr::null_mut();
-        }
-        return self.ptr.get().add(offset) as _;
+        let ptr = self.ptr.as_ptr() as *mut u8;
+        ptr.add(offset).cast::<T>()
     }
 
     fn offset<T>(&self, ptr: *const T) -> usize {
-        let ptr_addr = ptr as usize;
-        let base_addr = self.ptr.get() as usize;
-        if ptr_addr > base_addr && ptr_addr < base_addr + self.cap() {
-            ptr_addr - base_addr
-        } else {
-            0
-        }
+        let base_ptr = self.ptr.as_ptr() as usize;
+        let offset_ptr = ptr as usize;
+        offset_ptr - base_ptr
     }
 
     fn len(&self) -> usize {
-        self.cursor.load(Ordering::SeqCst)
+        self.cap() - (self.tail.load(Ordering::SeqCst) - self.head.load(Ordering::SeqCst))
     }
 
     fn cap(&self) -> usize {
-        self._cap.load(Ordering::SeqCst)
+        self._cap
     }
 }
 
-impl SmallAlloc {
-    pub fn new(cap: usize) -> SmallAlloc {
-        let mut buf: Vec<u64> = Vec::with_capacity(cap / (PtrAlign + 1));
-        let ptr = buf.as_mut_ptr() as *mut u8;
-        let cap = buf.capacity() * (PtrAlign + 1);
-        std::mem::forget(buf);
-        log::info!("new a small alloc, size: {}", cap);
-        SmallAlloc {
-            cursor: AtomicUsize::new(PtrAlign + 1),
-            _cap: AtomicUsize::new(cap),
-            ptr: Cell::new(ptr),
-            l: Arc::new(std::sync::Mutex::new(())),
+impl DoubleAlloc {
+    pub(crate) fn new(n: usize) -> DoubleAlloc {
+        DoubleAlloc {
+            head: AtomicUsize::new(PtrAlign + 1),
+            tail: AtomicUsize::new(n),
+            ptr: ManuallyDrop::new(vec![0u8; n]),
+            _cap: n,
         }
     }
 
-    pub fn reset(&self) {
-        // self._cap
-        // self.cursor.store(0, Ordering::Relaxed);
-        //self.ptr.clear();
-    }
-
-    pub fn alloc_with_align(&self, size: usize, ptr_align: usize) -> usize {
-        if size == 0 {
-            return self.cursor.load(Ordering::SeqCst);
-        }
-        // Leave enough padding for alignment.
-        let size = (size + ptr_align) & !ptr_align;
-        let offset = self.cursor.fetch_add(size, Ordering::SeqCst);
-        assert!(
-            offset + size <= self.cap(),
-            "{} > {}",
-            offset + size,
-            self.cap()
-        );
-        println!("alloc from {} to {}", offset, offset + size);
-        offset
+    fn free_count(&self) -> usize {
+        self.tail.load(Ordering::SeqCst) - self.head.load(Ordering::SeqCst)
     }
 }
 

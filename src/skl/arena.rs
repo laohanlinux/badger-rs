@@ -1,7 +1,7 @@
 use crate::skl::node::Node;
 use crate::skl::PtrAlign;
 use crate::y::ValueStruct;
-use crate::{Allocate, SmallAlloc};
+use crate::{Allocate, DoubleAlloc};
 use std::mem::size_of;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
 
@@ -11,7 +11,7 @@ use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
 /// `Arena` should be lock-free.
 #[derive(Debug)]
 pub struct Arena {
-    alloc: SmallAlloc,
+    alloc: DoubleAlloc,
 }
 
 impl Arena {
@@ -20,7 +20,7 @@ impl Arena {
         // Don't store data at position 0 in order to reverse offset = 0 as a kind
         // of nil pointer
         Self {
-            alloc: SmallAlloc::new(100 * n + PtrAlign + 1 + Node::align_size()),
+            alloc: DoubleAlloc::new(n + PtrAlign + 1 + Node::align_size()),
         }
     }
 
@@ -98,7 +98,7 @@ impl Arena {
     // Return byte slice at offset.
     // FIXME:
     pub(crate) fn put_node(&self, _height: isize) -> u32 {
-        let offset = self.alloc.alloc(Node::size());
+        let offset = self.alloc.alloc_rev(Node::size());
         offset as u32
     }
 
@@ -121,16 +121,16 @@ impl Arena {
 
 #[cfg(test)]
 mod tests {
-    use std::ptr;
-    use crate::skl::{MAX_HEIGHT, PtrAlign};
+    use crate::skl::{PtrAlign, MAX_HEIGHT};
     use crate::{cals_size_with_align, Arena, Node, SkipList, ValueStruct};
-    use rand::{random, Rng, thread_rng};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-    use std::thread::spawn;
-    use std::time::Duration;
     use log::kv::Key;
     use prometheus::core::AtomicU64;
+    use rand::{random, thread_rng, Rng};
+    use std::ptr;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::thread::spawn;
+    use std::time::Duration;
 
     #[test]
     fn t_arena_key() {
@@ -238,7 +238,7 @@ mod tests {
             for i in 0..node.tower.len() {
                 node.tower[i].store(20, Ordering::SeqCst);
             }
-            println!("{}, {}, {}, {:?}", key_offset, value_offset, offset, node.tower);
+            //println!("{}, {}, {}, {:?}", key_offset, value_offset, offset, node.tower);
             kv.push(Item {
                 key: b"".to_vec(),
                 key_offset: 0,
@@ -251,7 +251,7 @@ mod tests {
         //
         for el in kv.into_iter().enumerate() {
             let node = arena.get_node(el.1.node_offset).unwrap();
-            println!("{}, {:?}", el.0, node);
+            //println!("{}, {:?}", el.0, node);
         }
     }
 

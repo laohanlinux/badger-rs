@@ -1,7 +1,7 @@
 use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
 use crate::table::iterator::IteratorItem;
 use crate::y::ValueStruct;
-use crate::{Allocate, SmallAlloc, Xiterator};
+use crate::{Allocate, Xiterator};
 
 use log::{info, warn};
 use rand::random;
@@ -226,10 +226,10 @@ impl SkipList {
     /// Inserts the key-value pair.
     /// FIXME: it bad, should be not use unsafe, but ....
     pub fn put(&self, key: &[u8], v: ValueStruct) {
-        unsafe { self._put(key, v) }
+        self._put(key, v)
     }
 
-    unsafe fn _put(&self, key: &[u8], v: ValueStruct) {
+    fn _put(&self, key: &[u8], v: ValueStruct) {
         // Since we allow overwrite, we may not need to create a new node. We might not even need to
         // increase the height. Let's defer these actions.
         // let mut def_node = &mut Node::default();
@@ -244,8 +244,8 @@ impl SkipList {
             let (_pre, _next) = self.find_splice_for_level(key, cur, i as isize);
             prev[i] = _pre;
             if _next.is_some() && ptr::eq(_pre, _next.unwrap()) {
-                let arena = self.arena_ref().copy().as_mut();
-                prev[i].as_ref().unwrap().set_value(&arena, &v);
+                let arena = unsafe { self.arena_ref().copy().as_mut() };
+                unsafe { prev[i].as_ref().unwrap().set_value(&arena, &v) };
                 return;
             }
             if _next.is_some() {
@@ -256,7 +256,7 @@ impl SkipList {
         // We do need to create a new node.
         let height = Self::random_height();
         let mut arena = self.arena_ref().copy();
-        let x = Node::new(arena.as_mut(), key, &v, height as isize);
+        let x = Node::new(unsafe { arena.as_mut() }, key, &v, height as isize);
 
         // Try to increase a new node. linked pre-->x-->next
         let mut list_height = self.get_height() as i32;
@@ -300,20 +300,25 @@ impl SkipList {
 
                 let next_offset = self.arena_ref().get_node_offset(next[i]);
                 x.tower[i].store(next_offset as u32, Ordering::SeqCst);
-                if prev[i].as_ref().unwrap().cas_next_offset(
-                    i,
-                    next_offset as u32,
-                    self.arena_ref().get_node_offset(x) as u32,
-                ) {
-                    // Managed to insert x between prev[i] and next[i]. Go to the next level.
-                    break;
+                unsafe {
+                    if prev[i].as_ref().unwrap().cas_next_offset(
+                        i,
+                        next_offset as u32,
+                        self.arena_ref().get_node_offset(x) as u32,
+                    ) {
+                        // Managed to insert x between prev[i] and next[i]. Go to the next level.
+                        break;
+                    }
                 }
 
                 // CAS failed. We need to recompute prev and next.
                 // It is unlikely to be helpful to try to use a different level as we redo the search,
                 // because it is unlikely that lots of nodes are inserted between prev[i] and next[i].
-                let (_pre, _next) =
-                    self.find_splice_for_level(key, prev[i].as_ref().unwrap(), i as isize);
+                let (_pre, _next) = self.find_splice_for_level(
+                    key,
+                    unsafe { prev[i].as_ref().unwrap() },
+                    i as isize,
+                );
                 prev[i] = _pre;
                 // FIXME: maybe nil pointer
                 if _next.is_some() {
@@ -323,10 +328,12 @@ impl SkipList {
                 }
                 if ptr::eq(prev[i], next[i]) {
                     assert_eq!(i, 0, "Equality can happen only on base level: {}", i);
-                    prev[i]
-                        .as_ref()
-                        .unwrap()
-                        .set_value(self.arena_mut_ref(), &v);
+                    unsafe {
+                        prev[i]
+                            .as_ref()
+                            .unwrap()
+                            .set_value(self.arena_mut_ref(), &v);
+                    }
                     return;
                 }
             }
@@ -389,6 +396,14 @@ impl SkipList {
     /// returns the size of the SkipList in terms of how much memory is used within its internal arena.
     pub fn mem_size(&self) -> u32 {
         self.arena_ref().size()
+    }
+
+    pub fn free_size(&self) -> u32 {
+        self.arena_ref().free_size()
+    }
+
+    pub fn cap(&self) -> u32 {
+        self.arena_ref().cap()
     }
 
     /// Returns the keys, Notice it just travel all keys for statssing

@@ -52,10 +52,8 @@ impl Node {
         v: &'a ValueStruct,
         height: isize,
     ) -> &'a mut Node {
-        #[cfg(test)]
-        crate::test_util::push_log_by_filename("free_memory.log", format!("{}", arena.free_size()).as_bytes());
-
-        assert!(arena.free_size() > 1000);
+        // #[cfg(test)]
+        // crate::test_util::push_log_by_filename("free_memory.log", format!("{}", arena.free_size()).as_bytes());
         let key_offset = arena.put_key(key);
         let (value_offset, value_size) = arena.put_val(v);
         // The base level is already allocated in the node struct.

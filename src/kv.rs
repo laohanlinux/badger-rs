@@ -391,7 +391,7 @@ impl KVCore {
 
             if count >= self.opt.max_batch_count || sz >= self.opt.max_batch_size {
                 assert!(!self.write_ch.is_close());
-                warn!("send tasks to write, entries: {}, count:{}, max_batch_count:{}, size:{}, max_batch_count:{}", req.entries.len(), count, self.opt.max_batch_count, sz, self.opt.max_batch_size);
+                warn!("send tasks to write, entries: {}, count:{}, max_batch_count:{}, size:{}, max_batch_count:{}, free_count:{}", req.entries.len(), count, self.opt.max_batch_count, sz, self.opt.max_batch_size, self.must_mt().free_size());
                 let cost = SystemTime::now();
                 let resp_ch = req.get_resp_channel();
                 // batch process requests
@@ -535,7 +535,7 @@ impl KVCore {
         if self.must_mt().mem_size() < self.opt.max_table_size as u32 {
             return Ok(());
         }
-        warn!("Will create a new skipklist, {}, {} >= {}", self.must_mt().id(), self.must_mt().mem_size(), self.opt.max_table_size);
+        warn!("Will create a new SkipList, {}, cap: {}, free_count: {}, {} >= {}", self.must_mt().id(), self.must_mt().cap(), self.must_mt().free_size(), self.must_mt().mem_size(), self.opt.max_table_size);
         // A nil mt indicates that KV is being closed.
         assert!(!self.must_mt().empty());
         let flush_task = FlushTask {
@@ -563,8 +563,8 @@ impl KVCore {
     }
 
     async fn update_offset(&self, ptrs: &mut Vec<Arc<Atomic<Option<ValuePointer>>>>) {
-        #[cfg(test)]
-        warn!("Ready to update offset");
+        // #[cfg(test)]
+        // warn!("Ready to update offset");
         let mut ptr = ValuePointer::default();
         for tmp_ptr in ptrs.iter().rev() {
             let tmp_ptr = tmp_ptr.load(Ordering::Acquire);
@@ -577,8 +577,8 @@ impl KVCore {
         }
 
         if ptr.is_zero() {
-            #[cfg(test)]
-            warn!("ptr is null");
+            // #[cfg(test)]
+            // warn!("ptr is null");
             return;
         }
 
