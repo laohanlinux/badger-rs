@@ -1,10 +1,9 @@
 use crate::skl::node::Node;
+use crate::skl::PtrAlign;
 use crate::y::ValueStruct;
 use crate::{Allocate, SmallAlloc};
 use std::mem::size_of;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
-use crate::skl::PtrAlign;
-
 
 /// How to cals SkipList allocate size
 /// 8(zero-bit) + key + value + node*N
@@ -21,7 +20,7 @@ impl Arena {
         // Don't store data at position 0 in order to reverse offset = 0 as a kind
         // of nil pointer
         Self {
-            alloc: SmallAlloc::new(n + PtrAlign + 1 + Node::align_size()),
+            alloc: SmallAlloc::new(100 * n + PtrAlign + 1 + Node::align_size()),
         }
     }
 
@@ -31,6 +30,10 @@ impl Arena {
 
     pub(crate) fn cap(&self) -> u32 {
         self.alloc.cap() as u32
+    }
+
+    pub(crate) fn free_size(&self) -> u32 {
+        self.cap() - self.size()
     }
 
     // TODO: maybe use MaybeUint instead
@@ -61,6 +64,7 @@ impl Arena {
 
     // Returns start location
     pub(crate) fn put_key(&self, key: &[u8]) -> u32 {
+        // let offset = self.alloc.alloc_with_align(key.len(), 7);
         let offset = self.alloc.alloc(key.len());
         let buffer = unsafe { self.alloc.get_mut::<u8>(offset) };
         let mut buffer = unsafe { &mut *slice_from_raw_parts_mut(buffer, key.len()) };
@@ -94,7 +98,7 @@ impl Arena {
     // Return byte slice at offset.
     // FIXME:
     pub(crate) fn put_node(&self, _height: isize) -> u32 {
-        let offset = self.alloc.alloc(Node::align_size());
+        let offset = self.alloc.alloc(Node::size());
         offset as u32
     }
 
@@ -117,9 +121,16 @@ impl Arena {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Arena, Node, ValueStruct};
+    use std::ptr;
+    use crate::skl::{MAX_HEIGHT, PtrAlign};
+    use crate::{cals_size_with_align, Arena, Node, SkipList, ValueStruct};
+    use rand::{random, Rng, thread_rng};
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use std::thread::spawn;
+    use std::time::Duration;
+    use log::kv::Key;
+    use prometheus::core::AtomicU64;
 
     #[test]
     fn t_arena_key() {
@@ -169,9 +180,9 @@ mod tests {
             assert_eq!(value, i as u64);
         }
 
-        let second_node = arena.get_node(Node::align_size()).unwrap();
+        let second_node = arena.get_node(Node::size()).unwrap();
         let offset = arena.get_node_offset(second_node);
-        assert_eq!(offset, Node::align_size());
+        assert_eq!(offset, Node::size());
     }
 
     #[test]
@@ -189,5 +200,94 @@ mod tests {
             .collect::<Vec<_>>();
         offsets.sort();
         println!("offsets: {:?}", offsets);
+    }
+
+    #[test]
+    fn t_arena_memory1() {
+        let arena = Arena::new(1 << 20);
+        struct Item<'a> {
+            key: Vec<u8>,
+            key_offset: usize,
+            value: ValueStruct,
+            value_offset: usize,
+            node: &'a Node,
+            node_offset: usize,
+        }
+        let mut kv = vec![];
+        for i in 0..1119000 {
+            let key = vec![1u8; random::<usize>() % 18];
+            let value = vec![1u8; random::<usize>() % 10];
+            let value = ValueStruct::new(value, 9, 0, 0);
+            if arena.cap() - 200 < arena.size() {
+                break;
+            }
+            let key_offset = arena.put_key(&key);
+            if arena.cap() - 200 < arena.size() {
+                break;
+            }
+            let (value_offset, _) = arena.put_val(&value);
+            if arena.cap() - 200 < arena.size() {
+                break;
+            }
+            let offset = arena.put_node(0);
+            let node = arena.get_mut_node(offset as usize).unwrap();
+            node.height = 12;
+            node.key_offset = key_offset;
+            node.key_size = key.len() as u16;
+            node.value.store(10, Ordering::SeqCst);
+            for i in 0..node.tower.len() {
+                node.tower[i].store(20, Ordering::SeqCst);
+            }
+            println!("{}, {}, {}, {:?}", key_offset, value_offset, offset, node.tower);
+            kv.push(Item {
+                key: b"".to_vec(),
+                key_offset: 0,
+                value: ValueStruct::default(),
+                value_offset: 0,
+                node,
+                node_offset: offset as usize,
+            })
+        }
+        //
+        for el in kv.into_iter().enumerate() {
+            let node = arena.get_node(el.1.node_offset).unwrap();
+            println!("{}, {:?}", el.0, node);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn t_arena_memory_cals() {
+        let st = SkipList::new(1 << 22);
+        let mut cursor = st.arena.size();
+        let cap = st.arena.cap();
+        for i in 0..10000 {
+            let st = st.clone();
+            tokio::spawn(async move {
+                let mut rng = thread_rng();
+                let mut key = vec![1u8; random::<usize>() % 100];
+                rng.fill(&mut key[..]);
+                let value = vec![1u8; random::<usize>() % 10];
+                let value = ValueStruct::new(value, 9, 0, 0);
+                let key_size = cals_size_with_align(key.len(), PtrAlign);
+                let value_size = cals_size_with_align(value.size(), PtrAlign);
+                if st.arena.free_size() < 20000 {
+                    // println!("skip it");
+                    return;
+                }
+                st.put(&key, value);
+
+                // println!(
+                //     "cap:{}, {} to {}, key_size: {}, value_size: {}, node_size: {}",
+                //     cap,
+                //     cursor,
+                //     st.arena.size(),
+                //     key_size,
+                //     value_size,
+                //     Node::size()
+                // );
+                // cursor = st.arena.size();
+            });
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }

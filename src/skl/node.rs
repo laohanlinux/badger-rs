@@ -2,10 +2,11 @@ use crate::skl::arena::Arena;
 use crate::skl::{MAX_HEIGHT, PtrAlign};
 use crate::y::ValueStruct;
 use std::mem::size_of;
+use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 #[derive(Debug)]
-#[repr(C)]
+#[repr(align(1))]
 pub struct Node {
     // A byte slice is 24 bytes. We are trying to save space here.
     // immutable. No need to lock to access key.
@@ -51,6 +52,10 @@ impl Node {
         v: &'a ValueStruct,
         height: isize,
     ) -> &'a mut Node {
+        #[cfg(test)]
+        crate::test_util::push_log_by_filename("free_memory.log", format!("{}", arena.free_size()).as_bytes());
+
+        assert!(arena.free_size() > 1000);
         let key_offset = arena.put_key(key);
         let (value_offset, value_size) = arena.put_val(v);
         // The base level is already allocated in the node struct.
@@ -66,6 +71,10 @@ impl Node {
         );
         node.height = height as u16;
         node
+    }
+
+    pub(crate) const fn size() -> usize {
+        size_of::<Node>()
     }
 
     pub(crate) const fn align_size() -> usize {

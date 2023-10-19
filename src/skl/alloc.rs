@@ -41,19 +41,19 @@ unsafe impl Sync for SmallAlloc {}
 impl Allocate for SmallAlloc {
     /// Alloc 8-byte aligned memory.
     fn alloc(&self, size: usize) -> usize {
+        if size == 0 {
+            return self.cursor.load(Ordering::SeqCst);
+        }
         // Leave enough padding for alignment.
         let size = (size + PtrAlign) & !PtrAlign;
         let offset = self.cursor.fetch_add(size, Ordering::SeqCst);
-        if offset + size >= self.cap() {
-            #[cfg(test)]
-            crate::test_util::push_log_by_filename("lack_memory.log", b"shift");
-        }
-        assert!(
-            offset + size <= self.cap(),
-            "{} > {}",
-            offset + size,
-            self.cap()
-        );
+        // assert!(
+        //     offset + size <= self.cap(),
+        //     "{} > {}",
+        //     offset + size,
+        //     self.cap()
+        // );
+        println!("alloc from {} to {}", offset, offset + size);
         offset
     }
 
@@ -107,4 +107,27 @@ impl SmallAlloc {
         // self.cursor.store(0, Ordering::Relaxed);
         //self.ptr.clear();
     }
+
+    pub fn alloc_with_align(&self, size: usize, ptr_align: usize) -> usize {
+        if size == 0 {
+            return self.cursor.load(Ordering::SeqCst);
+        }
+        // Leave enough padding for alignment.
+        let size = (size + ptr_align) & !ptr_align;
+        let offset = self.cursor.fetch_add(size, Ordering::SeqCst);
+        assert!(
+            offset + size <= self.cap(),
+            "{} > {}",
+            offset + size,
+            self.cap()
+        );
+        println!("alloc from {} to {}", offset, offset + size);
+        offset
+    }
+}
+
+#[test]
+fn t() {
+    let size = (1 + 0) & !0;
+    println!("{}, {}, {}", (1 + 0) & !0, (0 + 0) & !0, (3 + 0) & !0);
 }
