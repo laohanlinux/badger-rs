@@ -252,10 +252,10 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn t_arena_memory_cals() {
+    #[test]
+    fn t_arena_memory_cals() {
         tracing_log();
-        let st = SkipList::new(1 << 24);
+        let st = SkipList::new(1 << 9);
         let mut rng = thread_rng();
         for i in 0..1000000 {
             let mut key = vec![1u8; random::<usize>() % 100];
@@ -280,6 +280,5 @@ mod tests {
             // );
             // tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }

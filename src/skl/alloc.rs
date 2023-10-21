@@ -2,7 +2,7 @@ use std::fmt::Debug;
 use std::mem::{size_of, ManuallyDrop, align_of};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use tracing::info;
-use crate::Node;
+use crate::{cals_size_with_align, Node};
 
 pub(crate) const PtrAlign: usize = 7;
 
@@ -67,11 +67,20 @@ impl Allocate for DoubleAlloc {
     }
 
     unsafe fn get_mut<T>(&self, offset: usize) -> *mut T {
+        // let ptr = self.borrow_slice(offset, Self::size());
+        // let (pre, mid, _) = unsafe { ptr.align_to() };
+        // assert!(pre.is_empty());
+        // (&mid[0], offset)
+        println!("Get : {}", offset);
         let ptr = self.ptr.as_ptr() as *mut u8;
+        // assert!(ptr.is_aligned());
+        // unsafe {ptr.is_aligned_to(align_of::<Node>())};
         ptr.add(offset).cast::<T>()
     }
 
     fn offset<T>(&self, ptr: *const T) -> usize {
+        // unsafe {ptr.align_offset(Node::align_size());}
+
         let base_ptr = self.ptr.as_ptr() as usize;
         let offset_ptr = ptr as usize;
         offset_ptr - base_ptr

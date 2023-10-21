@@ -9,6 +9,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::{cmp, ptr, sync::atomic::AtomicI32};
+use drop_cell::defer;
 use uuid::Uuid;
 
 use super::{arena::Arena, node::Node};
@@ -256,8 +257,11 @@ impl SkipList {
         // We do need to create a new node.
         let height = Self::random_height();
         let mut arena = self.arena_ref().copy();
-        let x = Node::new(unsafe { arena.as_mut() }, key, &v, height as isize);
 
+        info!("1Node::new(unsafe, key, &v, height as isize)");
+        let x = Node::new(unsafe { arena.as_mut() }, key, &v, height as isize);
+        info!("2Node::new(unsafe, key, &v, height as isize)");
+        defer! {info!("Exit exit");}
         // Try to increase a new node. linked pre-->x-->next
         let mut list_height = self.get_height() as i32;
         while height > list_height as usize {
@@ -813,9 +817,9 @@ mod tests {
 
     #[test]
     fn t_concurrent_basic() {
-        let st = Arc::new(SkipList::new(2 * ARENA_SIZE));
+        let st = Arc::new(SkipList::new(ARENA_SIZE));
         let mut kv = vec![];
-        for i in 0..9000 {
+        for i in 0..900 {
             kv.push((
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 10),
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 20),

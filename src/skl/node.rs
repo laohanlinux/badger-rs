@@ -4,10 +4,15 @@ use crate::y::ValueStruct;
 use std::mem::{align_of, size_of, size_of_val};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::usize::MAX;
+use log::info;
 
 #[derive(Debug)]
 #[repr(align(8))]
 struct InternalAtomicU64(AtomicU64);
+#[derive(Debug)]
+#[repr(align(8))]
+struct InternalAtomicU32(AtomicU32);
 
 #[derive(Debug)]
 #[repr(C)]
@@ -39,13 +44,17 @@ pub struct Node {
 impl Default for Node {
     fn default() -> Self {
         const TOWER: AtomicU32 = AtomicU32::new(0);
-        Node {
+        let mut node = Node {
             key_offset: 0,
             key_size: 0,
             height: 0,
             value: InternalAtomicU64(AtomicU64::new(0)),
             tower: [TOWER; MAX_HEIGHT],
+        };
+        for i in 0..MAX_HEIGHT {
+            node.tower[i] = AtomicU32::new(0);
         }
+        node
     }
 }
 
@@ -67,10 +76,18 @@ impl Node {
         node.key_offset = key_offset;
         node.key_size = key.len() as u16;
         // 2: storage value
+        info!("Ready to store value");
         node.value.0.store(
             Self::encode_value(value_offset, value_size),
             Ordering::Relaxed,
         );
+
+        unsafe { ptr::write_bytes(node.tower.as_mut_ptr(), 0, MAX_HEIGHT) };
+        info!(">>Ready to store value<< {}", node.tower.len());
+        for node in &node.tower {
+            node.store(0, Ordering::SeqCst);
+        }
+        info!("Ready to store value ok");
         //*node.value.0.get_mut() = Self::encode_value(value_offset, value_size);
 
         node.height = height as u16;
@@ -126,5 +143,5 @@ impl Node {
 #[test]
 fn t() {
     unsafe { println!("{}, {}", align_of::<Node>(), size_of_val(&Node::default())); }
-
+    println!("{}", size_of::<InternalAtomicU32>());
 }
