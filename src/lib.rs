@@ -21,6 +21,8 @@
 #![feature(backtrace_frames)]
 #![feature(binary_heap_into_iter_sorted)]
 #![feature(test)]
+#![feature(atomic_from_ptr, pointer_is_aligned)]
+
 
 /// Badger DB is an embedded keyvalue database.
 ///
@@ -54,16 +56,23 @@ mod st_manager;
 #[cfg(test)]
 mod test_util;
 
+pub use iterator::*;
 pub use kv::*;
+pub use options::*;
 pub use skl::*;
 pub use st_manager::*;
 pub use y::*;
-pub use options::*;
-pub use iterator::*;
 
 #[allow(dead_code)]
 #[inline]
 pub(crate) fn must_align<T>(ptr: *const T) {
     let actual = (ptr as usize) % align_of::<T>() == 0;
     assert!(actual);
+}
+
+#[allow(dead_code)]
+#[inline]
+pub(crate) fn cals_size_with_align(sz: usize, align_sz: usize) -> usize {
+    let size = (sz + align_sz) & !align_sz;
+    size
 }

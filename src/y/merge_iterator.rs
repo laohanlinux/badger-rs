@@ -217,8 +217,8 @@ impl MergeIterator {
                     break;
                 }
                 // Find the same, pop it
-                #[cfg(test)]
-                info!("Find a same value, {}", hex_str(pop_key));
+                // #[cfg(test)]
+                // info!("Find a same value, {}", hex_str(pop_key));
                 drop(heap);
                 self.pop_item_from_heap();
 

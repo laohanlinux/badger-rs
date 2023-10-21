@@ -1,8 +1,9 @@
-use std::env::temp_dir;
-use rand::random;
+use crate::skl::PtrAlign;
 use crate::value_log::Entry;
 use crate::y::{CAS_SIZE, META_SIZE, USER_META_SIZE};
-use crate::Node;
+use crate::{cals_size_with_align, Node, ValueStruct};
+use rand::random;
+use std::env::temp_dir;
 
 /// Specifies how data in LSM table files and value log files should
 /// be loaded.
@@ -74,16 +75,22 @@ pub struct Options {
 }
 
 impl Options {
+    // TODO FIXME
     pub fn estimate_size(&self, entry: &Entry) -> usize {
+        let key_size = entry.key.len();
         if entry.value.len() < self.value_threshold {
-            return entry.key.len() + entry.value.len() + META_SIZE + USER_META_SIZE + CAS_SIZE;
+            key_size + entry.value.len()
+        } else {
+            let value_size = ValueStruct::header_size();
+            key_size + value_size
         }
-        entry.key.len() + 16 + META_SIZE + USER_META_SIZE + CAS_SIZE
     }
 
     /// Return the size of allocator arena
     pub fn arena_size(&self) -> u64 {
-        self.max_table_size + self.max_batch_size + self.max_batch_count * (Node::size() as u64)
+        self.max_table_size
+            + self.max_batch_size
+            + self.max_batch_count * (Node::size() as u64)
     }
 }
 

@@ -1,4 +1,3 @@
-
 #![allow(unused)]
 fn main() {
     use criterion::BenchmarkId;

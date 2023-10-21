@@ -17,10 +17,10 @@ use std::future::Future;
 use std::pin::{pin, Pin};
 
 use log::warn;
+use std::ops::Deref;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
-use std::ops::Deref;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLockReadGuard, RwLockWriteGuard};
 
@@ -37,7 +37,9 @@ pub struct KVItem {
 
 impl From<KVItemInner> for KVItem {
     fn from(value: KVItemInner) -> Self {
-        Self { inner: TArcRW::new(tokio::sync::RwLock::new(value)) }
+        Self {
+            inner: TArcRW::new(tokio::sync::RwLock::new(value)),
+        }
     }
 }
 // impl Deref for KVItem {
@@ -82,7 +84,6 @@ impl KVItem {
         self.inner.write().await
     }
 }
-
 
 // Returned during iteration. Both the key() and value() output is only valid until
 // iterator.next() is called.
@@ -155,7 +156,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-            .await?;
+        .await?;
         Ok(ch.recv().await.unwrap())
     }
 
@@ -166,7 +167,7 @@ impl KVItemInner {
     // Note that the call to the consumer func happens synchronously.
     pub(crate) async fn value(
         &self,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
@@ -211,7 +212,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-            .await
+        .await
     }
 
     // Returns approximate size of the key-value pair.
@@ -284,11 +285,11 @@ pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
     reverse: false,
 };
 
-// Helps iterating over the KV pairs in a lexicographically sorted order.
-// skiplist,     sst      vlog
-//  |             |        |
-//  |             |        |
-//  IteratorExt  reference
+/// Helps iterating over the KV pairs in a lexicographically sorted order.
+/// skiplist,     sst      vlog
+///  |             |        |
+///  |             |        |
+///  IteratorExt  reference
 pub struct IteratorExt {
     kv: KV,
     itr: MergeIterator,
@@ -434,14 +435,14 @@ impl IteratorExt {
     async fn valid_for_prefix(&self, prefix: &[u8]) -> bool {
         self.item.read().is_some()
             && self
-            .item
-            .read()
-            .as_ref()
-            .unwrap()
-            .rl()
-            .await
-            .key()
-            .starts_with(prefix)
+                .item
+                .read()
+                .as_ref()
+                .unwrap()
+                .rl()
+                .await
+                .key()
+                .starts_with(prefix)
     }
 
     // Close the iterator, It is important to call this when you're done with iteration.

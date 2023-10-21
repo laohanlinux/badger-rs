@@ -80,6 +80,8 @@ pub(crate) fn tracing_log() {
     //     std::process::exit(1);
     // }));
 
+    unsafe { backtrace_on_stack_overflow::enable() };
+
     let format = tracing_subscriber::fmt::format()
         .with_thread_ids(true)
         .with_level(true)

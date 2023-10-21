@@ -1,7 +1,7 @@
 use crate::skl::arena::Arena;
-use crate::skl::MAX_HEIGHT;
+use crate::skl::{MAX_HEIGHT, PtrAlign};
 use crate::y::ValueStruct;
-use std::mem::size_of;
+use std::mem::{align_of, size_of, size_of_val};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 #[derive(Debug)]
@@ -34,13 +34,17 @@ pub struct Node {
 impl Default for Node {
     fn default() -> Self {
         const TOWER: AtomicU32 = AtomicU32::new(0);
-        Node {
+        let mut node = Node {
             key_offset: 0,
             key_size: 0,
             height: 0,
             value: AtomicU64::new(0),
             tower: [TOWER; MAX_HEIGHT],
+        };
+        for i in 0..MAX_HEIGHT {
+            node.tower[i] = AtomicU32::new(0);
         }
+        node
     }
 }
 
@@ -70,6 +74,10 @@ impl Node {
 
     pub(crate) const fn size() -> usize {
         size_of::<Node>()
+    }
+
+    pub(crate) const fn align_size() -> usize {
+        (size_of::<Node>() + PtrAlign) & !PtrAlign
     }
 
     pub(crate) fn set_value(&self, arena: &Arena, v: &ValueStruct) {
@@ -109,5 +117,3 @@ impl Node {
     }
 }
 
-#[test]
-fn t() {}

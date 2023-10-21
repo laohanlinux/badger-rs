@@ -467,7 +467,10 @@ pub(crate) async fn help_open_or_create_manifest_file(
     }
     let mut fp = tokio::fs::File::from_std(fp.unwrap());
     let (mf, trunc_offset) = Manifest::replay_manifest_file(&mut fp).await?;
-    warn!("Succeed to replay manifest file, trunc offset: {}", trunc_offset);
+    warn!(
+        "Succeed to replay manifest file, trunc offset: {}",
+        trunc_offset
+    );
     // Truncate file so we don't have a half-written entry at the end.
     fp.set_len(trunc_offset as u64).await?;
     fp.seek(SeekFrom::Start(0)).await?;

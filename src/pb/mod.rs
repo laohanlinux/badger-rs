@@ -1,9 +1,9 @@
 // @generated
 
+use crate::manifest::ManifestChangeBuilder;
 use crate::pb::badgerpb3::ManifestChangeSet;
 use crate::Result;
 use quick_protobuf::MessageWrite;
-use crate::manifest::ManifestChangeBuilder;
 
 pub mod badgerpb3;
 
@@ -23,7 +23,8 @@ pub(crate) fn parse_manifest_set_from_vec(buffer: &[u8]) -> Result<ManifestChang
 #[test]
 fn enc_dec() {
     let mut mf = ManifestChangeSet::default();
-    mf.changes.extend(vec![ManifestChangeBuilder::new(1).build()]);
+    mf.changes
+        .extend(vec![ManifestChangeBuilder::new(1).build()]);
     let buffer = convert_manifest_set_to_vec(&mf);
     let got = parse_manifest_set_from_vec(&buffer).unwrap();
     assert_eq!(got, mf);
