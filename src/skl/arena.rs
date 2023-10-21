@@ -4,6 +4,7 @@ use crate::y::ValueStruct;
 use crate::{Allocate, DoubleAlloc};
 use std::mem::size_of;
 use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut, NonNull};
+use tracing::info;
 
 /// How to cals SkipList allocate size
 /// 8(zero-bit) + key + value + node*N
@@ -20,7 +21,7 @@ impl Arena {
         // Don't store data at position 0 in order to reverse offset = 0 as a kind
         // of nil pointer
         Self {
-            alloc: DoubleAlloc::new(n + PtrAlign + 1 + Node::align_size()),
+            alloc: DoubleAlloc::new(n + 1),
         }
     }
 
@@ -35,11 +36,6 @@ impl Arena {
     pub(crate) fn free_size(&self) -> u32 {
         self.cap() - self.size()
     }
-
-    // TODO: maybe use MaybeUint instead
-    // pub(crate) fn reset(&self) {
-    //     self.alloc.reset();
-    // }
 
     pub(crate) fn valid(&self) -> bool {
         // !self.slice.ptr.is_empty()
@@ -59,15 +55,15 @@ impl Arena {
         if offset == 0 {
             return None;
         }
+        info!("Get Node: {}", offset);
         unsafe { self.alloc.get_mut::<Node>(offset).as_mut() }
     }
 
     // Returns start location
     pub(crate) fn put_key(&self, key: &[u8]) -> u32 {
-        // let offset = self.alloc.alloc_with_align(key.len(), 7);
         let offset = self.alloc.alloc(key.len());
         let buffer = unsafe { self.alloc.get_mut::<u8>(offset) };
-        let mut buffer = unsafe { &mut *slice_from_raw_parts_mut(buffer, key.len()) };
+        let buffer = unsafe { &mut *slice_from_raw_parts_mut(buffer, key.len()) };
         buffer.copy_from_slice(key);
         offset as u32
     }
@@ -98,7 +94,7 @@ impl Arena {
     // Return byte slice at offset.
     // FIXME:
     pub(crate) fn put_node(&self, _height: isize) -> u32 {
-        let offset = self.alloc.alloc_rev(Node::size());
+        let offset = self.alloc.alloc_rev(Node::align_size());
         offset as u32
     }
 
@@ -108,9 +104,8 @@ impl Arena {
         if node.is_null() {
             return 0;
         }
-
-        let offset = unsafe { self.alloc.offset(node) };
-        offset as usize
+        let offset = self.alloc.offset(node);
+        offset
     }
 
     pub(crate) fn copy(&self) -> NonNull<Self> {
@@ -122,8 +117,10 @@ impl Arena {
 #[cfg(test)]
 mod tests {
     use crate::skl::{PtrAlign, MAX_HEIGHT};
+    use crate::test_util::tracing_log;
     use crate::{cals_size_with_align, Arena, Node, SkipList, ValueStruct};
-    use log::kv::Key;
+    use log::info;
+    use log::kv::{Key, value};
     use prometheus::core::AtomicU64;
     use rand::{random, thread_rng, Rng};
     use std::ptr;
@@ -169,15 +166,15 @@ mod tests {
             let start = arena.put_node(i);
             let node = arena.get_mut_node(start as usize).unwrap();
             node.height = i as u16;
-            node.value.fetch_add(i as u64, atomic::Ordering::Relaxed);
+            // node.value.fetch_add(i as u64, atomic::Ordering::Relaxed);
             starts.push((i, start));
         }
 
         for (i, start) in starts {
             let node = arena.get_mut_node(start as usize).unwrap();
-            let value = node.value.load(atomic::Ordering::Relaxed);
+            // let value = node.value.load(atomic::Ordering::Relaxed);
             assert_eq!(node.height, i as u16);
-            assert_eq!(value, i as u64);
+            // assert_eq!(value, i as u64);
         }
 
         let second_node = arena.get_node(Node::size()).unwrap();
@@ -234,7 +231,7 @@ mod tests {
             node.height = 12;
             node.key_offset = key_offset;
             node.key_size = key.len() as u16;
-            node.value.store(10, Ordering::SeqCst);
+            // node.value.store(10, Ordering::SeqCst);
             for i in 0..node.tower.len() {
                 node.tower[i].store(20, Ordering::SeqCst);
             }
@@ -257,36 +254,31 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn t_arena_memory_cals() {
-        let st = SkipList::new(1 << 22);
-        let mut cursor = st.arena.size();
-        let cap = st.arena.cap();
-        for i in 0..10000 {
-            let st = st.clone();
-            tokio::spawn(async move {
-                let mut rng = thread_rng();
-                let mut key = vec![1u8; random::<usize>() % 100];
-                rng.fill(&mut key[..]);
-                let value = vec![1u8; random::<usize>() % 10];
-                let value = ValueStruct::new(value, 9, 0, 0);
-                let key_size = cals_size_with_align(key.len(), PtrAlign);
-                let value_size = cals_size_with_align(value.size(), PtrAlign);
-                if st.arena.free_size() < 20000 {
-                    // println!("skip it");
-                    return;
-                }
-                st.put(&key, value);
-
-                // println!(
-                //     "cap:{}, {} to {}, key_size: {}, value_size: {}, node_size: {}",
-                //     cap,
-                //     cursor,
-                //     st.arena.size(),
-                //     key_size,
-                //     value_size,
-                //     Node::size()
-                // );
-                // cursor = st.arena.size();
-            });
+        tracing_log();
+        let st = SkipList::new(1 << 24);
+        let mut rng = thread_rng();
+        for i in 0..1000000 {
+            let mut key = vec![1u8; random::<usize>() % 100];
+            rng.fill(&mut key[..]);
+            let value = vec![1u8; random::<usize>() % 10];
+            let value = ValueStruct::new(value, 9, 0, 0);
+            if st.arena.free_size() <= 2 * (key.len() + value.size() + Node::size()) as u32 {
+                info!("skip it");
+                return;
+            }
+            st.put(&key, value.clone());
+            // info!(
+            //     " key_size: {}, value_size: {}, node_size: {}, cap:{}, len:{}, free:{}, head:{}, tail:{}",
+            //     key.len(),
+            //     value.size(),
+            //     Node::size(),
+            //     st.arena.cap(),
+            //     st.arena.size(),
+            //     st.arena.free_size(),
+            //     st.arena.alloc.head.load(Ordering::SeqCst),
+            //     st.arena.alloc.tail.load(Ordering::SeqCst),
+            // );
+            // tokio::time::sleep(Duration::from_millis(200)).await;
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
     }

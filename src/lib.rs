@@ -21,6 +21,8 @@
 #![feature(backtrace_frames)]
 #![feature(binary_heap_into_iter_sorted)]
 #![feature(test)]
+#![feature(atomic_from_ptr, pointer_is_aligned)]
+
 
 /// Badger DB is an embedded keyvalue database.
 ///

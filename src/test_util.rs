@@ -72,13 +72,13 @@ pub(crate) fn tracing_log() {
         }
     }
 
-    let default_panic = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        default_panic(info);
-        info!("panic info: {}", info);
-        std::fs::write("out.put", info.to_string()).expect("TODO: panic message");
-        std::process::exit(1);
-    }));
+    // let default_panic = std::panic::take_hook();
+    // std::panic::set_hook(Box::new(move |info| {
+    //     default_panic(info);
+    //     info!("panic info: {}", info);
+    //     std::fs::write("out.put", info.to_string()).expect("TODO: panic message");
+    //     std::process::exit(1);
+    // }));
 
     unsafe { backtrace_on_stack_overflow::enable() };
 

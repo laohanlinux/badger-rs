@@ -741,7 +741,7 @@ mod tests {
         assert_eq!(st._ref.load(Ordering::Relaxed), 1);
         let head = st.get_head();
         assert_eq!(head.height as usize, MAX_HEIGHT);
-        assert_eq!(head.key_offset as usize, 8);
+        assert_eq!(head.key_offset as usize, 1);
     }
 
     #[test]

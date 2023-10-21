@@ -1,12 +1,16 @@
 use crate::skl::arena::Arena;
 use crate::skl::{MAX_HEIGHT, PtrAlign};
 use crate::y::ValueStruct;
-use std::mem::size_of;
+use std::mem::{align_of, size_of, size_of_val};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 #[derive(Debug)]
-#[repr(align(1))]
+#[repr(align(8))]
+struct InternalAtomicU64(AtomicU64);
+
+#[derive(Debug)]
+#[repr(C)]
 pub struct Node {
     // A byte slice is 24 bytes. We are trying to save space here.
     // immutable. No need to lock to access key.
@@ -21,7 +25,7 @@ pub struct Node {
     // can be atomically loaded and stored:
     //   value offset: uint32 (bits 0-31)
     //   value size  : uint16 (bits 32-47)
-    pub(crate) value: AtomicU64,
+    pub(crate) value: InternalAtomicU64,
 
     // Most nodes do not need to use the full height of the tower, since the
     // probability of each successive level decreases exponentially, Because
@@ -39,7 +43,7 @@ impl Default for Node {
             key_offset: 0,
             key_size: 0,
             height: 0,
-            value: AtomicU64::new(0),
+            value: InternalAtomicU64(AtomicU64::new(0)),
             tower: [TOWER; MAX_HEIGHT],
         }
     }
@@ -63,10 +67,12 @@ impl Node {
         node.key_offset = key_offset;
         node.key_size = key.len() as u16;
         // 2: storage value
-        node.value.store(
+        node.value.0.store(
             Self::encode_value(value_offset, value_size),
             Ordering::Relaxed,
         );
+        //*node.value.0.get_mut() = Self::encode_value(value_offset, value_size);
+
         node.height = height as u16;
         node
     }
@@ -83,11 +89,11 @@ impl Node {
     pub(crate) fn set_value(&self, arena: &Arena, v: &ValueStruct) {
         let (value_offset, value_size) = arena.put_val(v);
         let value = Self::encode_value(value_offset, value_size as u16);
-        self.value.store(value, Ordering::Relaxed);
+        self.value.0.store(value, Ordering::Relaxed);
     }
 
     pub(crate) fn get_value_offset(&self) -> (u32, u16) {
-        let value = self.value.load(Ordering::Acquire);
+        let value = self.value.0.load(Ordering::Acquire);
         Self::decode_value(value)
     }
 
@@ -118,4 +124,7 @@ impl Node {
 }
 
 #[test]
-fn t() {}
+fn t() {
+    unsafe { println!("{}, {}", align_of::<Node>(), size_of_val(&Node::default())); }
+
+}

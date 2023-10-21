@@ -36,9 +36,9 @@ async fn t_1_write() {
     let kv = kv.unwrap();
     let res = kv.set(b"hello".to_vec(), b"word".to_vec(), 10).await;
     assert!(res.is_ok());
-    let got = kv._get(b"hello");
+    let got = kv.get(b"hello").await;
     assert!(got.is_ok());
-    assert_eq!(&got.unwrap().value, b"word");
+    assert_eq!(&got.unwrap(), b"word");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

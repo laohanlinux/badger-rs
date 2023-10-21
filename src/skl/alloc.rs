@@ -1,12 +1,8 @@
-use std::cell::{Cell, UnsafeCell};
 use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::mem::{size_of, ManuallyDrop};
-use std::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
+use std::mem::{size_of, ManuallyDrop, align_of};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use std::sync::Arc;
-
-use std::ptr;
+use tracing::info;
+use crate::Node;
 
 pub(crate) const PtrAlign: usize = 7;
 
@@ -31,8 +27,8 @@ pub trait Allocate: Send + Sync {
 
 #[derive(Debug)]
 pub struct DoubleAlloc {
-    head: AtomicUsize,
-    tail: AtomicUsize,
+    pub(crate) head: AtomicUsize,
+    pub(crate) tail: AtomicUsize,
     ptr: ManuallyDrop<Vec<u8>>,
     _cap: usize,
 }
@@ -50,6 +46,7 @@ impl Drop for DoubleAlloc {
 impl Allocate for DoubleAlloc {
     fn alloc(&self, size: usize) -> usize {
         let free_count = self.free_count();
+        info!("{}", free_count);
         assert!(free_count > size, "less memory");
         let offset = self.head.fetch_add(size, Ordering::SeqCst);
         offset
@@ -57,7 +54,10 @@ impl Allocate for DoubleAlloc {
 
     fn alloc_rev(&self, size: usize) -> usize {
         let free_count = self.free_count();
+        info!("{}", free_count);
         assert!(free_count > size, "less memory");
+        let align = align_of::<Node>() - 1;
+        let size = (size + align) & !align;
         let offset = self.tail.fetch_sub(size, Ordering::SeqCst);
         offset - size
     }
@@ -89,15 +89,18 @@ impl Allocate for DoubleAlloc {
 impl DoubleAlloc {
     pub(crate) fn new(n: usize) -> DoubleAlloc {
         DoubleAlloc {
-            head: AtomicUsize::new(PtrAlign + 1),
-            tail: AtomicUsize::new(n),
+            head: AtomicUsize::new(1),
+            tail: AtomicUsize::new(n - 1),
             ptr: ManuallyDrop::new(vec![0u8; n]),
             _cap: n,
         }
     }
 
     fn free_count(&self) -> usize {
-        self.tail.load(Ordering::SeqCst) - self.head.load(Ordering::SeqCst)
+        let head = self.head.load(Ordering::SeqCst);
+        let tail = self.tail.load(Ordering::SeqCst);
+        assert!(head < tail, "head({}) should be lt tail({})", head, tail);
+        tail - head
     }
 }
 
