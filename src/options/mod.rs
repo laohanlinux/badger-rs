@@ -77,12 +77,11 @@ pub struct Options {
 impl Options {
     // TODO FIXME
     pub fn estimate_size(&self, entry: &Entry) -> usize {
-        let key_size = cals_size_with_align(entry.key.len(), PtrAlign);
+        let key_size = entry.key.len();
         if entry.value.len() < self.value_threshold {
-            let value_size = cals_size_with_align(ValueStruct::header_size() + entry.value.len(), PtrAlign);
-            key_size + value_size
+            key_size + entry.value.len()
         } else {
-            let value_size = cals_size_with_align(ValueStruct::header_size(), PtrAlign);
+            let value_size = ValueStruct::header_size();
             key_size + value_size
         }
     }
@@ -91,7 +90,7 @@ impl Options {
     pub fn arena_size(&self) -> u64 {
         self.max_table_size
             + self.max_batch_size
-            + self.max_batch_count * (Node::align_size() as u64)
+            + self.max_batch_count * (Node::size() as u64)
     }
 }
 

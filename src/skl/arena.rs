@@ -55,13 +55,12 @@ impl Arena {
         if offset == 0 {
             return None;
         }
-        info!("Get Node: {}", offset);
         unsafe { self.alloc.get_mut::<Node>(offset).as_mut() }
     }
 
     // Returns start location
     pub(crate) fn put_key(&self, key: &[u8]) -> u32 {
-        let offset = self.alloc.alloc(key.len());
+        let offset = self.alloc.alloc_rev(key.len());
         let buffer = unsafe { self.alloc.get_mut::<u8>(offset) };
         let buffer = unsafe { &mut *slice_from_raw_parts_mut(buffer, key.len()) };
         buffer.copy_from_slice(key);
@@ -94,7 +93,7 @@ impl Arena {
     // Return byte slice at offset.
     // FIXME:
     pub(crate) fn put_node(&self, _height: isize) -> u32 {
-        let offset = self.alloc.alloc_rev(Node::align_size());
+        let offset = self.alloc.alloc(Node::align_size());
         offset as u32
     }
 

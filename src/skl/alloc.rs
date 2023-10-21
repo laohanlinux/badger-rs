@@ -1,8 +1,7 @@
+use crate::{cals_size_with_align};
 use std::fmt::Debug;
-use std::mem::{size_of, ManuallyDrop, align_of};
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use tracing::info;
-use crate::{cals_size_with_align, Node};
+use std::mem::{ManuallyDrop};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) const PtrAlign: usize = 7;
 
@@ -46,7 +45,7 @@ impl Drop for DoubleAlloc {
 impl Allocate for DoubleAlloc {
     fn alloc(&self, size: usize) -> usize {
         let free_count = self.free_count();
-        info!("{}", free_count);
+        // info!("{}", free_count);
         assert!(free_count > size, "less memory");
         let offset = self.head.fetch_add(size, Ordering::SeqCst);
         offset
@@ -54,10 +53,7 @@ impl Allocate for DoubleAlloc {
 
     fn alloc_rev(&self, size: usize) -> usize {
         let free_count = self.free_count();
-        info!("{}", free_count);
         assert!(free_count > size, "less memory");
-        let align = align_of::<Node>() - 1;
-        let size = (size + align) & !align;
         let offset = self.tail.fetch_sub(size, Ordering::SeqCst);
         offset - size
     }
@@ -67,21 +63,12 @@ impl Allocate for DoubleAlloc {
     }
 
     unsafe fn get_mut<T>(&self, offset: usize) -> *mut T {
-        // let ptr = self.borrow_slice(offset, Self::size());
-        // let (pre, mid, _) = unsafe { ptr.align_to() };
-        // assert!(pre.is_empty());
-        // (&mid[0], offset)
-        println!("Get : {}", offset);
         let ptr = self.ptr.as_ptr() as *mut u8;
-        // assert!(ptr.is_aligned());
-        // unsafe {ptr.is_aligned_to(align_of::<Node>())};
         ptr.add(offset).cast::<T>()
     }
 
     fn offset<T>(&self, ptr: *const T) -> usize {
-        // unsafe {ptr.align_offset(Node::align_size());}
-
-        let base_ptr = self.ptr.as_ptr() as usize;
+       let base_ptr = self.ptr.as_ptr() as usize;
         let offset_ptr = ptr as usize;
         offset_ptr - base_ptr
     }
@@ -97,9 +84,11 @@ impl Allocate for DoubleAlloc {
 
 impl DoubleAlloc {
     pub(crate) fn new(n: usize) -> DoubleAlloc {
+        let n = cals_size_with_align(n, PtrAlign);
+        assert_eq!(n % (PtrAlign + 1), 0);
         DoubleAlloc {
-            head: AtomicUsize::new(1),
-            tail: AtomicUsize::new(n - 1),
+            head: AtomicUsize::new(PtrAlign + 1),
+            tail: AtomicUsize::new(n),
             ptr: ManuallyDrop::new(vec![0u8; n]),
             _cap: n,
         }

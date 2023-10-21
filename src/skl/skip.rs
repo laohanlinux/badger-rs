@@ -258,10 +258,7 @@ impl SkipList {
         let height = Self::random_height();
         let mut arena = self.arena_ref().copy();
 
-        info!("1Node::new(unsafe, key, &v, height as isize)");
         let x = Node::new(unsafe { arena.as_mut() }, key, &v, height as isize);
-        info!("2Node::new(unsafe, key, &v, height as isize)");
-        defer! {info!("Exit exit");}
         // Try to increase a new node. linked pre-->x-->next
         let mut list_height = self.get_height() as i32;
         while height > list_height as usize {
@@ -745,7 +742,7 @@ mod tests {
         assert_eq!(st._ref.load(Ordering::Relaxed), 1);
         let head = st.get_head();
         assert_eq!(head.height as usize, MAX_HEIGHT);
-        assert_eq!(head.key_offset as usize, 1);
+        assert_eq!(head.key_offset, st.arena.cap());
     }
 
     #[test]

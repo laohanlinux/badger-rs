@@ -2,17 +2,7 @@ use crate::skl::arena::Arena;
 use crate::skl::{MAX_HEIGHT, PtrAlign};
 use crate::y::ValueStruct;
 use std::mem::{align_of, size_of, size_of_val};
-use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::usize::MAX;
-use log::info;
-
-#[derive(Debug)]
-#[repr(align(8))]
-struct InternalAtomicU64(AtomicU64);
-#[derive(Debug)]
-#[repr(align(8))]
-struct InternalAtomicU32(AtomicU32);
 
 #[derive(Debug)]
 #[repr(C)]
@@ -30,7 +20,7 @@ pub struct Node {
     // can be atomically loaded and stored:
     //   value offset: uint32 (bits 0-31)
     //   value size  : uint16 (bits 32-47)
-    pub(crate) value: InternalAtomicU64,
+    pub(crate) value: AtomicU64,
 
     // Most nodes do not need to use the full height of the tower, since the
     // probability of each successive level decreases exponentially, Because
@@ -48,7 +38,7 @@ impl Default for Node {
             key_offset: 0,
             key_size: 0,
             height: 0,
-            value: InternalAtomicU64(AtomicU64::new(0)),
+            value: AtomicU64::new(0),
             tower: [TOWER; MAX_HEIGHT],
         };
         for i in 0..MAX_HEIGHT {
@@ -65,8 +55,6 @@ impl Node {
         v: &'a ValueStruct,
         height: isize,
     ) -> &'a mut Node {
-        // #[cfg(test)]
-        // crate::test_util::push_log_by_filename("free_memory.log", format!("{}", arena.free_size()).as_bytes());
         let key_offset = arena.put_key(key);
         let (value_offset, value_size) = arena.put_val(v);
         // The base level is already allocated in the node struct.
@@ -76,20 +64,10 @@ impl Node {
         node.key_offset = key_offset;
         node.key_size = key.len() as u16;
         // 2: storage value
-        info!("Ready to store value");
-        node.value.0.store(
+        node.value.store(
             Self::encode_value(value_offset, value_size),
             Ordering::Relaxed,
         );
-
-        unsafe { ptr::write_bytes(node.tower.as_mut_ptr(), 0, MAX_HEIGHT) };
-        info!(">>Ready to store value<< {}", node.tower.len());
-        for node in &node.tower {
-            node.store(0, Ordering::SeqCst);
-        }
-        info!("Ready to store value ok");
-        //*node.value.0.get_mut() = Self::encode_value(value_offset, value_size);
-
         node.height = height as u16;
         node
     }
@@ -99,18 +77,17 @@ impl Node {
     }
 
     pub(crate) const fn align_size() -> usize {
-        // size_of::<Node>()
         (size_of::<Node>() + PtrAlign) & !PtrAlign
     }
 
     pub(crate) fn set_value(&self, arena: &Arena, v: &ValueStruct) {
         let (value_offset, value_size) = arena.put_val(v);
         let value = Self::encode_value(value_offset, value_size as u16);
-        self.value.0.store(value, Ordering::Relaxed);
+        self.value.store(value, Ordering::Relaxed);
     }
 
     pub(crate) fn get_value_offset(&self) -> (u32, u16) {
-        let value = self.value.0.load(Ordering::Acquire);
+        let value = self.value.load(Ordering::Acquire);
         Self::decode_value(value)
     }
 
@@ -140,8 +117,3 @@ impl Node {
     }
 }
 
-#[test]
-fn t() {
-    unsafe { println!("{}, {}", align_of::<Node>(), size_of_val(&Node::default())); }
-    println!("{}", size_of::<InternalAtomicU32>());
-}
