@@ -684,13 +684,13 @@ pub type WeakKV = XWeak<KVCore>;
 
 /// DB handle
 /// ```
-/// use badger_rs::{Options, KV};
+/// use badger_rs::{Options, DB};
 /// use badger_rs::IteratorOptions;
 ///
 /// #[tokio::main]
 ///
 /// pub async fn main() {
-///      let kv = KV::open(Options::default()).await.unwrap();
+///      let kv = DB::open(Options::default()).await.unwrap();
 ///      kv.set(b"foo".to_vec(), b"bar".to_vec(), 0x0).await.unwrap();
 ///      let value = kv.get(b"foo").await.unwrap();
 ///      assert_eq!(&value, b"bar");
@@ -707,11 +707,11 @@ pub type WeakKV = XWeak<KVCore>;
 ///}
 /// ```
 #[derive(Clone)]
-pub struct KV {
+pub struct DB {
     inner: XArc<KVCore>,
 }
 
-impl Deref for KV {
+impl Deref for DB {
     type Target = KVCore;
 
     fn deref(&self) -> &Self::Target {
@@ -719,15 +719,15 @@ impl Deref for KV {
     }
 }
 
-impl fmt::Debug for KV {
+impl fmt::Debug for DB {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("KV").finish()
     }
 }
 
-impl KV {
+impl DB {
     /// Async open a KV db with Options
-    pub async fn open(mut opt: Options) -> Result<KV> {
+    pub async fn open(mut opt: Options) -> Result<DB> {
         opt.max_batch_size = (15 * opt.max_table_size) / 100;
         opt.max_batch_count = 2 * opt.max_batch_size / Node::align_size() as u64;
         create_dir_all(opt.dir.as_str()).await?;
@@ -805,7 +805,7 @@ impl KV {
         }
         out.vlog.replace(Arc::new(vlog));
 
-        let xout = KV::new(XArc::new(out));
+        let xout = DB::new(XArc::new(out));
 
         // update size
         {
@@ -1261,7 +1261,14 @@ impl KV {
         Ok(())
     }
 
-    pub async fn backup<W>(&self, mut wt: W) -> Result<()>
+    /// Backup dumps a protobuf-encoded list of all entries in the database into the
+    /// given writer, that are newer than the specified version. It returns a
+    /// timestamp indicating when the entries were dumped which can be passed into a
+    /// later invocation to generate an incremental dump, of entries that have been
+    /// added/modified since the last invocation of DB.Backup()
+    ///
+    /// This can be used to backup the data in a database at a given point in time.
+    pub async fn backup<W>(&self, mut wt: W, since: u64) -> Result<()>
     where
         W: Write,
     {
@@ -1281,7 +1288,7 @@ impl KV {
     }
 }
 
-impl KV {
+impl DB {
     // pub(crate) async fn new_std_iterator(
     //     &self,
     //     opt: IteratorOptions,
@@ -1331,8 +1338,8 @@ impl KV {
         self.inner.clone()
     }
 
-    pub(crate) fn new(inner: XArc<KVCore>) -> KV {
-        KV { inner }
+    pub(crate) fn new(inner: XArc<KVCore>) -> DB {
+        DB { inner }
     }
 
     pub(crate) fn to_ref(&self) -> &KVCore {

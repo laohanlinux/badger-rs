@@ -1,7 +1,7 @@
 use crate::iterator::PreFetchStatus::Prefetched;
 use crate::kv::_BADGER_PREFIX;
 use crate::types::{ArcRW, Channel, Closer, TArcMx, TArcRW};
-use crate::{hex_str, ValueStruct, KV};
+use crate::{hex_str, ValueStruct, DB};
 use crate::{
     value_log::{MetaBit, ValuePointer},
     Decode, MergeIterator, Result, Xiterator, EMPTY_SLICE,
@@ -86,7 +86,7 @@ impl KVItem {
 #[derive(Clone)]
 pub(crate) struct KVItemInner {
     status: Arc<Atomic<PreFetchStatus>>,
-    kv: KV,
+    kv: DB,
     key: Vec<u8>,
     // TODO, Opz memory
     vptr: Vec<u8>,
@@ -121,7 +121,7 @@ impl Debug for KVItemInner {
 }
 
 impl KVItemInner {
-    pub(crate) fn new(key: Vec<u8>, value: ValueStruct, kv: KV) -> KVItemInner {
+    pub(crate) fn new(key: Vec<u8>, value: ValueStruct, kv: DB) -> KVItemInner {
         Self {
             status: Arc::new(Atomic::new(PreFetchStatus::Empty)),
             kv,
@@ -287,7 +287,7 @@ pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
 ///  |             |        |
 ///  IteratorExt  reference
 pub struct IteratorExt {
-    kv: KV,
+    kv: DB,
     itr: MergeIterator,
     opt: IteratorOptions,
     item: ArcRW<Option<KVItem>>,
@@ -329,7 +329,7 @@ pub struct IteratorExt {
 // }
 
 impl IteratorExt {
-    pub(crate) fn new(kv: KV, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
+    pub(crate) fn new(kv: DB, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
         IteratorExt {
             kv,
             opt,
