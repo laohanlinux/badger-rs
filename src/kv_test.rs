@@ -4,6 +4,7 @@ use log::{debug, info, warn};
 use std::collections::HashSet;
 use std::env::temp_dir;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
 use tokio::io::AsyncWriteExt;
@@ -821,8 +822,36 @@ async fn t_kv_get_set_race() {
     kv.close().await.expect("TODO: panic message");
 }
 
-extern crate test;
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn t_kv_dump() {
+    tracing_log();
+    let kv = build_kv().await;
+    let entries = vec![
+        Entry::default()
+            .key(b"answer1".to_vec())
+            .value(b"42".to_vec()),
+        Entry::default()
+            .key(b"answer2".to_vec())
+            .value(b"43".to_vec())
+            .user_meta(1),
+    ];
 
+    let res = kv.batch_set(entries).await;
+    for ch in res {
+        assert!(ch.is_ok());
+    }
+
+    let back_tmp = crate::test_util::create_random_tmp_dir();
+    let back_tmp = Path::new(&back_tmp).join("badgerbak");
+    let fp = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(back_tmp.clone())
+        .unwrap();
+    kv.backup(fp).await.unwrap();
+    kv.close().await.unwrap();
+    info!("backup: {:?}", back_tmp);
+}
 // #[bench]
 // fn t_kv_bench_exists(b: &mut test::Bencher) {
 //     let mut r = tokio::runtime::Runtime::new().unwrap();

@@ -1,5 +1,4 @@
 // use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet, ManifestChange_Operation};
-use crate::pb::badgerpb3::mod_ManifestChange::Operation::{self, CREATE, DELETE};
 use crate::pb::badgerpb3::{ManifestChange, ManifestChangeSet};
 use crate::types::TArcRW;
 use crate::y::{hex_str, is_eof, open_existing_synced_file, sync_directory};
@@ -11,7 +10,7 @@ use log::{info, warn};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
 
-use protobuf::{Enum, EnumOrUnknown, Message};
+use protobuf::{Message};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::fs::{rename, File};
@@ -19,13 +18,13 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::SystemTime;
 
 use crate::pb::{convert_manifest_set_to_vec, parse_manifest_set_from_vec};
-use quick_protobuf::MessageRead;
-use quick_protobuf::{BytesReader, MessageWrite};
 use std::path::Path;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
+use crate::pb::badgerpb3::manifest_change::Operation;
+use crate::pb::badgerpb3::manifest_change::Operation::CREATE;
 
 // Manifest file
 const MANIFEST_FILENAME: &str = "MANIFEST";
@@ -86,10 +85,10 @@ impl ManifestFile {
             info!("{}, {}", mf_lck.creations, mf_lck.deletions);
             mf_lck.deletions
                 > self
-                    .deletions_rewrite_threshold
-                    .load(atomic::Ordering::Relaxed) as usize
+                .deletions_rewrite_threshold
+                .load(atomic::Ordering::Relaxed) as usize
                 && mf_lck.deletions
-                    > MANIFEST_DELETIONS_RATIO * (mf_lck.creations - mf_lck.deletions)
+                > MANIFEST_DELETIONS_RATIO * (mf_lck.creations - mf_lck.deletions)
         };
         if rewrite {
             info!("need to rewrite manifest file");
@@ -212,7 +211,7 @@ impl ManifestFile {
             &mut buffer,
             format!("create: {}, delete: {}", mf.creations, mf.deletions).as_bytes(),
         )
-        .unwrap();
+            .unwrap();
         let tids = mf
             .tables
             .iter()
@@ -390,7 +389,7 @@ async fn apply_manifest_change_set(
 
 async fn apply_manifest_change(build: TArcRW<Manifest>, tc: &ManifestChange) -> Result<()> {
     let mut build = build.write().await;
-    match tc.op {
+    match tc.op.unwrap() {
         CREATE => {
             if build.tables.contains_key(&tc.id) {
                 return Err(Unexpected(format!(
@@ -411,7 +410,7 @@ async fn apply_manifest_change(build: TArcRW<Manifest>, tc: &ManifestChange) -> 
             build.creations += 1;
         }
 
-        DELETE => {
+        Operation::DELETE => {
             // If the level is zero merge to level1 at first, it should be not include it ...
             let has = build.tables.remove(&tc.id);
             if has.is_none() {
@@ -513,7 +512,7 @@ impl ManifestChangeBuilder {
         let mut mf = ManifestChange::default();
         mf.id = self.id;
         mf.level = self.level;
-        mf.op = self.op;
+        mf.op = self.op.into();
         mf
     }
 }
@@ -521,11 +520,11 @@ impl ManifestChangeBuilder {
 #[cfg(test)]
 mod tests {
     use crate::manifest::ManifestChangeBuilder;
-    use crate::pb::badgerpb3::mod_ManifestChange::Operation::{CREATE, DELETE};
     use crate::pb::badgerpb3::ManifestChange;
     use crate::test_util::{create_random_tmp_dir, random_tmp_dir};
     use tokio::io::AsyncWriteExt;
     use tracing::info;
+    use crate::pb::badgerpb3::manifest_change::Operation::{CREATE, DELETE};
 
     #[tokio::test]
     async fn t_manifest_file() {
