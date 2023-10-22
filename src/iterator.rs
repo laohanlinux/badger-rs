@@ -3,8 +3,6 @@ use crate::kv::_BADGER_PREFIX;
 use crate::types::{ArcRW, Channel, Closer, TArcMx, TArcRW};
 use crate::{hex_str, ValueStruct, KV};
 use crate::{
-    kv::KVCore,
-    types::XArc,
     value_log::{MetaBit, ValuePointer},
     Decode, MergeIterator, Result, Xiterator, EMPTY_SLICE,
 };
@@ -16,8 +14,6 @@ use std::future::Future;
 
 use std::pin::{pin, Pin};
 
-use log::warn;
-use std::ops::Deref;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};

@@ -3,7 +3,6 @@ use crate::compaction::{CompactStatus, KeyRange, LevelCompactStatus, INFO_RANGE}
 use crate::level_handler::{LevelHandler, LevelHandlerInner};
 use crate::manifest::{Manifest, ManifestChangeBuilder, ManifestFile};
 use crate::options::Options;
-use crate::pb::badgerpb3::mod_ManifestChange::Operation::{CREATE, DELETE};
 use crate::pb::badgerpb3::ManifestChange;
 use crate::table::builder::Builder;
 use crate::table::iterator::{ConcatIterator, IteratorImpl, IteratorItem};
@@ -36,6 +35,7 @@ use std::vec;
 use tokio::macros::support::thread_rng_n;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use tokio::time::sleep;
+use crate::pb::badgerpb3::manifest_change::Operation::{CREATE, DELETE};
 
 #[derive(Clone)]
 pub(crate) struct LevelsController {

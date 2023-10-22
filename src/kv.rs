@@ -33,6 +33,7 @@ use std::io::{Cursor, Write};
 use std::path::Path;
 use std::pin::Pin;
 
+use crate::pb::backup::KVPair;
 use libc::difftime;
 use rand::random;
 use std::fmt::Formatter;
@@ -1257,6 +1258,25 @@ impl KV {
         async_sync_directory(self.opt.value_dir.clone().to_string()).await?;
 
         warn!("metrics: \n{}", event::get_metrics());
+        Ok(())
+    }
+
+    pub async fn backup<W>(&self, mut wt: W) -> Result<()>
+    where
+        W: Write,
+    {
+        let itr = self.new_iterator(IteratorOptions::default()).await;
+        itr.rewind().await;
+        while let Some(item) = itr.peek().await {
+            let value = item.value().await?;
+            let mut entry = KVPair::new();
+            entry.key = item.key().await;
+            entry.value = value;
+            entry.userMeta.push(item.user_meta().await);
+            // Write entries to disk
+            crate::backup::write_to(&entry, &mut wt)?;
+            itr.next().await;
+        }
         Ok(())
     }
 }
