@@ -85,14 +85,14 @@ impl KVItem {
 // iterator.next() is called.
 #[derive(Clone)]
 pub(crate) struct KVItemInner {
-    status: Arc<Atomic<PreFetchStatus>>,
+    pub(crate) status: Arc<Atomic<PreFetchStatus>>,
     kv: DB,
-    key: Vec<u8>,
+    pub(crate) key: Vec<u8>,
     // TODO, Opz memory
-    vptr: Vec<u8>,
-    value: TArcMx<Vec<u8>>,
-    meta: u8,
-    user_meta: u8,
+    pub(crate) vptr: Vec<u8>,
+    pub(crate) value: TArcMx<Vec<u8>>,
+    pub(crate) meta: u8,
+    pub(crate) user_meta: u8,
     cas_counter: Arc<AtomicU64>,
     wg: Closer,
     err: Result<()>,

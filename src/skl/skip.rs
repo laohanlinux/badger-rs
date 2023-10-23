@@ -1,6 +1,6 @@
 use crate::skl::{Cursor, HEIGHT_INCREASE, MAX_HEIGHT};
 use crate::table::iterator::IteratorItem;
-use crate::y::ValueStruct;
+use crate::y::{same_key_ignore_version, ValueStruct};
 use crate::{Allocate, Xiterator};
 
 use log::{info, warn};
@@ -375,6 +375,10 @@ impl SkipList {
         }
         if let Some(node) = node {
             let (offset, size) = node.get_value_offset();
+            // diff key has same prefix
+            if !same_key_ignore_version(key, self.arena.get_key(node.key_offset, node.key_size)) {
+                return None;
+            }
             let value = self.arena.get_val(offset, size);
 
             #[cfg(test)]
