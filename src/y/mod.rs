@@ -93,6 +93,10 @@ pub enum Error {
     // GC
     #[error("Stop iteration")]
     StopGC,
+
+    ////////////////////////////////
+    #[error("Transaction Conflict. Please retry.")]
+    TxCommitConflict,
 }
 
 impl Default for Error {
