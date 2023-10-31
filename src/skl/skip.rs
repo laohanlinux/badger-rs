@@ -3,13 +3,13 @@ use crate::table::iterator::IteratorItem;
 use crate::y::{same_key_ignore_version, ValueStruct};
 use crate::{Allocate, Xiterator};
 
+use drop_cell::defer;
 use log::{info, warn};
 use rand::random;
 use std::fmt::{Debug, Display, Formatter};
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::{cmp, ptr, sync::atomic::AtomicI32};
-use drop_cell::defer;
 use uuid::Uuid;
 
 use super::{arena::Arena, node::Node};
@@ -376,9 +376,9 @@ impl SkipList {
         if let Some(node) = node {
             let (offset, size) = node.get_value_offset();
             // diff key has same prefix
-            if !same_key_ignore_version(key, self.arena.get_key(node.key_offset, node.key_size)) {
-                return None;
-            }
+            // if !same_key_ignore_version(key, self.arena.get_key(node.key_offset, node.key_size)) {
+            //   return None;
+            // }
             let value = self.arena.get_val(offset, size);
 
             #[cfg(test)]
