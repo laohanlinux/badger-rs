@@ -386,7 +386,7 @@ impl KVCore {
                 count += 1;
                 sz += self.opt.estimate_size(&entry) as u64;
                 req.entries.push(EntryType::from(entry));
-                req.ptrs.push(Arc::new(Atomic::new(None)));
+                req.ptrs.push(Arc::new(std::sync::RwLock::new(None)));
                 req_index.push(i);
             }
 
@@ -496,7 +496,7 @@ impl KVCore {
                 // Will include deletion/tombstone case.
                 debug!("Lsm ok, the value not at vlog file");
             } else {
-                let ptr = req.ptrs.get(i).unwrap().load(Ordering::Relaxed);
+                let ptr = req.ptrs.get(i).unwrap().read().unwrap();
                 let ptr = ptr.unwrap();
                 let mut wt = Cursor::new(vec![0u8; ValuePointer::value_pointer_encoded_size()]);
                 ptr.enc(&mut wt).unwrap();
@@ -571,12 +571,12 @@ impl KVCore {
         Ok(())
     }
 
-    async fn update_offset(&self, ptrs: &mut Vec<Arc<Atomic<Option<ValuePointer>>>>) {
+    async fn update_offset(&self, ptrs: &mut Vec<Arc<std::sync::RwLock<Option<ValuePointer>>>>) {
         // #[cfg(test)]
         // warn!("Ready to update offset");
         let mut ptr = ValuePointer::default();
         for tmp_ptr in ptrs.iter().rev() {
-            let tmp_ptr = tmp_ptr.load(Ordering::Acquire);
+            let tmp_ptr = tmp_ptr.read().unwrap();
             if tmp_ptr.is_none() || tmp_ptr.unwrap().is_zero() {
                 continue;
             }

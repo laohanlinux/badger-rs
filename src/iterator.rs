@@ -9,10 +9,10 @@ use crate::{
 
 use atomic::Atomic;
 
-use std::fmt::{Debug, Display, Formatter, Pointer};
+use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 
-use std::pin::{pin, Pin};
+use std::pin::Pin;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -85,7 +85,7 @@ impl KVItem {
 // iterator.next() is called.
 #[derive(Clone)]
 pub(crate) struct KVItemInner {
-    pub(crate) status: Arc<Atomic<PreFetchStatus>>,
+    pub(crate) status: Arc<std::sync::RwLock<PreFetchStatus>>,
     kv: DB,
     pub(crate) key: Vec<u8>,
     // TODO, Opz memory
@@ -123,7 +123,7 @@ impl Debug for KVItemInner {
 impl KVItemInner {
     pub(crate) fn new(key: Vec<u8>, value: ValueStruct, kv: DB) -> KVItemInner {
         Self {
-            status: Arc::new(Atomic::new(PreFetchStatus::Empty)),
+            status: Arc::new(std::sync::RwLock::new(PreFetchStatus::Empty)),
             kv,
             key,
             value: TArcMx::new(Default::default()),
@@ -167,7 +167,7 @@ impl KVItemInner {
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
-        if self.status.load(Ordering::Acquire) == Prefetched {
+        if *self.status.read().unwrap() == Prefetched {
             if self.err.is_err() {
                 return self.err.clone();
             }
@@ -199,7 +199,7 @@ impl KVItemInner {
             let value = value.to_vec();
             let value_wl = self.value.clone();
             Box::pin(async move {
-                status_wl.store(Prefetched, Ordering::Release);
+                *status_wl.write().unwrap() = Prefetched;
                 if value.is_empty() {
                     return Ok(());
                 }
@@ -515,7 +515,7 @@ impl IteratorExt {
 
     fn new_item(&self) -> KVItem {
         let inner_item = KVItemInner {
-            status: Arc::new(Atomic::new(PreFetchStatus::Empty)),
+            status: Arc::new(std::sync::RwLock::new(PreFetchStatus::Empty)),
             kv: self.kv.clone(),
             key: vec![],
             value: TArcMx::new(Default::default()),

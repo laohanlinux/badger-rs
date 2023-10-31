@@ -155,7 +155,7 @@ impl TxN {
                     *wl.value.lock().await = e.value.clone();
                     wl.user_meta = e.user_meta;
                     wl.key = e.key.clone();
-                    wl.status.store(PreFetchStatus::Prefetched, std::sync::atomic::Ordering::SeqCst);
+                    *wl.status.write().unwrap() = PreFetchStatus::Prefetched;
                 }
                 // We probably don't need to set KV on item here.
                 return Ok(item);
