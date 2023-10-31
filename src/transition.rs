@@ -92,12 +92,13 @@ impl GlobalTxNStateInner {
 
 #[derive(Clone)]
 pub struct TxN {
+    // the read operation ts, it also was the version of key.
     read_ts: u64,
     // update is used to conditionally keep track of reads.
     update: bool,
     // contains fingerprints of keys read.
     reads: Arc<std::sync::RwLock<Vec<u64>>>,
-    // contains fingerprints of keys written.
+    // contains fingerprints(hash64(key)) of keys written.
     writes: Arc<std::sync::RwLock<Vec<u64>>>,
     // cache stores any writes done by txn.
     pending_writes: Arc<std::sync::RwLock<HashMap<Vec<u8>, Entry>>>,
@@ -107,6 +108,7 @@ pub struct TxN {
 }
 
 impl TxN {
+    // set a key, value with user meta at the tx
     pub fn set(&self, key: Vec<u8>, value: Vec<u8>, user_meta: u8) {
         let fp = farmhash::fingerprint64(&key); // Avoid dealing with byte arrays
         self.writes
@@ -122,6 +124,8 @@ impl TxN {
             .map(|mut writes| writes.insert(key, entry))
             .unwrap();
     }
+
+    // delete a key with at the tx
 
     pub fn delete(&self, key: &[u8]) {
         let fp = farmhash::fingerprint64(&key);
@@ -146,6 +150,7 @@ impl TxN {
             ValueStruct::default(),
             kv_db.clone(),
         ));
+        // if the transaction is writeable, Prioritize reading local writes
         if self.update {
             let pending_writes = self.pending_writes.write().unwrap();
             if let Some(e) = pending_writes.get(key) && &e.key == key {
@@ -161,13 +166,14 @@ impl TxN {
                 return Ok(item);
             }
 
+            //
             let fp = farmhash::fingerprint64(key);
             self.reads
                 .write()
                 .map(|mut writes| writes.push(fp))
                 .unwrap();
         }
-
+        // Seek from DB
         let seek = crate::y::key_with_ts(key, self.read_ts);
         kv_db.get_with_ext(&seek).await
     }
