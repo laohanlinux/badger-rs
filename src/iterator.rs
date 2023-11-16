@@ -14,7 +14,7 @@ use std::future::Future;
 
 use std::pin::Pin;
 
-use crate::transition::TxN;
+use crate::transition::{BoxTxN, TxN};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
@@ -284,14 +284,14 @@ pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
 ///  |             |        |
 ///  IteratorExt  reference
 pub struct IteratorExt {
-    txn: TxN,
+    txn: BoxTxN,
     read_ts: u64,
 
     // kv: DB,
     itr: MergeIterator,
     opt: IteratorOptions,
     item: ArcRW<Option<KVItem>>,
-    // Cache the prefetch keys, not inlcude current value
+    // Cache the prefetch keys, not include current value
     data: ArcRW<std::collections::LinkedList<KVItem>>,
     has_rewind: ArcRW<bool>,
 }
@@ -329,7 +329,7 @@ pub struct IteratorExt {
 // }
 
 impl IteratorExt {
-    pub(crate) fn new(kv: DB, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
+    pub(crate) fn new(tv: *const TxN, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
         /*IteratorExt {
             kv,
             opt,
@@ -445,7 +445,7 @@ impl IteratorExt {
     // Close the iterator, It is important to call this when you're done with iteration.
     pub async fn close(&self) -> Result<()> {
         // TODO: We could handle this error.
-        let db = self.txn.get_kv();
+        let db = self.txn.tx.get_kv();
         db.vlog.as_ref().unwrap().decr_iterator_count().await?;
         Ok(())
     }
@@ -516,7 +516,7 @@ impl IteratorExt {
     }
 
     fn new_item(&self) -> KVItem {
-        let kv = self.txn.get_kv();
+        let kv = self.txn.tx.get_kv();
         let inner_item = KVItemInner {
             status: Arc::new(std::sync::RwLock::new(PreFetchStatus::Empty)),
             kv,

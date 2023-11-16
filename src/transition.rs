@@ -1,5 +1,6 @@
 use crate::iterator::{KVItemInner, PreFetchStatus};
 use crate::table::iterator::IteratorItem;
+use crate::types::TArcRW;
 use crate::value_log::{Entry, MetaBit};
 use crate::y::compare_key;
 use crate::{
@@ -12,7 +13,13 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+#[derive(Clone)]
+pub struct GlobalTxNState {
+    inner: TArcRW<GlobalTxNStateInner>,
+}
+
 struct GlobalTxNStateInner {
+    // TODO may be not lock, because outline has locked a time
     lock: Arc<RwLock<()>>,
     cur_read: AtomicU64,
     next_commit: AtomicU64,
@@ -99,18 +106,18 @@ impl GlobalTxNStateInner {
 #[derive(Clone)]
 pub struct TxN {
     // the read operation ts, it also was the version of key.
-    read_ts: u64,
+    pub(crate) read_ts: u64,
     // update is used to conditionally keep track of reads.
-    update: bool,
+    pub(crate) update: bool,
     // contains fingerprints of keys read.
-    reads: Arc<std::sync::RwLock<Vec<u64>>>,
+    pub(crate) reads: Arc<std::sync::RwLock<Vec<u64>>>,
     // contains fingerprints(hash64(key)) of keys written.
-    writes: Arc<std::sync::RwLock<Vec<u64>>>,
+    pub(crate) writes: Arc<std::sync::RwLock<Vec<u64>>>,
     // cache stores any writes done by txn.
-    pending_writes: Arc<std::sync::RwLock<HashMap<Vec<u8>, Entry>>>,
+    pub(crate) pending_writes: Arc<std::sync::RwLock<HashMap<Vec<u8>, Entry>>>,
 
-    kv: WeakKV,
-    gs: Arc<std::sync::RwLock<GlobalTxNStateInner>>,
+    pub(crate) kv: DB,
+    pub(crate) gs: GlobalTxNState,
 }
 
 impl TxN {
@@ -190,7 +197,9 @@ impl TxN {
         if self.writes.write().unwrap().is_empty() {
             return Ok(()); // Ready only translation.
         }
-        let commit_ts = self.gs.write().unwrap().new_commit_ts(&self);
+        // TODO FIXME lock
+        let mut gs = self.gs.inner.write().await;
+        let commit_ts = gs.new_commit_ts(&self);
         if commit_ts == 0 {
             return Err(Error::TxCommitConflict);
         }
@@ -243,12 +252,27 @@ impl TxN {
         // Extend sst.table
         itrs.extend(db.must_lc().as_iterator(opt.reverse));
         let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
-        IteratorExt::new(db.clone(), mitr, opt)
+        let txn = self as *const TxN;
+        IteratorExt::new(txn, mitr, opt)
     }
 
     pub(crate) fn get_kv(&self) -> DB {
         let kv_db = self.kv.upgrade().unwrap();
         DB::new(kv_db)
+    }
+}
+
+pub(crate) struct BoxTxN {
+    pub tx: *const TxN,
+}
+
+unsafe impl Send for BoxTxN {}
+
+unsafe impl Sync for BoxTxN {}
+
+impl BoxTxN {
+    pub(crate) fn new(tx: *const TxN) -> BoxTxN {
+        BoxTxN { tx }
     }
 }
 

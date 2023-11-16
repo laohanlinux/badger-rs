@@ -42,9 +42,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::{fmt, string, vec};
+use structopt::clap::AppSettings::WaitOnError;
 use tokio::fs::create_dir_all;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, RwLockWriteGuard};
+use crate::transition::{GlobalTxNState, TxN};
 
 /// Prefix for internal keys used by badger.
 pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
@@ -714,6 +716,7 @@ pub type WeakKV = XWeak<KVCore>;
 #[derive(Clone)]
 pub struct DB {
     inner: XArc<KVCore>,
+    gs: GlobalTxNState,
 }
 
 impl Deref for DB {
@@ -1199,6 +1202,19 @@ impl DB {
         let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
         IteratorExt::new(self.clone(), mitr, opt)
     }
+
+    pub fn new_transaction(&self, update: bool) -> Result<TxN> {
+        Ok(TxN{
+            read_ts: 0,
+            update,
+            reads: Arc::new(Default::default()),
+            writes: Arc::new(Default::default()),
+            pending_writes: Arc::new(Default::default()),
+            kv: self.clone(),
+            gs: self.gs.clone(),
+        })
+    }
+
     /// Closes a KV. It's crucial to call it to ensure all the pending updates
     /// make their way to disk.
     pub async fn close(&self) -> Result<()> {
