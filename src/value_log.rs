@@ -54,7 +54,9 @@ bitflags! {
         const BIT_UNUSED = 4;
         /// Set if the key is set using SetIfAbsent.
         const BIT_SET_IF_ABSENT = 8;
-    }
+        /// Set if the entry is to indicate end of txn in value log.
+        const BIT_FIN_TXN = 16;
+     }
 }
 
 const M: u64 = 1 << 20;

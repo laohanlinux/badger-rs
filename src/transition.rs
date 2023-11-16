@@ -1,7 +1,11 @@
 use crate::iterator::{KVItemInner, PreFetchStatus};
+use crate::table::iterator::IteratorItem;
 use crate::value_log::{Entry, MetaBit};
 use crate::y::compare_key;
-use crate::{Error, KVItem, Result, ValueStruct, WeakKV, DB};
+use crate::{
+    Error, IteratorExt, IteratorOptions, KVItem, MergeIterOverBuilder, Result, UniIterator,
+    ValueStruct, WeakKV, Xiterator, DB, TXN_KEY,
+};
 use drop_cell::defer;
 use parking_lot::RwLock;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -34,7 +38,9 @@ impl GlobalTxNStateInner {
         }
 
         for ro in tx_reads.iter() {
-            if let Some(ts) = self.commits.get(ro) && *ts > tx.read_ts {
+            if let Some(ts) = self.commits.get(ro)
+                && *ts > tx.read_ts
+            {
                 return true;
             }
         }
@@ -126,7 +132,6 @@ impl TxN {
     }
 
     // delete a key with at the tx
-
     pub fn delete(&self, key: &[u8]) {
         let fp = farmhash::fingerprint64(&key);
         self.writes
@@ -153,7 +158,10 @@ impl TxN {
         // if the transaction is writeable, Prioritize reading local writes
         if self.update {
             let pending_writes = self.pending_writes.write().unwrap();
-            if let Some(e) = pending_writes.get(key) && &e.key == key {
+            if let Some(e) = pending_writes.get(key)
+                && &e.key == key
+            {
+                // Fulfill from cache.
                 {
                     let mut wl = item.wl().await;
                     wl.meta = e.meta;
@@ -166,7 +174,7 @@ impl TxN {
                 return Ok(item);
             }
 
-            //
+            // Notice: if not found at local writes, need to read operation because they key seek from DB below.
             let fp = farmhash::fingerprint64(key);
             self.reads
                 .write()
@@ -186,7 +194,61 @@ impl TxN {
         if commit_ts == 0 {
             return Err(Error::TxCommitConflict);
         }
+
+        let mut entries = vec![];
+        let mut pending_writes = self.pending_writes.write().unwrap();
+        for e in pending_writes.values_mut().into_iter() {
+            // Suffix the keys with commit ts, so the key versions are sorted in descending order of commit timestamp.
+            // descending order of commit timestamp.
+            let ts_key = crate::y::key_with_ts(&e.key, commit_ts);
+            e.key.clear();
+            e.key.extend_from_slice(&ts_key);
+            entries.push(e.clone());
+        }
+        // TODO: Add logic in replay to deal with this.
+        let entry = Entry::default()
+            .key(TXN_KEY.to_vec())
+            .value(commit_ts.to_string().as_bytes().to_vec())
+            .meta(MetaBit::BIT_FIN_TXN.bits());
+        entries.push(entry);
+        let db = self.get_kv();
+        let res = db.batch_set(entries).await;
+
+        for ret in res {
+            ret?;
+        }
+
         Ok(())
+    }
+
+    fn new_iterator(&self, opt: IteratorOptions) -> IteratorExt {
+        let db = self.get_kv();
+        // Notice, the iterator is global iterator, so must incr reference for memtable(SikpList), sst(file), vlog(file).
+        let p = crossbeam_epoch::pin();
+        let tables = db.get_mem_tables(&p);
+        // TODO it should decr at IteratorExt close.
+        defer! {
+            tables.iter().for_each(|table| unsafe {table.as_ref().unwrap().decr_ref()});
+        }
+        // add vlog reference.
+        db.must_vlog().incr_iterator_count();
+
+        // Create iterators across all the tables involved first.
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        for tb in tables.clone() {
+            let st = unsafe { tb.as_ref().unwrap().clone() };
+            let iter = Box::new(UniIterator::new(st, opt.reverse));
+            itrs.push(iter);
+        }
+        // Extend sst.table
+        itrs.extend(db.must_lc().as_iterator(opt.reverse));
+        let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
+        IteratorExt::new(db.clone(), mitr, opt)
+    }
+
+    pub(crate) fn get_kv(&self) -> DB {
+        let kv_db = self.kv.upgrade().unwrap();
+        DB::new(kv_db)
     }
 }
 

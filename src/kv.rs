@@ -46,10 +46,12 @@ use tokio::fs::create_dir_all;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
-///
-pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
 /// Prefix for internal keys used by badger.
-pub const _HEAD: &[u8; 12] = b"!badger!head"; // For Storing value offset for replay.
+pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
+// For storing value offset for replay.
+pub const _HEAD: &[u8; 12] = b"!badger!head";
+/// For the indicating end of entries in txn.
+pub const TXN_KEY: &[u8; 11] = b"!badger!txn";
 
 pub const KV_WRITE_CH_CAPACITY: usize = 1000;
 
@@ -596,7 +598,10 @@ impl KVCore {
     }
 
     // Returns the current `mem_tables` and get references(here will incr mem table reference).
-    fn get_mem_tables<'a>(&'a self, p: &'a crossbeam_epoch::Guard) -> Vec<Shared<'a, SkipList>> {
+    pub(crate) fn get_mem_tables<'a>(
+        &'a self,
+        p: &'a crossbeam_epoch::Guard,
+    ) -> Vec<Shared<'a, SkipList>> {
         self.mem_st_manger.lock_exclusive();
         defer! {self.mem_st_manger.unlock_exclusive()}
 
@@ -652,7 +657,7 @@ impl KVCore {
         unsafe { &*st }
     }
 
-    fn must_vlog(&self) -> Arc<ValueLogCore> {
+    pub(crate) fn must_vlog(&self) -> Arc<ValueLogCore> {
         let vlog = self.vlog.clone().unwrap();
         vlog
     }

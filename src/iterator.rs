@@ -14,6 +14,7 @@ use std::future::Future;
 
 use std::pin::Pin;
 
+use crate::transition::TxN;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
@@ -38,13 +39,6 @@ impl From<KVItemInner> for KVItem {
         }
     }
 }
-// impl Deref for KVItem {
-//     type Target = tokio::sync::RwLock<KVItemInner>;
-//
-//     fn deref(&self) -> &Self::Target {
-//         self.inner.as_ref()
-//     }
-// }
 
 impl KVItem {
     pub async fn key(&self) -> Vec<u8> {
@@ -62,6 +56,8 @@ impl KVItem {
         inner.has_value()
     }
 
+    /// Returns the CAS counter associated with the value.
+    /// TODO: Make this version.
     pub async fn counter(&self) -> u64 {
         let inner = self.rl().await;
         inner.counter()
@@ -93,6 +89,7 @@ pub(crate) struct KVItemInner {
     pub(crate) value: TArcMx<Vec<u8>>,
     pub(crate) meta: u8,
     pub(crate) user_meta: u8,
+    // TODO: rename to version ts.
     cas_counter: Arc<AtomicU64>,
     wg: Closer,
     err: Result<()>,
@@ -138,7 +135,7 @@ impl KVItemInner {
 
     // Returns the key. Remember to copy if you need to access it outside the iteration loop.
     pub(crate) fn key(&self) -> &[u8] {
-        &self.key
+        crate::y::parse_key(self.key.as_ref())
     }
 
     // Return value
@@ -287,7 +284,10 @@ pub(crate) const DEF_ITERATOR_OPTIONS: IteratorOptions = IteratorOptions {
 ///  |             |        |
 ///  IteratorExt  reference
 pub struct IteratorExt {
-    kv: DB,
+    txn: TxN,
+    read_ts: u64,
+
+    // kv: DB,
     itr: MergeIterator,
     opt: IteratorOptions,
     item: ArcRW<Option<KVItem>>,
@@ -330,14 +330,15 @@ pub struct IteratorExt {
 
 impl IteratorExt {
     pub(crate) fn new(kv: DB, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
-        IteratorExt {
+        /*IteratorExt {
             kv,
             opt,
             itr,
             data: ArcRW::default(),
             item: Arc::new(Default::default()),
             has_rewind: ArcRW::default(),
-        }
+        }*/
+        todo!()
     }
 
     // pub(crate) async fn new_async_iterator(
@@ -444,7 +445,8 @@ impl IteratorExt {
     // Close the iterator, It is important to call this when you're done with iteration.
     pub async fn close(&self) -> Result<()> {
         // TODO: We could handle this error.
-        self.kv.vlog.as_ref().unwrap().decr_iterator_count().await?;
+        let db = self.txn.get_kv();
+        db.vlog.as_ref().unwrap().decr_iterator_count().await?;
         Ok(())
     }
 
@@ -514,9 +516,10 @@ impl IteratorExt {
     }
 
     fn new_item(&self) -> KVItem {
+        let kv = self.txn.get_kv();
         let inner_item = KVItemInner {
             status: Arc::new(std::sync::RwLock::new(PreFetchStatus::Empty)),
-            kv: self.kv.clone(),
+            kv,
             key: vec![],
             value: TArcMx::new(Default::default()),
             vptr: vec![],
