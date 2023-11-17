@@ -34,6 +34,7 @@ use std::path::Path;
 use std::pin::Pin;
 
 use crate::pb::backup::KVPair;
+use crate::transition::{GlobalTxNState, TxN};
 use libc::difftime;
 use rand::random;
 use std::fmt::Formatter;
@@ -46,7 +47,6 @@ use structopt::clap::AppSettings::WaitOnError;
 use tokio::fs::create_dir_all;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, RwLockWriteGuard};
-use crate::transition::{GlobalTxNState, TxN};
 
 /// Prefix for internal keys used by badger.
 pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
@@ -79,12 +79,6 @@ impl FlushTask {
     }
 }
 
-/// A builder for KV building.
-pub struct KVBuilder {
-    opt: Options,
-    kv: BoxKV,
-}
-
 /// Manage key/value
 #[doc(hidden)]
 #[derive(Clone)]
@@ -111,6 +105,7 @@ pub struct KVCore {
     // we use an atomic op.
     pub(crate) last_used_cas_counter: Arc<AtomicU64>,
     share_lock: TArcRW<()>,
+    pub(crate) txn_state: GlobalTxNState,
 }
 
 impl Drop for KVCore {
@@ -716,7 +711,6 @@ pub type WeakKV = XWeak<KVCore>;
 #[derive(Clone)]
 pub struct DB {
     inner: XArc<KVCore>,
-    gs: GlobalTxNState,
 }
 
 impl Deref for DB {
@@ -791,6 +785,7 @@ impl DB {
             last_used_cas_counter: Arc::new(AtomicU64::new(1)),
             mem_st_manger: Arc::new(SkipListManager::new(opt.arena_size() as usize)),
             share_lock: TArcRW::new(tokio::sync::RwLock::new(())),
+            txn_state: GlobalTxNState::default(),
         };
 
         let manifest = out.manifest.clone();
@@ -1200,18 +1195,18 @@ impl DB {
         // Extend sst.table
         itrs.extend(self.must_lc().as_iterator(opt.reverse));
         let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
-        IteratorExt::new(self.clone(), mitr, opt)
+
+        IteratorExt::new(std::ptr::null(), mitr, opt)
     }
 
     pub fn new_transaction(&self, update: bool) -> Result<TxN> {
-        Ok(TxN{
+        Ok(TxN {
             read_ts: 0,
             update,
             reads: Arc::new(Default::default()),
             writes: Arc::new(Default::default()),
             pending_writes: Arc::new(Default::default()),
             kv: self.clone(),
-            gs: self.gs.clone(),
         })
     }
 
@@ -1360,7 +1355,10 @@ impl DB {
     }
 
     pub(crate) fn new(inner: XArc<KVCore>) -> DB {
-        DB { inner }
+        DB {
+            inner,
+            gs: GlobalTxNState::default(),
+        }
     }
 
     pub(crate) fn to_ref(&self) -> &KVCore {

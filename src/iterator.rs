@@ -294,6 +294,7 @@ pub struct IteratorExt {
     // Cache the prefetch keys, not include current value
     data: ArcRW<std::collections::LinkedList<KVItem>>,
     has_rewind: ArcRW<bool>,
+    last_key: ArcRW<Vec<u8>>,
 }
 
 /// TODO FIXME
@@ -377,11 +378,11 @@ impl IteratorExt {
         }
         // rewind the iterator
         // rewind, next, rewind?, thie item is who!
-        let mut item = self.itr.rewind();
+        let mut _item = self.itr.rewind();
         // filter internal data
-        while item.is_some() && item.as_ref().unwrap().key().starts_with(_BADGER_PREFIX) {
-            item = self.itr.next();
-        }
+        //while item.is_some() && item.as_ref().unwrap().key().starts_with(_BADGER_PREFIX) {
+        //   item = self.itr.next();
+        //}
         // Before every rewind, the item will be reset to None
         self.item.write().take();
         // prefetch item.
@@ -445,7 +446,7 @@ impl IteratorExt {
     // Close the iterator, It is important to call this when you're done with iteration.
     pub async fn close(&self) -> Result<()> {
         // TODO: We could handle this error.
-        let db = self.txn.tx.get_kv();
+        let db = unsafe { self.txn.tx.as_ref().unwrap().get_kv() };
         db.vlog.as_ref().unwrap().decr_iterator_count().await?;
         Ok(())
     }
@@ -516,7 +517,7 @@ impl IteratorExt {
     }
 
     fn new_item(&self) -> KVItem {
-        let kv = self.txn.tx.get_kv();
+        let kv = self.txn().get_kv();
         let inner_item = KVItemInner {
             status: Arc::new(std::sync::RwLock::new(PreFetchStatus::Empty)),
             kv,
@@ -532,8 +533,48 @@ impl IteratorExt {
         return KVItem::from(inner_item);
     }
 
+    // The is a complex function because it needs to handle both forward and reverse iteration
+    // implementation. We store keys such that their version are sorted in descending order. This makes
+    // forward iteration efficient, but revese iteration complecated. This tradeoff is better because
+    // forward iteration is more common than reverse.
+    //
+    // This function advances the iterator.
+    fn parse_item(&self) -> bool {
+        let itr = self.itr;
+        let item = itr.peek().unwrap();
+        // Skip bager keys.
+        if item.key().starts_with(_BADGER_PREFIX) {
+            itr.next();
+            return false;
+        }
+        // Skip any version which are beyond the read_ts
+        let ver = crate::y::parse_ts(item.key());
+        if ver > self.read_ts {
+            itr.next();
+            return false;
+        }
+        // If iteration in forward direction. then just checking the last key against current key would
+        // be sufficient.
+        if !self.opt.reverse {
+            if crate::y::same_key_ignore_version(self.last_key.write().as_ref(), item.key()) {
+                itr.next();
+                return false;
+            }
+            // Only track in froward direction.
+            // We should update last_key as soon as we find a different key in our snapshot.
+            // Consider keys: a 5, b 7 (del), b 5. When iterating, last_key = a.
+            // Then we see b 7, which is deleted. If we don't store last_key = b, we'll then return b 5,
+            //
+        }
+        false
+    }
+
     // Returns false when iteration is done.
     fn valid(&self) -> bool {
         self.item.read().is_some()
+    }
+
+    fn txn(&self) -> &TxN {
+        unsafe { self.txn.tx.as_ref().unwrap() }
     }
 }

@@ -5,7 +5,7 @@ use crate::value_log::{Entry, MetaBit};
 use crate::y::compare_key;
 use crate::{
     Error, IteratorExt, IteratorOptions, KVItem, MergeIterOverBuilder, Result, UniIterator,
-    ValueStruct, WeakKV, Xiterator, DB, TXN_KEY,
+    ValueStruct, Xiterator, DB, TXN_KEY,
 };
 use drop_cell::defer;
 use parking_lot::RwLock;
@@ -13,7 +13,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct GlobalTxNState {
     inner: TArcRW<GlobalTxNStateInner>,
 }
@@ -30,6 +30,19 @@ struct GlobalTxNStateInner {
 
     // commits stores a key fingerprint and latest commit counter for it.
     commits: HashMap<u64, u64>,
+}
+
+impl Default for GlobalTxNStateInner {
+    fn default() -> Self {
+        GlobalTxNStateInner {
+            lock: Default::default(),
+            cur_read: Default::default(),
+            next_commit: AtomicU64::new(1),
+            commit_mark: Default::default(),
+            pending_commits: Default::default(),
+            commits: Default::default(),
+        }
+    }
 }
 
 impl GlobalTxNStateInner {
@@ -117,7 +130,6 @@ pub struct TxN {
     pub(crate) pending_writes: Arc<std::sync::RwLock<HashMap<Vec<u8>, Entry>>>,
 
     pub(crate) kv: DB,
-    pub(crate) gs: GlobalTxNState,
 }
 
 impl TxN {
@@ -155,8 +167,7 @@ impl TxN {
     }
 
     pub async fn get(&self, key: &[u8]) -> Result<KVItem> {
-        let kv_db = self.kv.upgrade().unwrap();
-        let kv_db = DB::new(kv_db);
+        let kv_db = self.get_kv();
         let item = KVItem::from(KVItemInner::new(
             vec![],
             ValueStruct::default(),
@@ -198,7 +209,8 @@ impl TxN {
             return Ok(()); // Ready only translation.
         }
         // TODO FIXME lock
-        let mut gs = self.gs.inner.write().await;
+        let gs = self.get_kv().txn_state.clone();
+        let mut gs = gs.inner.write().await;
         let commit_ts = gs.new_commit_ts(&self);
         if commit_ts == 0 {
             return Err(Error::TxCommitConflict);
@@ -257,8 +269,7 @@ impl TxN {
     }
 
     pub(crate) fn get_kv(&self) -> DB {
-        let kv_db = self.kv.upgrade().unwrap();
-        DB::new(kv_db)
+        self.kv.clone()
     }
 }
 
