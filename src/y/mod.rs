@@ -17,9 +17,9 @@ use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io::{Cursor, ErrorKind, Write};
 
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::backtrace::Backtrace;
 use std::{array, cmp, io};
-use byteorder::{WriteBytesExt, BigEndian, ReadBytesExt};
 use thiserror::Error;
 use tracing::info;
 
@@ -273,7 +273,7 @@ pub(crate) fn parallel_load_block_key(fp: File, offsets: Vec<u64>) -> Vec<Vec<u8
             read_at(&fp, &mut buffer, offset + Header::size() as u64).unwrap();
             tx.send((i, out)).unwrap();
         })
-            .unwrap();
+        .unwrap();
     }
     pool.close();
 
@@ -365,6 +365,7 @@ pub(crate) fn hex_str(buf: &[u8]) -> String {
 }
 
 // Generates a new key by appending ts to key.
+#[inline(always)]
 pub(crate) fn key_with_ts(key: &[u8], ts: u64) -> Vec<u8> {
     let mut out = vec![0u8; key.len() + 8];
     out.copy_from_slice(key);
@@ -390,27 +391,26 @@ pub(crate) fn parse_key(out: &[u8]) -> &[u8] {
 }
 
 // checks for key equality ignoring the version timestamp suffix.
-pub(crate) fn same_key_ignore_version(src: &[u8], dst: &[u8]) -> bool {
-    if src.len() != dst.len() {
+#[inline(always)]
+pub(crate) fn same_key_ignore_version<T: AsRef<[u8]>>(src: T, dst: T) -> bool {
+    if src.as_ref().len() != dst.as_ref().len() {
         return false;
     }
-    let key_src = parse_key(src);
-    let key_dst = parse_key(dst);
+    let key_src = parse_key(src.as_ref());
+    let key_dst = parse_key(dst.as_ref());
     key_src == key_dst
 }
-
 
 // compare_keys checks the key without timestamp and checks the timestamp if keyNoTs
 // is same.
 // a<timestamp> would be sorted higher than aa<timestamp> if we use bytes.compare
 // All keys should have timestamp.
+#[inline(always)]
 pub(crate) fn compare_key(key1: &[u8], key2: &[u8]) -> Ordering {
     assert!(key1.len() > 8);
     assert!(key2.len() > 8);
     return match parse_key(&key1).cmp(&parse_key(key2)) {
-        Ordering::Equal => {
-            parse_ts(key1).cmp(&parse_ts(key2))
-        }
+        Ordering::Equal => parse_ts(key1).cmp(&parse_ts(key2)),
         other => other,
     };
 }
@@ -431,8 +431,8 @@ fn dsync() {
 
 /// find a value in array with binary search
 pub fn binary_search<T: Ord, F>(array: &[T], f: F) -> Option<usize>
-    where
-        F: Fn(&T) -> Ordering,
+where
+    F: Fn(&T) -> Ordering,
 {
     let mut low = 0;
     let mut high = array.len() - 1;

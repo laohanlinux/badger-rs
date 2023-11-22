@@ -539,15 +539,16 @@ impl IteratorExt {
     // forward iteration is more common than reverse.
     //
     // This function advances the iterator.
-    fn parse_item(&self) -> bool {
-        let itr = self.itr;
+    // TODO ...
+    async fn parse_item(&self) -> bool {
+        let itr = &self.itr;
         let item = itr.peek().unwrap();
         // Skip bager keys.
         if item.key().starts_with(_BADGER_PREFIX) {
             itr.next();
             return false;
         }
-        // Skip any version which are beyond the read_ts
+        // Skip any version which are *beyond* the read_ts
         let ver = crate::y::parse_ts(item.key());
         if ver > self.read_ts {
             itr.next();
@@ -560,13 +561,54 @@ impl IteratorExt {
                 itr.next();
                 return false;
             }
-            // Only track in froward direction.
+            // Only track in forward direction.
             // We should update last_key as soon as we find a different key in our snapshot.
             // Consider keys: a 5, b 7 (del), b 5. When iterating, last_key = a.
             // Then we see b 7, which is deleted. If we don't store last_key = b, we'll then return b 5,
-            //
+            // which is wrong. Therefore, update lastKey here.
+            let mut last_key = self.last_key.write();
+            last_key.clear();
+            last_key.extend_from_slice(itr.peek().unwrap().key());
         }
-        false
+
+        loop {
+            // If deleted, advance and return.
+            if itr.peek().unwrap().value().meta & MetaBit::BIT_DELETE.bits() > 0 {
+                itr.next();
+                return false;
+            }
+
+            let item = self.new_item();
+            self.fill(item.clone()).await;
+            // fill item based on current cursor position. All Next calls have returned, so reaching here
+            // means no Next was called.
+            itr.next();
+            if !self.opt.reverse || itr.peek().is_none() {
+                let mut itr_item = self.item.write();
+                if itr_item.is_none() {
+                    *itr_item = Some(item);
+                }
+                return true;
+            }
+
+            // Reverse direction
+            let next_ts = crate::y::parse_ts(itr.peek().as_ref().unwrap().key());
+            if next_ts <= self.read_ts
+                && crate::y::same_key_ignore_version(
+                    itr.peek().unwrap().key(),
+                    item.key().await.as_ref(),
+                )
+            {
+                // This is a valid potential candidate.
+                continue;
+            }
+            // Ignore the next candidate. Return the current one.
+            let mut itr_item = self.item.write();
+            if itr_item.is_none() {
+                *itr_item = Some(item);
+            }
+            return true;
+        }
     }
 
     // Returns false when iteration is done.
