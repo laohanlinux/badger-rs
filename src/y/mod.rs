@@ -360,8 +360,9 @@ pub(crate) async fn async_sync_directory(d: String) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn hex_str(buf: &[u8]) -> String {
-    String::from_utf8(buf.to_vec()).unwrap_or_else(|_| "Sorry, Hex String Failed!!!".to_string())
+pub(crate) fn hex_str<T: AsRef<[u8]>>(buf: T) -> String {
+    String::from_utf8(buf.as_ref().to_vec())
+        .unwrap_or_else(|_| "Sorry, Hex String Failed!!!".to_string())
 }
 
 // Generates a new key by appending ts to key.

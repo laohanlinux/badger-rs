@@ -290,7 +290,7 @@ pub struct IteratorExt {
     // kv: DB,
     itr: MergeIterator,
     opt: IteratorOptions,
-    item: ArcRW<Option<KVItem>>,
+    //item: ArcRW<Option<KVItem>>,
     // Cache the prefetch keys, not include current value
     data: ArcRW<std::collections::LinkedList<KVItem>>,
     has_rewind: ArcRW<bool>,
@@ -365,7 +365,7 @@ impl IteratorExt {
             break;
         }
         self.pre_fetch().await;
-        self.item.read().clone()
+        self.peek().await
     }
 
     // Rewind the iterator cursor all the wy to zero-th position, which would be the
@@ -379,51 +379,26 @@ impl IteratorExt {
         // rewind the iterator
         // rewind, next, rewind?, thie item is who!
         let mut _item = self.itr.rewind();
-        // filter internal data
-        //while item.is_some() && item.as_ref().unwrap().key().starts_with(_BADGER_PREFIX) {
-        //   item = self.itr.next();
-        //}
-        // Before every rewind, the item will be reset to None
-        self.item.write().take();
         // prefetch item.
         self.pre_fetch().await;
         // return the first el.
-        self.item.read().clone()
+        self.peek().await
     }
 
     // Advance the iterator by one (*NOTICE*: must be rewind when you call self.next())
     pub async fn next(&self) -> Option<KVItem> {
-        // Ensure current item has load
-        if let Some(el) = self.item.write().take() {
-            el.rl().await.wg.wait().await; // Just cleaner to wait before pushing to avoid doing ref counting.
-        }
-        // Set next item to current
-        if let Some(el) = self.data.write().pop_front() {
-            self.item.write().replace(el);
-        }
         // Advance internal iterator until entry is not deleted
-        while let Some(el) = self.itr.next() {
-            if el.key().starts_with(_BADGER_PREFIX) {
-                continue;
-            }
-            if el.value().meta & MetaBit::BIT_DELETE.bits() == 0 {
+        while self.itr.next().is_some() {
+            if self.parse_item().await {
                 // Not deleted
                 break;
             }
         }
-        let item = self.itr.peek();
-        if item.is_none() {
-            return None;
-        }
-
-        let xitem = self.new_item();
-        self.fill(xitem.clone()).await;
-        self.data.write().push_back(xitem.clone());
-        Some(xitem)
+        self.peek().await
     }
 
     pub async fn peek(&self) -> Option<KVItem> {
-        self.item.read().clone()
+        self.data.read().front().map(|item| item.clone())
     }
 }
 
@@ -451,7 +426,7 @@ impl IteratorExt {
         Ok(())
     }
 
-    // fill the value
+    // fill the value of merge iterator into item
     async fn fill(&self, item: KVItem) {
         let vs = self.itr.peek().unwrap();
         let vs = vs.value();
@@ -557,6 +532,8 @@ impl IteratorExt {
         // If iteration in forward direction. then just checking the last key against current key would
         // be sufficient.
         if !self.opt.reverse {
+            // The key has acceed, so don't access it again.
+            // TODO FIXME, I don't think so, a 5, b 7 (del), b5, b 6
             if crate::y::same_key_ignore_version(self.last_key.write().as_ref(), item.key()) {
                 itr.next();
                 return false;
@@ -579,14 +556,18 @@ impl IteratorExt {
             }
 
             let item = self.new_item();
+            // Load key, en,en,en, maybe lazy load
             self.fill(item.clone()).await;
             // fill item based on current cursor position. All Next calls have returned, so reaching here
             // means no Next was called.
-            itr.next();
+            itr.next(); // Advance but no fill item yet.
             if !self.opt.reverse || itr.peek().is_none() {
+                // forward direction, or invalid.
                 let mut itr_item = self.item.write();
                 if itr_item.is_none() {
                     *itr_item = Some(item);
+                } else {
+                    self.data.write().push_back(item);
                 }
                 return true;
             }
@@ -606,6 +587,8 @@ impl IteratorExt {
             let mut itr_item = self.item.write();
             if itr_item.is_none() {
                 *itr_item = Some(item);
+            } else {
+                self.data.write().push_back(item);
             }
             return true;
         }

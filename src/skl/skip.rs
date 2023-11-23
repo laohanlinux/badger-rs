@@ -462,15 +462,17 @@ impl Display for SkipList {
             k: String,
             v: String,
         }
-        let mut kv = vec![];
+        let mut kv = vec![KV {
+            k: "st-id".to_owned(),
+            v: self.id().to_string(),
+        }];
         for _kv in self.key_values() {
             kv.push(KV {
-                k: String::from_utf8(_kv.0.to_vec()).unwrap(),
-                v: String::from_utf8(_kv.1.value).unwrap(),
+                k: crate::hex_str(_kv.0),
+                v: crate::hex_str(_kv.1.value),
             });
         }
         let table = Table::new(kv).to_string();
-        writeln!(f, "SkipList=>").unwrap();
         writeln!(f, "{}", table)
     }
 }
