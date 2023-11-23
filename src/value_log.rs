@@ -761,8 +761,8 @@ impl ValueLogCore {
                 #[cfg(test)]
                 debug!(
                     "Write # {:?} => {} into vlog file, offset: {}, meta:{}",
-                    hex_str(entry.entry().key.as_ref()),
-                    hex_str(entry.entry().value.as_ref()),
+                    hex_str(&entry.entry().key),
+                    hex_str(&entry.entry().value),
                     self.buf.read().await.get_ref().len()
                         + self.writable_log_offset.load(Ordering::Acquire) as usize,
                     entry.entry.meta,

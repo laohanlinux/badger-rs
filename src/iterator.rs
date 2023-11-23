@@ -149,7 +149,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-        .await?;
+            .await?;
         Ok(ch.recv().await.unwrap())
     }
 
@@ -160,7 +160,7 @@ impl KVItemInner {
     // Note that the call to the consumer func happens synchronously.
     pub(crate) async fn value(
         &self,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
@@ -205,7 +205,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-        .await
+            .await
     }
 
     // Returns approximate size of the key-value pair.
@@ -264,6 +264,7 @@ impl Default for IteratorOptions {
 
 impl IteratorOptions {
     pub fn new(pre_fetch_values: bool, pre_fetch_size: isize, reverse: bool) -> Self {
+        assert!(pre_fetch_size > 0);
         IteratorOptions {
             pre_fetch_values,
             pre_fetch_size,
@@ -331,15 +332,15 @@ pub struct IteratorExt {
 
 impl IteratorExt {
     pub(crate) fn new(tv: *const TxN, itr: MergeIterator, opt: IteratorOptions) -> IteratorExt {
-        /*IteratorExt {
-            kv,
+        IteratorExt {
+            txn: BoxTxN::new(tv),
             opt,
             itr,
             data: ArcRW::default(),
-            item: Arc::new(Default::default()),
             has_rewind: ArcRW::default(),
-        }*/
-        todo!()
+            read_ts: 0,
+            last_key: Arc::new(Default::default()),
+        }
     }
 
     // pub(crate) async fn new_async_iterator(
@@ -358,12 +359,7 @@ impl IteratorExt {
         while let Some(el) = self.data.write().pop_front() {
             el.rl().await.wg.wait().await;
         }
-        while let Some(el) = self.itr.seek(key) {
-            if el.key().starts_with(_BADGER_PREFIX) {
-                continue;
-            }
-            break;
-        }
+        self.itr.seek(key);
         self.pre_fetch().await;
         self.peek().await
     }
@@ -377,8 +373,8 @@ impl IteratorExt {
             el.rl().await.wg.wait().await;
         }
         // rewind the iterator
-        // rewind, next, rewind?, thie item is who!
-        let mut _item = self.itr.rewind();
+        // rewind, next, rewind?, the item is who!
+        self.itr.rewind();
         // prefetch item.
         self.pre_fetch().await;
         // return the first el.
@@ -386,6 +382,7 @@ impl IteratorExt {
     }
 
     // Advance the iterator by one (*NOTICE*: must be rewind when you call self.next())
+    // to ensure you have access to a valid it.item()
     pub async fn next(&self) -> Option<KVItem> {
         // Advance internal iterator until entry is not deleted
         while self.itr.next().is_some() {
@@ -403,21 +400,6 @@ impl IteratorExt {
 }
 
 impl IteratorExt {
-    // Returns false when iteration is done
-    // or when the current key is not prefixed by the specified prefix.
-    async fn valid_for_prefix(&self, prefix: &[u8]) -> bool {
-        self.item.read().is_some()
-            && self
-                .item
-                .read()
-                .as_ref()
-                .unwrap()
-                .rl()
-                .await
-                .key()
-                .starts_with(prefix)
-    }
-
     // Close the iterator, It is important to call this when you're done with iteration.
     pub async fn close(&self) -> Result<()> {
         // TODO: We could handle this error.
@@ -466,28 +448,13 @@ impl IteratorExt {
         let itr = &self.itr;
         let mut count = 0;
         while let Some(item) = itr.peek() {
-            if item.key().starts_with(crate::kv::_BADGER_PREFIX) {
-                itr.next();
-                continue;
-            }
-            if item.value().meta & MetaBit::BIT_DELETE.bits() > 0 {
-                itr.next();
+            if !self.parse_item().await {
                 continue;
             }
             count += 1;
-            let xitem = self.new_item();
-            // fill a el from itr.peek
-            self.fill(xitem.clone()).await;
-            if self.item.read().is_none() {
-                self.item.write().replace(xitem); // store it
-            } else {
-                // push prefetch el into cache queue, Notice it not including current item
-                self.data.write().push_back(xitem);
-            }
             if count == pre_fetch_size {
                 break;
             }
-            itr.next();
         }
     }
 
@@ -510,7 +477,7 @@ impl IteratorExt {
 
     // The is a complex function because it needs to handle both forward and reverse iteration
     // implementation. We store keys such that their version are sorted in descending order. This makes
-    // forward iteration efficient, but revese iteration complecated. This tradeoff is better because
+    // forward iteration efficient, but reverse iteration complecated. This tradeoff is better because
     // forward iteration is more common than reverse.
     //
     // This function advances the iterator.
@@ -518,7 +485,7 @@ impl IteratorExt {
     async fn parse_item(&self) -> bool {
         let itr = &self.itr;
         let item = itr.peek().unwrap();
-        // Skip bager keys.
+        // Skip badger keys.
         if item.key().starts_with(_BADGER_PREFIX) {
             itr.next();
             return false;
@@ -532,7 +499,7 @@ impl IteratorExt {
         // If iteration in forward direction. then just checking the last key against current key would
         // be sufficient.
         if !self.opt.reverse {
-            // The key has acceed, so don't access it again.
+            // The key has accessed, so don't access it again.
             // TODO FIXME, I don't think so, a 5, b 7 (del), b5, b 6
             if crate::y::same_key_ignore_version(self.last_key.write().as_ref(), item.key()) {
                 itr.next();
@@ -563,12 +530,7 @@ impl IteratorExt {
             itr.next(); // Advance but no fill item yet.
             if !self.opt.reverse || itr.peek().is_none() {
                 // forward direction, or invalid.
-                let mut itr_item = self.item.write();
-                if itr_item.is_none() {
-                    *itr_item = Some(item);
-                } else {
-                    self.data.write().push_back(item);
-                }
+                self.data.write().push_back(item);
                 return true;
             }
 
@@ -576,27 +538,17 @@ impl IteratorExt {
             let next_ts = crate::y::parse_ts(itr.peek().as_ref().unwrap().key());
             if next_ts <= self.read_ts
                 && crate::y::same_key_ignore_version(
-                    itr.peek().unwrap().key(),
-                    item.key().await.as_ref(),
-                )
+                itr.peek().unwrap().key(),
+                item.key().await.as_ref(),
+            )
             {
                 // This is a valid potential candidate.
                 continue;
             }
             // Ignore the next candidate. Return the current one.
-            let mut itr_item = self.item.write();
-            if itr_item.is_none() {
-                *itr_item = Some(item);
-            } else {
-                self.data.write().push_back(item);
-            }
+            self.data.write().push_back(item);
             return true;
         }
-    }
-
-    // Returns false when iteration is done.
-    fn valid(&self) -> bool {
-        self.item.read().is_some()
     }
 
     fn txn(&self) -> &TxN {

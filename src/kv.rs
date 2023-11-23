@@ -1357,7 +1357,6 @@ impl DB {
     pub(crate) fn new(inner: XArc<KVCore>) -> DB {
         DB {
             inner,
-            gs: GlobalTxNState::default(),
         }
     }
 
