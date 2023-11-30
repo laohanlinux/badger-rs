@@ -385,7 +385,7 @@ pub(crate) fn parse_ts(out: &[u8]) -> u64 {
 
 #[inline(always)]
 pub(crate) fn parse_key(out: &[u8]) -> &[u8] {
-    if out.is_empty() {
+    if out.len() < 8 {
         return out;
     }
     &out[..(out.len() - 8)]

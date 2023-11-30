@@ -84,7 +84,6 @@ pub(crate) struct KVItemInner {
     pub(crate) status: Arc<std::sync::RwLock<PreFetchStatus>>,
     kv: DB,
     pub(crate) key: Vec<u8>,
-    // TODO, Opz memory
     pub(crate) vptr: Vec<u8>,
     pub(crate) value: TArcMx<Vec<u8>>,
     pub(crate) meta: u8,
@@ -149,7 +148,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-            .await?;
+        .await?;
         Ok(ch.recv().await.unwrap())
     }
 
@@ -160,7 +159,7 @@ impl KVItemInner {
     // Note that the call to the consumer func happens synchronously.
     pub(crate) async fn value(
         &self,
-        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output=Result<()>> + Send>>,
+        mut consumer: impl FnMut(&[u8]) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>,
     ) -> Result<()> {
         // Wait result
         self.wg.wait().await;
@@ -205,7 +204,7 @@ impl KVItemInner {
                 Ok(())
             })
         })
-            .await
+        .await
     }
 
     // Returns approximate size of the key-value pair.
@@ -538,9 +537,9 @@ impl IteratorExt {
             let next_ts = crate::y::parse_ts(itr.peek().as_ref().unwrap().key());
             if next_ts <= self.read_ts
                 && crate::y::same_key_ignore_version(
-                itr.peek().unwrap().key(),
-                item.key().await.as_ref(),
-            )
+                    itr.peek().unwrap().key(),
+                    item.key().await.as_ref(),
+                )
             {
                 // This is a valid potential candidate.
                 continue;

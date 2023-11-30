@@ -74,14 +74,9 @@ impl SkipList {
     }
 
     // Sub crease the reference count, deallocating the skiplist when done using it
-    // TODO
     pub fn decr_ref(&self) {
         self._ref.fetch_sub(1, Ordering::Release);
     }
-
-    // fn valid(&self) -> bool {
-    //     self.arena_ref().valid()
-    // }
 
     pub(crate) fn arena_ref(&self) -> &Arena {
         &self.arena
@@ -226,8 +221,8 @@ impl SkipList {
 
     /// Inserts the key-value pair.
     /// FIXME: it bad, should be not use unsafe, but ....
-    pub fn put(&self, key: &[u8], v: ValueStruct) {
-        self._put(key, v)
+    pub fn put<T: AsRef<[u8]>>(&self, key: T, v: ValueStruct) {
+        self._put(key.as_ref(), v)
     }
 
     fn _put(&self, key: &[u8], v: ValueStruct) {
@@ -883,7 +878,7 @@ mod tests {
 
     #[test]
     fn t_one_key() {
-        let key = "thekey";
+        let key = b"thekey";
         let st = Arc::new(SkipList::new(ARENA_SIZE));
         let mut waits = (0..100)
             .map(|i| {
@@ -891,8 +886,8 @@ mod tests {
                 let key = key.clone();
                 spawn(move || {
                     st.put(
-                        key.as_bytes(),
-                        ValueStruct::new(format!("{}", i).as_bytes().to_vec(), 0, 0, i as u64),
+                        &key,
+                        ValueStruct::new(i.to_string().as_bytes().to_vec(), 0, 0, i as u64),
                     );
                 })
             })
@@ -904,7 +899,7 @@ mod tests {
             let key = key.clone();
             let save_value = save_value.clone();
             let join = spawn(move || {
-                if let Some(value) = st.get(key.as_bytes()) {
+                if let Some(value) = st.get(&key) {
                     save_value.fetch_add(1, Ordering::Relaxed);
                     let v = String::from_utf8_lossy(&value.value)
                         .parse::<i32>()
