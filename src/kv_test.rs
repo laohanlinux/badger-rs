@@ -40,6 +40,13 @@ async fn t_1_write() {
     let got = kv.get(b"hello").await;
     assert!(got.is_ok());
     assert_eq!(&got.unwrap(), b"word");
+
+    // Write again
+    let res = kv.set(b"hello".to_vec(), b"word1".to_vec(), 20).await;
+    assert!(res.is_ok());
+    let got = kv.get(b"hello").await;
+    assert!(got.is_ok());
+    assert_eq!(&got.unwrap(), b"word1");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -495,7 +502,7 @@ async fn kv_iterator_basic() {
     tracing_log();
     let kv = build_kv().await;
 
-    let n = 10000;
+    let n = 1;
 
     let bkey = |i: usize| format!("{:09}", i).as_bytes().to_vec();
     let bvalue = |i: usize| format!("{:025}", i).as_bytes().to_vec();

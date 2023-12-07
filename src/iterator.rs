@@ -7,8 +7,10 @@ use crate::{
     Decode, MergeIterator, Result, Xiterator, EMPTY_SLICE,
 };
 
+use arc_cell::ArcCell;
 use atomic::Atomic;
 
+use core::slice::SlicePattern;
 use std::fmt::{Debug, Display, Formatter};
 use std::future::Future;
 
@@ -290,11 +292,10 @@ pub struct IteratorExt {
     // kv: DB,
     itr: MergeIterator,
     opt: IteratorOptions,
-    //item: ArcRW<Option<KVItem>>,
     // Cache the prefetch keys, not include current value
     data: ArcRW<std::collections::LinkedList<KVItem>>,
     has_rewind: ArcRW<bool>,
-    last_key: ArcRW<Vec<u8>>,
+    last_key: Arc<ArcCell<Vec<u8>>>,
 }
 
 /// TODO FIXME
@@ -500,7 +501,7 @@ impl IteratorExt {
         if !self.opt.reverse {
             // The key has accessed, so don't access it again.
             // TODO FIXME, I don't think so, a 5, b 7 (del), b5, b 6
-            if crate::y::same_key_ignore_version(self.last_key.write().as_ref(), item.key()) {
+            if crate::y::same_key_ignore_version(self.get_last_key().as_slice(), item.key()) {
                 itr.next();
                 return false;
             }
@@ -509,9 +510,8 @@ impl IteratorExt {
             // Consider keys: a 5, b 7 (del), b 5. When iterating, last_key = a.
             // Then we see b 7, which is deleted. If we don't store last_key = b, we'll then return b 5,
             // which is wrong. Therefore, update lastKey here.
-            let mut last_key = self.last_key.write();
-            last_key.clear();
-            last_key.extend_from_slice(itr.peek().unwrap().key());
+            self.last_key
+                .set(Arc::new(itr.peek().unwrap().key().to_vec()));
         }
 
         loop {
@@ -552,5 +552,9 @@ impl IteratorExt {
 
     fn txn(&self) -> &TxN {
         unsafe { self.txn.tx.as_ref().unwrap() }
+    }
+
+    fn get_last_key(&self) -> Arc<Vec<u8>> {
+        self.last_key.get()
     }
 }

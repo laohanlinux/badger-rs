@@ -63,6 +63,7 @@ protobuf = { version = "3.0.0-alpha.2", features = ["with-bytes"] }
 clap = { version = "4.4.6", features = ["derive"] }
 structopt = "0.3.26"
 farmhash = "1.1.5"
+arc-cell = "0.3.3"
 [dev-dependencies]
 tracing-subscriber = "0.3.17"
 tracing-log = "0.2.0"
