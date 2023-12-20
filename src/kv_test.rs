@@ -526,8 +526,9 @@ async fn kv_iterator_basic() {
         let itr = kv.new_iterator(opt).await;
         let mut count = 0;
         let mut rewind = true;
-        info!("Startinh first basic iteration");
-        itr.rewind().await;
+        info!("Starting first basic iteration");
+        let first = itr.rewind().await;
+        info!("first {:?}", first);
         while let Some(item) = itr.peek().await {
             let rd_item = item.rl().await;
             let key = rd_item.key();

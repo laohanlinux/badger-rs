@@ -273,7 +273,7 @@ pub(crate) fn parallel_load_block_key(fp: File, offsets: Vec<u64>) -> Vec<Vec<u8
             read_at(&fp, &mut buffer, offset + Header::size() as u64).unwrap();
             tx.send((i, out)).unwrap();
         })
-        .unwrap();
+            .unwrap();
     }
     pool.close();
 
@@ -369,8 +369,8 @@ pub(crate) fn hex_str<T: AsRef<[u8]>>(buf: T) -> String {
 #[inline(always)]
 pub(crate) fn key_with_ts(key: &[u8], ts: u64) -> Vec<u8> {
     let mut out = vec![0u8; key.len() + 8];
-    out.copy_from_slice(key);
-    out.write_u64::<BigEndian>(u64::MAX - ts).unwrap();
+    out[..key.len()].copy_from_slice(key);
+    (&mut out[key.len()..]).write_u64::<BigEndian>(u64::MAX - ts).unwrap();
     out
 }
 
@@ -432,8 +432,8 @@ fn dsync() {
 
 /// find a value in array with binary search
 pub fn binary_search<T: Ord, F>(array: &[T], f: F) -> Option<usize>
-where
-    F: Fn(&T) -> Ordering,
+    where
+        F: Fn(&T) -> Ordering,
 {
     let mut low = 0;
     let mut high = array.len() - 1;

@@ -57,6 +57,8 @@ mod st_manager;
 #[cfg(test)]
 mod test_util;
 mod transition;
+#[cfg(test)]
+mod transition_test;
 
 pub use iterator::*;
 pub use kv::*;

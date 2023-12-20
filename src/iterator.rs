@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::{io::Cursor, sync::atomic::AtomicU64};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLockReadGuard, RwLockWriteGuard};
+use tracing::info;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub(crate) enum PreFetchStatus {
@@ -456,6 +457,7 @@ impl IteratorExt {
                 break;
             }
         }
+        info!("Has fetch count: {}", count);
     }
 
     fn new_item(&self) -> KVItem {
@@ -492,6 +494,11 @@ impl IteratorExt {
         }
         // Skip any version which are *beyond* the read_ts
         let ver = crate::y::parse_ts(item.key());
+        info!(
+            "The version is {}, read_ts: {}",
+            hex_str(item.key()),
+            self.read_ts
+        );
         if ver > self.read_ts {
             itr.next();
             return false;

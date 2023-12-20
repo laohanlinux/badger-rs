@@ -1355,9 +1355,7 @@ impl DB {
     }
 
     pub(crate) fn new(inner: XArc<KVCore>) -> DB {
-        DB {
-            inner,
-        }
+        DB { inner }
     }
 
     pub(crate) fn to_ref(&self) -> &KVCore {
