@@ -10,12 +10,27 @@ use crate::{
 use drop_cell::defer;
 use parking_lot::RwLock;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use tokio::sync::{RwLockReadGuard, RwLockWriteGuard};
 
 #[derive(Clone, Default)]
 pub struct GlobalTxNState {
     inner: TArcRW<GlobalTxNStateInner>,
+}
+
+impl GlobalTxNState {
+    pub async fn rl(&self) -> RwLockReadGuard<'_, GlobalTxNStateInner> {
+        self.inner.read().await
+    }
+    pub async fn wl(&self) -> RwLockWriteGuard<'_, GlobalTxNStateInner> {
+        self.inner.write().await
+    }
+
+    pub async fn read_ts(&self) -> u64 {
+        self.rl().await.read_ts()
+    }
 }
 
 struct GlobalTxNStateInner {
@@ -247,47 +262,47 @@ impl TxN {
         Ok(())
     }
 
-        fn new_iterator(&self, opt: IteratorOptions) -> IteratorExt {
-            let db = self.get_kv();
-            // Notice, the iterator is global iterator, so must incr reference for memtable(SikpList), sst(file), vlog(file).
-            let p = crossbeam_epoch::pin();
-            let tables = db.get_mem_tables(&p);
-            // TODO it should decr at IteratorExt close.
-            defer! {
+    fn new_iterator(&self, opt: IteratorOptions) -> IteratorExt {
+        let db = self.get_kv();
+        // Notice, the iterator is global iterator, so must incr reference for memtable(SikpList), sst(file), vlog(file).
+        let p = crossbeam_epoch::pin();
+        let tables = db.get_mem_tables(&p);
+        // TODO it should decr at IteratorExt close.
+        defer! {
             tables.iter().for_each(|table| unsafe {table.as_ref().unwrap().decr_ref()});
         }
-            // add vlog reference.
-            db.must_vlog().incr_iterator_count();
+        // add vlog reference.
+        db.must_vlog().incr_iterator_count();
 
-            // Create iterators across all the tables involved first.
-            let mut itrs: Vec<Box<dyn Xiterator<Output=IteratorItem>>> = vec![];
-            for tb in tables.clone() {
-                let st = unsafe { tb.as_ref().unwrap().clone() };
-                let iter = Box::new(UniIterator::new(st, opt.reverse));
-                itrs.push(iter);
-            }
-            // Extend sst.table
-            itrs.extend(db.must_lc().as_iterator(opt.reverse));
-            let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
-            let txn = self as *const TxN;
-            IteratorExt::new(txn, mitr, opt)
+        // Create iterators across all the tables involved first.
+        let mut itrs: Vec<Box<dyn Xiterator<Output = IteratorItem>>> = vec![];
+        for tb in tables.clone() {
+            let st = unsafe { tb.as_ref().unwrap().clone() };
+            let iter = Box::new(UniIterator::new(st, opt.reverse));
+            itrs.push(iter);
         }
-
-        pub(crate) fn get_kv(&self) -> DB {
-            self.kv.clone()
-        }
+        // Extend sst.table
+        itrs.extend(db.must_lc().as_iterator(opt.reverse));
+        let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
+        let txn = self as *const TxN;
+        IteratorExt::new(txn, mitr, opt)
     }
 
-    pub(crate) struct BoxTxN {
-        pub tx: *const TxN,
+    pub(crate) fn get_kv(&self) -> DB {
+        self.kv.clone()
     }
+}
 
-    unsafe impl Send for BoxTxN {}
+pub(crate) struct BoxTxN {
+    pub tx: *const TxN,
+}
 
-    unsafe impl Sync for BoxTxN {}
+unsafe impl Send for BoxTxN {}
 
-    impl BoxTxN {
-        pub(crate) fn new(tx: *const TxN) -> BoxTxN {
-            BoxTxN { tx }
-        }
+unsafe impl Sync for BoxTxN {}
+
+impl BoxTxN {
+    pub(crate) fn new(tx: *const TxN) -> BoxTxN {
+        BoxTxN { tx }
     }
+}
