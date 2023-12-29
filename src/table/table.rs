@@ -51,7 +51,6 @@ impl Display for KeyOffset {
 }
 
 pub type Table = XArc<TableCore>;
-pub type WeakTable = XWeak<TableCore>;
 
 impl From<TableCore> for Table {
     fn from(value: TableCore) -> Self {
@@ -164,38 +163,18 @@ impl TableCore {
         let mut tc = table_ref.to_inner().unwrap();
         tc.biggest = biggest;
         tc.smallest = smallest;
-        // info!("open table ==> {}", tc);
+
         Ok(tc)
     }
 
     // increments the refcount (having to do with whether the file should be deleted)
     pub(crate) fn incr_ref(&self) {
-        use std::backtrace::Backtrace;
-        let count = self._ref.fetch_add(1, Ordering::Release);
-        let buf = format!(
-            "incr {} table count {} => {}",
-            self.id,
-            count,
-            self.get_ref()
-        );
-        // info!("{}", buf);
-        //
-        // info!(
-        //     "BackTrace at table incr reference: {}",
-        //     Backtrace::force_capture()
-        // );
-        //push_log(buf.as_bytes(), false);
+        //use std::backtrace::Backtrace;
+        self._ref.fetch_add(1, Ordering::Release);
     }
     // decrements the refcount and possibly deletes the table
     pub(crate) fn decr_ref(&self) {
-        let count = self._ref.fetch_sub(1, Ordering::Release);
-        let buf = format!(
-            "decr {} table count {} => {}",
-            self.id,
-            count,
-            self.get_ref()
-        );
-        //push_log(buf.as_bytes(), false);
+        self._ref.fetch_sub(1, Ordering::Release);
     }
 
     pub(crate) fn get_ref(&self) -> i32 {
@@ -385,11 +364,6 @@ impl Drop for TableCore {
 
 impl Display for TableCore {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let index_str = self
-            .block_index
-            .iter()
-            .map(|x| format!("{}", x))
-            .collect::<Vec<_>>();
         let smallest = hex_str(self.smallest());
         let biggest = hex_str(self.biggest());
         f.debug_struct("Table")

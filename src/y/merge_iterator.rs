@@ -51,6 +51,7 @@ impl Xiterator for MergeIterator {
             self.set_iter_empty();
             return None;
         }
+        // Must be call rewind before call next
         assert_ne!(self.cursor.borrow().index, usize::MAX);
         self._next()
     }
@@ -62,7 +63,7 @@ impl Xiterator for MergeIterator {
             return None;
         }
         {
-            // Before every rewind, all flags will be resetted
+            // Before every rewind, all flags will be reset
             self.reset();
             for (index, itr) in self.itrs.iter().enumerate() {
                 if itr.rewind().is_some() {
@@ -177,6 +178,7 @@ impl MergeIterator {
             {
                 let heap = self.heap.borrow_mut();
                 if heap.is_empty() {
+                    // TODO why
                     self.set_iter_empty();
                     return None;
                 }

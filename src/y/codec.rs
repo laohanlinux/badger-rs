@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use std::io::{Read, Write};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::Result;
 
@@ -10,7 +11,6 @@ pub trait Encode {
 pub trait Decode {
     fn dec(&mut self, rd: &mut dyn Read) -> Result<()>;
 }
-use tokio::io::{AsyncRead, AsyncWrite};
 
 #[async_trait]
 pub trait AsyncEncDec<R, W>

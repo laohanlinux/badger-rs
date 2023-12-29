@@ -34,6 +34,7 @@ use std::path::Path;
 use std::pin::Pin;
 
 use crate::pb::backup::KVPair;
+use crate::transition::{GlobalTxNState, TxN};
 use libc::difftime;
 use rand::random;
 use std::fmt::Formatter;
@@ -42,14 +43,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::{fmt, string, vec};
+use structopt::clap::AppSettings::WaitOnError;
 use tokio::fs::create_dir_all;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 
-///
-pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
 /// Prefix for internal keys used by badger.
-pub const _HEAD: &[u8; 12] = b"!badger!head"; // For Storing value offset for replay.
+pub const _BADGER_PREFIX: &[u8; 8] = b"!badger!";
+// For storing value offset for replay.
+pub const _HEAD: &[u8; 12] = b"!badger!head";
+/// For the indicating end of entries in txn.
+pub const TXN_KEY: &[u8; 11] = b"!badger!txn";
 
 pub const KV_WRITE_CH_CAPACITY: usize = 1000;
 
@@ -73,12 +77,6 @@ impl FlushTask {
     fn must_mt(&self) -> &SkipList {
         self.mt.as_ref().unwrap()
     }
-}
-
-/// A builder for KV building.
-pub struct KVBuilder {
-    opt: Options,
-    kv: BoxKV,
 }
 
 /// Manage key/value
@@ -107,6 +105,7 @@ pub struct KVCore {
     // we use an atomic op.
     pub(crate) last_used_cas_counter: Arc<AtomicU64>,
     share_lock: TArcRW<()>,
+    pub(crate) txn_state: GlobalTxNState,
 }
 
 impl Drop for KVCore {
@@ -386,7 +385,7 @@ impl KVCore {
                 count += 1;
                 sz += self.opt.estimate_size(&entry) as u64;
                 req.entries.push(EntryType::from(entry));
-                req.ptrs.push(Arc::new(Atomic::new(None)));
+                req.ptrs.push(Arc::new(std::sync::RwLock::new(None)));
                 req_index.push(i);
             }
 
@@ -496,7 +495,7 @@ impl KVCore {
                 // Will include deletion/tombstone case.
                 debug!("Lsm ok, the value not at vlog file");
             } else {
-                let ptr = req.ptrs.get(i).unwrap().load(Ordering::Relaxed);
+                let ptr = req.ptrs.get(i).unwrap().read().unwrap();
                 let ptr = ptr.unwrap();
                 let mut wt = Cursor::new(vec![0u8; ValuePointer::value_pointer_encoded_size()]);
                 ptr.enc(&mut wt).unwrap();
@@ -571,12 +570,12 @@ impl KVCore {
         Ok(())
     }
 
-    async fn update_offset(&self, ptrs: &mut Vec<Arc<Atomic<Option<ValuePointer>>>>) {
+    async fn update_offset(&self, ptrs: &mut Vec<Arc<std::sync::RwLock<Option<ValuePointer>>>>) {
         // #[cfg(test)]
         // warn!("Ready to update offset");
         let mut ptr = ValuePointer::default();
         for tmp_ptr in ptrs.iter().rev() {
-            let tmp_ptr = tmp_ptr.load(Ordering::Acquire);
+            let tmp_ptr = tmp_ptr.read().unwrap();
             if tmp_ptr.is_none() || tmp_ptr.unwrap().is_zero() {
                 continue;
             }
@@ -596,7 +595,10 @@ impl KVCore {
     }
 
     // Returns the current `mem_tables` and get references(here will incr mem table reference).
-    fn get_mem_tables<'a>(&'a self, p: &'a crossbeam_epoch::Guard) -> Vec<Shared<'a, SkipList>> {
+    pub(crate) fn get_mem_tables<'a>(
+        &'a self,
+        p: &'a crossbeam_epoch::Guard,
+    ) -> Vec<Shared<'a, SkipList>> {
         self.mem_st_manger.lock_exclusive();
         defer! {self.mem_st_manger.unlock_exclusive()}
 
@@ -652,7 +654,7 @@ impl KVCore {
         unsafe { &*st }
     }
 
-    fn must_vlog(&self) -> Arc<ValueLogCore> {
+    pub(crate) fn must_vlog(&self) -> Arc<ValueLogCore> {
         let vlog = self.vlog.clone().unwrap();
         vlog
     }
@@ -684,13 +686,13 @@ pub type WeakKV = XWeak<KVCore>;
 
 /// DB handle
 /// ```
-/// use badger_rs::{Options, KV};
+/// use badger_rs::{Options, DB};
 /// use badger_rs::IteratorOptions;
 ///
 /// #[tokio::main]
 ///
 /// pub async fn main() {
-///      let kv = KV::open(Options::default()).await.unwrap();
+///      let kv = DB::open(Options::default()).await.unwrap();
 ///      kv.set(b"foo".to_vec(), b"bar".to_vec(), 0x0).await.unwrap();
 ///      let value = kv.get(b"foo").await.unwrap();
 ///      assert_eq!(&value, b"bar");
@@ -707,11 +709,11 @@ pub type WeakKV = XWeak<KVCore>;
 ///}
 /// ```
 #[derive(Clone)]
-pub struct KV {
+pub struct DB {
     inner: XArc<KVCore>,
 }
 
-impl Deref for KV {
+impl Deref for DB {
     type Target = KVCore;
 
     fn deref(&self) -> &Self::Target {
@@ -719,15 +721,15 @@ impl Deref for KV {
     }
 }
 
-impl fmt::Debug for KV {
+impl fmt::Debug for DB {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("KV").finish()
     }
 }
 
-impl KV {
+impl DB {
     /// Async open a KV db with Options
-    pub async fn open(mut opt: Options) -> Result<KV> {
+    pub async fn open(mut opt: Options) -> Result<DB> {
         opt.max_batch_size = (15 * opt.max_table_size) / 100;
         opt.max_batch_count = 2 * opt.max_batch_size / Node::align_size() as u64;
         create_dir_all(opt.dir.as_str()).await?;
@@ -783,6 +785,7 @@ impl KV {
             last_used_cas_counter: Arc::new(AtomicU64::new(1)),
             mem_st_manger: Arc::new(SkipListManager::new(opt.arena_size() as usize)),
             share_lock: TArcRW::new(tokio::sync::RwLock::new(())),
+            txn_state: GlobalTxNState::default(),
         };
 
         let manifest = out.manifest.clone();
@@ -805,7 +808,7 @@ impl KV {
         }
         out.vlog.replace(Arc::new(vlog));
 
-        let xout = KV::new(XArc::new(out));
+        let xout = DB::new(XArc::new(out));
 
         // update size
         {
@@ -1192,8 +1195,21 @@ impl KV {
         // Extend sst.table
         itrs.extend(self.must_lc().as_iterator(opt.reverse));
         let mitr = MergeIterOverBuilder::default().add_batch(itrs).build();
-        IteratorExt::new(self.clone(), mitr, opt)
+
+        IteratorExt::new(std::ptr::null(), mitr, opt)
     }
+
+    pub fn new_transaction(&self, update: bool) -> Result<TxN> {
+        Ok(TxN {
+            read_ts: 0,
+            update,
+            reads: Arc::new(Default::default()),
+            writes: Arc::new(Default::default()),
+            pending_writes: Arc::new(Default::default()),
+            kv: self.clone(),
+        })
+    }
+
     /// Closes a KV. It's crucial to call it to ensure all the pending updates
     /// make their way to disk.
     pub async fn close(&self) -> Result<()> {
@@ -1261,7 +1277,14 @@ impl KV {
         Ok(())
     }
 
-    pub async fn backup<W>(&self, mut wt: W) -> Result<()>
+    /// Backup dumps a protobuf-encoded list of all entries in the database into the
+    /// given writer, that are newer than the specified version. It returns a
+    /// timestamp indicating when the entries were dumped which can be passed into a
+    /// later invocation to generate an incremental dump, of entries that have been
+    /// added/modified since the last invocation of DB.Backup()
+    ///
+    /// This can be used to backup the data in a database at a given point in time.
+    pub async fn backup<W>(&self, mut wt: W, since: u64) -> Result<()>
     where
         W: Write,
     {
@@ -1281,7 +1304,7 @@ impl KV {
     }
 }
 
-impl KV {
+impl DB {
     // pub(crate) async fn new_std_iterator(
     //     &self,
     //     opt: IteratorOptions,
@@ -1331,8 +1354,8 @@ impl KV {
         self.inner.clone()
     }
 
-    pub(crate) fn new(inner: XArc<KVCore>) -> KV {
-        KV { inner }
+    pub(crate) fn new(inner: XArc<KVCore>) -> DB {
+        DB { inner }
     }
 
     pub(crate) fn to_ref(&self) -> &KVCore {

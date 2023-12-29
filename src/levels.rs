@@ -21,6 +21,7 @@ use log::{debug, error, info, warn};
 use parking_lot::lock_api::RawRwLock;
 use tracing::instrument;
 
+use crate::pb::badgerpb3::manifest_change::Operation::{CREATE, DELETE};
 use itertools::Itertools;
 use rand::random;
 use std::collections::HashSet;
@@ -35,7 +36,6 @@ use std::vec;
 use tokio::macros::support::thread_rng_n;
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use tokio::time::sleep;
-use crate::pb::badgerpb3::manifest_change::Operation::{CREATE, DELETE};
 
 #[derive(Clone)]
 pub(crate) struct LevelsController {

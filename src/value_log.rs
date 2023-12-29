@@ -28,6 +28,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
+use std::num::NonZeroU32;
 use std::time::{Duration, SystemTime};
 use std::{fmt, fs, io, ptr};
 
@@ -53,7 +54,9 @@ bitflags! {
         const BIT_UNUSED = 4;
         /// Set if the key is set using SetIfAbsent.
         const BIT_SET_IF_ABSENT = 8;
-    }
+        /// Set if the entry is to indicate end of txn in value log.
+        const BIT_FIN_TXN = 16;
+     }
 }
 
 const M: u64 = 1 << 20;
@@ -373,7 +376,7 @@ pub struct Request {
     // Input values
     pub(crate) entries: Vec<EntryType>,
     // Output Values and wait group stuff below
-    pub(crate) ptrs: Vec<Arc<Atomic<Option<ValuePointer>>>>,
+    pub(crate) ptrs: Vec<Arc<std::sync::RwLock<Option<ValuePointer>>>>,
 }
 
 impl Default for Request {
@@ -416,14 +419,6 @@ impl Request {
             .iter()
             .map(|ty| ty.fut_ch.clone())
             .collect::<Vec<_>>()
-    }
-
-    fn get_ptrs(&self) -> Vec<Arc<Atomic<Option<ValuePointer>>>> {
-        self.ptrs.clone()
-    }
-
-    fn get_ptr(&self, i: usize) -> Option<&Arc<Atomic<Option<ValuePointer>>>> {
-        self.ptrs.get(i)
     }
 }
 
@@ -759,15 +754,15 @@ impl ValueLogCore {
                 if !self.opt.sync_writes && entry.entry().value.len() < self.opt.value_threshold {
                     // No need to write to value log.
                     // WARN: if mt not flush into disk but process abort, that will discard data(the data not write into vlog that WAL file)
-                    req.ptrs[idx] = Arc::new(Atomic::new(None));
+                    req.ptrs[idx] = Arc::new(std::sync::RwLock::new(None));
                     continue;
                 }
 
                 #[cfg(test)]
                 debug!(
                     "Write # {:?} => {} into vlog file, offset: {}, meta:{}",
-                    hex_str(entry.entry().key.as_ref()),
-                    hex_str(entry.entry().value.as_ref()),
+                    hex_str(&entry.entry().key),
+                    hex_str(&entry.entry().value),
                     self.buf.read().await.get_ref().len()
                         + self.writable_log_offset.load(Ordering::Acquire) as usize,
                     entry.entry.meta,
@@ -786,7 +781,7 @@ impl ValueLogCore {
                     buf.get_ref().len() + self.writable_log_offset.load(Ordering::Acquire) as usize,
                     ptr.offset as usize + sz
                 );
-                req.ptrs[idx].store(Some(ptr), Ordering::Release);
+                req.ptrs[idx].write().unwrap().replace(ptr);
             }
         }
         {

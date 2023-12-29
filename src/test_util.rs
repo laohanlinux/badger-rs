@@ -14,6 +14,7 @@ use tokio_metrics::TaskMonitor;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
 use tracing_subscriber::EnvFilter;
+use crate::Options;
 
 #[cfg(test)]
 pub fn push_log_by_filename(fpath: &str, buf: &[u8]) {
@@ -216,4 +217,14 @@ fn tk2() {
     println!("{}", a.load(Ordering::Relaxed));
 
     use itertools::Merge;
+}
+
+
+pub(crate) fn get_test_option(dir: &str) -> Options {
+    let mut opt = Options::default();
+    opt.max_table_size = 1 << 15; // Force more compaction.
+    opt.level_one_size = 4 << 15; // Force more compaction.
+    opt.dir = Box::new(dir.to_string());
+    opt.value_dir = Box::new(dir.to_string());
+    opt
 }

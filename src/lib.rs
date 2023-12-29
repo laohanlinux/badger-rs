@@ -22,7 +22,7 @@
 #![feature(binary_heap_into_iter_sorted)]
 #![feature(test)]
 #![feature(atomic_from_ptr, pointer_is_aligned)]
-
+#![feature(unboxed_closures)]
 
 /// Badger DB is an embedded keyvalue database.
 ///
@@ -48,6 +48,7 @@ mod y;
 mod compaction;
 // #[cfg(test)]
 // mod kv_test;
+mod backup;
 #[cfg(test)]
 mod kv_test;
 mod levels;
@@ -55,7 +56,9 @@ mod pb;
 mod st_manager;
 #[cfg(test)]
 mod test_util;
-mod backup;
+mod transition;
+#[cfg(test)]
+mod transition_test;
 
 pub use iterator::*;
 pub use kv::*;
