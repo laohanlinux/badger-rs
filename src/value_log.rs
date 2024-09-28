@@ -1,34 +1,24 @@
 use async_channel::Receiver;
-use atomic::Atomic;
-
-use bitflags::{bitflags, Flags};
+use bitflags::bitflags;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use bytes::BufMut;
+use bytes::Buf;
 use crc32fast::Hasher;
 use drop_cell::defer;
 use getset::{Getters, Setters};
-
-use log::kv::Source;
-use log::{debug, info};
+use log::info;
 use memmap::Mmap;
-
 use rand::random;
-
 use std::collections::{HashMap, HashSet};
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Formatter};
 use std::fs::{read_dir, remove_file};
 use std::future::Future;
-use std::io::{BufRead, Cursor, Read, Seek, SeekFrom, Write};
-
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::mem::size_of;
-use std::ops::{Deref, Index};
+use std::ops::Index;
 use std::path::Path;
 use std::pin::Pin;
-
 use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-
-use std::num::NonZeroU32;
 use std::time::{Duration, SystemTime};
 use std::{fmt, fs, io, ptr};
 
@@ -41,7 +31,7 @@ use crate::options::Options;
 use crate::types::{Channel, Closer, TArcRW};
 use crate::y::{create_synced_file, open_existing_synced_file, sync_directory, Decode, Encode};
 use crate::Error::Unexpected;
-use crate::{event, hex_str, Error, Result, EMPTY_SLICE};
+use crate::{event, Error, Result, EMPTY_SLICE};
 
 bitflags! {
     /// Values have their first byte being byteData or byteDelete. This helps us distinguish between
@@ -758,15 +748,6 @@ impl ValueLogCore {
                     continue;
                 }
 
-                #[cfg(test)]
-                debug!(
-                    "Write # {:?} => {} into vlog file, offset: {}, meta:{}",
-                    hex_str(&entry.entry().key),
-                    hex_str(&entry.entry().value),
-                    self.buf.read().await.get_ref().len()
-                        + self.writable_log_offset.load(Ordering::Acquire) as usize,
-                    entry.entry.meta,
-                );
                 let mut ptr = ValuePointer::default();
                 ptr.fid = cur_fid;
                 // Use the offset including buffer length so far.
@@ -785,9 +766,9 @@ impl ValueLogCore {
             }
         }
         {
-            assert!(wt_count <= 0 || !self.buf.read().await.is_empty());
+            assert!(wt_count <= 0 || self.buf.read().await.has_remaining());
             let mut buffer = self.buf.write().await;
-            if buffer.is_empty() {
+            if !buffer.has_remaining() {
                 return Ok(());
             }
             // write value pointer into vlog file. (Just only write to mmap)
@@ -1081,11 +1062,6 @@ impl ValueLogCore {
                     continue;
                 }
                 count += 1;
-
-                #[cfg(test)]
-                if count == 1 {
-                    debug!("merge from {}", vptr.offset);
-                }
 
                 // TODO confiure
                 if count % 100 == 0 {

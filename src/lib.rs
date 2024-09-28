@@ -5,7 +5,6 @@
 #![feature(type_alias_impl_trait)]
 #![feature(strict_provenance_atomic_ptr)]
 #![feature(atomic_from_mut)]
-#![feature(cursor_remaining)]
 #![feature(pattern)]
 #![feature(cell_leak)]
 #![feature(path_file_prefix)]
@@ -57,8 +56,6 @@ mod st_manager;
 #[cfg(test)]
 mod test_util;
 mod transition;
-#[cfg(test)]
-mod transition_test;
 
 pub use iterator::*;
 pub use kv::*;

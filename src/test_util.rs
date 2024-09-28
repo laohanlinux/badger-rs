@@ -1,20 +1,16 @@
-use atomic::Atomic;
+use crate::Options;
 use chrono::Local;
-use log::{info, kv::source::as_map, kv::Source, warn, Level};
+use log::{info, warn};
 use rand::random;
-use std::collections::HashMap;
 use std::env::temp_dir;
 use std::fs::create_dir_all;
 use std::io;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::runtime::Handle;
 use tokio_metrics::TaskMonitor;
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
 use tracing_subscriber::EnvFilter;
-use crate::Options;
 
 #[cfg(test)]
 pub fn push_log_by_filename(fpath: &str, buf: &[u8]) {
@@ -34,7 +30,7 @@ pub fn push_log(buf: &[u8], rd: bool) {
     // #[cfg(test)]
     // return;
     use std::io::Write;
-    let mut fpath = "raw_log.log";
+    let fpath = "raw_log.log";
     let mut fp = if !rd {
         std::fs::File::options()
             .write(true)
@@ -57,13 +53,11 @@ pub fn push_log(buf: &[u8], rd: bool) {
 #[cfg(test)]
 pub fn remove_push_log() {
     use std::fs::remove_file;
-    remove_file("raw_log.log");
+    remove_file("raw_log.log").unwrap();
 }
 
 #[cfg(test)]
 pub(crate) fn tracing_log() {
-    use libc::remove;
-    use tracing::{info, Level};
     use tracing_subscriber;
     struct LocalTimer;
 
@@ -100,23 +94,6 @@ pub(crate) fn tracing_log() {
     // let recorder = metrics_prometheus::install();
 }
 
-#[cfg(test)]
-pub(crate) async fn start_metrics() -> TaskMonitor {
-    let monitor = tokio_metrics::TaskMonitor::new();
-    // print task metrics every 500ms
-    {
-        let frequency = std::time::Duration::from_millis(500);
-        let monitor = monitor.clone();
-        tokio::spawn(async move {
-            for metrics in monitor.intervals() {
-                warn!("{:?}", metrics);
-                tokio::time::sleep(frequency).await;
-            }
-        });
-    }
-    monitor
-}
-
 pub fn random_tmp_dir() -> String {
     let id = random::<u32>();
     let path = temp_dir().join(id.to_string()).join("badger");
@@ -127,24 +104,6 @@ pub fn create_random_tmp_dir() -> String {
     let fpath = random_tmp_dir();
     create_dir_all(&fpath).unwrap();
     fpath
-}
-
-#[test]
-fn it_work() {
-    #[tracing::instrument(skip_all)]
-    fn call() {
-        info!("call c");
-    }
-
-    #[tracing::instrument(skip_all)]
-    fn my_function(my_arg: usize) {
-        info!("execute my function");
-        call();
-    }
-
-    tracing_log();
-    my_function(1000);
-    info!("Hello Body");
 }
 
 #[tokio::test]
@@ -198,7 +157,7 @@ fn tk2() {
     let a = Arc::new(std::sync::atomic::AtomicI32::new(10000000));
     let ac = a.clone();
     rt.block_on(async move {
-        for i in 0..10000 {
+        for _ in 0..10000 {
             let ac = ac.clone();
             tokio::spawn(async move {
                 ac.fetch_sub(1, Ordering::Relaxed);
@@ -215,10 +174,7 @@ fn tk2() {
         println!("return {}", ret);
     });
     println!("{}", a.load(Ordering::Relaxed));
-
-    use itertools::Merge;
 }
-
 
 pub(crate) fn get_test_option(dir: &str) -> Options {
     let mut opt = Options::default();

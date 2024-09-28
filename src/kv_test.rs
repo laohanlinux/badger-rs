@@ -134,7 +134,7 @@ async fn t_batch_write() {
         "cost time: {}s",
         SystemTime::now().duration_since(start).unwrap().as_secs()
     );
-    kv.must_lc().print_level_fids();
+    //kv.must_lc().print_level_fids();
     kv.close().await.unwrap();
 }
 
