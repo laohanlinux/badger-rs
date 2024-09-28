@@ -2,9 +2,7 @@ use crate::y::{hash, is_eof, Decode, Encode, ValueStruct};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use drop_cell::defer;
 use growable_bloom_filter::GrowableBloom;
-use log::{debug, info};
 use serde_json;
-use std::hash::Hasher;
 use std::io::{Cursor, Read, Write};
 use std::time::SystemTime;
 
@@ -231,12 +229,12 @@ impl Default for Builder {
     fn default() -> Self {
         Self {
             counter: 0,
-            buf: Cursor::new(Vec::with_capacity(64 << 20)),
+            buf: Cursor::new(Vec::with_capacity(1 << 20)),
             base_key: vec![],
             base_offset: 0,
             restarts: vec![],
             prev_offset: u32::MAX,
-            key_buf: Cursor::new(Vec::with_capacity(32 << 20)),
+            key_buf: Cursor::new(Vec::with_capacity(1 << 20)),
             key_count: 0,
         }
     }
