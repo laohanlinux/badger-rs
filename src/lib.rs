@@ -64,6 +64,8 @@ pub use skl::*;
 pub use st_manager::*;
 pub use y::*;
 
+pub mod kv_actor;
+
 #[allow(dead_code)]
 #[inline]
 pub(crate) fn must_align<T>(ptr: *const T) {
